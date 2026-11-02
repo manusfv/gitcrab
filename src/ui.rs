@@ -381,6 +381,9 @@ pub struct GitCrab {
 
 impl GitCrab {
     pub fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
+        // The graph's dark palette must remain consistent when the host reports
+        // light mode after startup (notably on macOS and fresh Linux desktops).
+        cc.egui_ctx.set_theme(Theme::Dark);
         // Use the user's OS text fonts when present; no third-party font asset is bundled.
         let mut fonts = FontDefinitions::default();
         for (name, path) in crate::platform::font_files() {
@@ -419,7 +422,7 @@ impl GitCrab {
         style
             .text_styles
             .insert(TextStyle::Button, FontId::proportional(13.0));
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx.set_style_of(Theme::Dark, style);
         let (tx, job_rx) = mpsc::channel();
         let (reply_tx, rx) = mpsc::channel();
         let ctx = cc.egui_ctx.clone();
@@ -774,11 +777,15 @@ impl GitCrab {
                             .unwrap_or_default()
                             .to_string_lossy();
                         if ui
-                            .button(if self.path.is_empty() {
-                                "Open local repository  ▾"
-                            } else {
-                                &name
-                            })
+                            .add_sized(
+                                [140.0, 22.0],
+                                Button::new(if self.path.is_empty() {
+                                    "Open local repository  ▾"
+                                } else {
+                                    &name
+                                })
+                                .truncate(),
+                            )
                             .on_hover_text(&self.path)
                             .clicked()
                         {
@@ -788,7 +795,11 @@ impl GitCrab {
                     ui.separator();
                     ui.vertical(|ui| {
                         ui.label(RichText::new("branch").size(10.0).color(MUTED));
-                        ui.label(RichText::new(&self.snapshot.head).strong());
+                        ui.add_sized(
+                            [100.0, 18.0],
+                            Label::new(RichText::new(&self.snapshot.head).strong()).truncate(),
+                        )
+                        .on_hover_text(&self.snapshot.head);
                     });
                     ui.add_space(18.0);
                     for label in ["Refresh", "Branch", "Checkout", "Merge", "Stash"] {

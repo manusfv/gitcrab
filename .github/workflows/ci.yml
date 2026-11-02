@@ -3,7 +3,9 @@ name: Native platforms
 on:
   push:
     branches: [main]
+    paths: ['src/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/**', 'scripts/**']
   pull_request:
+    paths: ['src/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/**', 'scripts/**']
   workflow_dispatch:
 
 permissions:
@@ -49,7 +51,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev libudev-dev libgl1-mesa-dev libegl1-mesa-dev xvfb xauth fonts-dejavu-core
+          sudo apt-get install -y build-essential pkg-config libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libudev-dev libgl1-mesa-dev libegl1-mesa-dev xvfb xauth fonts-dejavu-core
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Test native Git and graph behavior
