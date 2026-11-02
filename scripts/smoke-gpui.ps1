@@ -37,8 +37,11 @@ foreach($view in @('history','details','staging','diff','split','commitdiff','di
     if($IsMacOS){& screencapture -x (Join-Path $OutputRoot "$view.png");if($LASTEXITCODE -ne 0){throw 'screencapture failed'}}
     $results+=@{view=$view;ready_after_first_layout_ms=$readyMs;process_id=$process.Id;working_set=$process.WorkingSet64;native=$data;screenshot=($IsLinux -or $IsMacOS)}
   }finally{
+    if($IsLinux -and !(Test-Path -LiteralPath $ready)){& scrot (Join-Path $OutputRoot "$view-failed.png")}
     if(!$process.HasExited){$process.Kill();$process.WaitForExit()}
-    $stderr.GetAwaiter().GetResult() | Set-Content (Join-Path $OutputRoot "$view.stderr.log")
+    $diagnostic=$stderr.GetAwaiter().GetResult()
+    $diagnostic | Set-Content (Join-Path $OutputRoot "$view.stderr.log")
+    if($diagnostic){Write-Host $diagnostic}
     $null=$stdout.GetAwaiter().GetResult()
   }
 }
