@@ -2746,6 +2746,7 @@ dependencies = [
  "gpui-component",
  "rfd",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-wdio-webdriver",
