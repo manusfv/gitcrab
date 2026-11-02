@@ -1,44 +1,5 @@
 //! Host integration stays outside the Git and graph models.
-use std::{ffi::OsString, path::PathBuf};
-
-pub const OPEN_SHORTCUT: &str = if cfg!(target_os = "macos") {
-    "Cmd+O"
-} else {
-    "Ctrl+O"
-};
-
-pub fn font_files() -> Vec<(&'static str, PathBuf)> {
-    #[cfg(windows)]
-    {
-        let windows = std::env::var_os("WINDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("C:/Windows"));
-        vec![
-            ("system-ui", windows.join("Fonts/segoeui.ttf")),
-            ("system-symbols", windows.join("Fonts/seguisym.ttf")),
-        ]
-    }
-    #[cfg(target_os = "macos")]
-    {
-        vec![
-            (
-                "system-ui",
-                "/System/Library/Fonts/Supplemental/Arial.ttf".into(),
-            ),
-            (
-                "system-symbols",
-                "/System/Library/Fonts/Apple Symbols.ttf".into(),
-            ),
-        ]
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        vec![(
-            "system-ui",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into(),
-        )]
-    }
-}
+use std::ffi::OsString;
 
 pub fn git_executable() -> OsString {
     if let Some(path) = std::env::var_os("GITCRAB_GIT").filter(|p| !p.is_empty()) {

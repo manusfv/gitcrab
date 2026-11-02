@@ -79,6 +79,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - name: Ensure Windows WebView2 runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $runtime = Get-ChildItem -Path "${env:ProgramFiles(x86)}/Microsoft/EdgeWebView/Application/*/msedgewebview2.exe" -ErrorAction SilentlyContinue
+          if (-not $runtime) {
+            Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile "$env:RUNNER_TEMP/WebView2Setup.exe"
+            $installer = Start-Process -FilePath "$env:RUNNER_TEMP/WebView2Setup.exe" -ArgumentList '/silent','/install' -WindowStyle Hidden -Wait -PassThru
+            if ($installer.ExitCode -ne 0) { throw "WebView2 install failed: $($installer.ExitCode)" }
+          }
       - name: Install Linux WebKit prerequisites
         if: runner.os == 'Linux'
         run: |
@@ -89,8 +99,20 @@ jobs:
       - run: cargo test --locked --lib
       - run: npm test
       - run: npm run build
+      - name: Build native renderer test app
+        run: cargo build --locked --features desktop,custom-protocol,native-smoke
+      - name: Exercise native Linux WebKit renderer
+        if: runner.os == 'Linux'
+        run: xvfb-run -a node scripts/webdriver-smoke.mjs target/debug/gitcrab dist/native-smoke
+      - name: Exercise native macOS renderer
+        if: runner.os == 'macOS'
+        run: node scripts/webdriver-smoke.mjs target/debug/gitcrab dist/native-smoke
+      - name: Exercise native Windows renderer
+        if: runner.os == 'Windows'
+        run: node scripts/webdriver-smoke.mjs target/debug/gitcrab.exe dist/native-smoke
       - name: Build native Tauri development package
-        run: npm run tauri -- build --ci --bundles ${{ matrix.bundles }} -- --locked
+        shell: pwsh
+        run: ./scripts/package.ps1 -Name '${{ matrix.package }}' -Bundles '${{ matrix.bundles }}'
       - name: Exercise actual Windows WebView workflows
         if: runner.os == 'Windows'
         run: node scripts/native-e2e.mjs target/release/gitcrab.exe dist/native-e2e
@@ -98,19 +120,18 @@ jobs:
         uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ matrix.package }}
-          path: |
-            target/release/bundle/**/*.deb
-            target/release/bundle/**/*.exe
-            target/release/bundle/**/*.app/**
+          path: dist/packages/*
           if-no-files-found: error
           retention-days: 14
       - name: Upload workflow captures
-        if: always() && runner.os == 'Windows'
+        if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: windows-webview-captures
+          name: ${{ matrix.package }}-webview-captures
           path: |
             dist/native-e2e/*.png
             dist/native-e2e/result.json
+            dist/native-smoke/*.png
+            dist/native-smoke/result.json
           if-no-files-found: ignore
           retention-days: 14

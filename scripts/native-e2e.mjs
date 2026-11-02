@@ -62,9 +62,18 @@ const child = spawn(binary, [fixture], {
   },
 });
 let browser;
+let processError = "";
+child.stderr.on("data", (chunk) => {
+  processError += chunk.toString();
+});
+child.on("error", (error) => {
+  processError += error.message;
+});
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 try {
   for (let i = 0; i < 80; i++) {
+    if (child.exitCode !== null)
+      throw Error(`Native app exited ${child.exitCode}: ${processError}`);
     try {
       browser = await chromium.connectOverCDP("http://127.0.0.1:9223");
       break;

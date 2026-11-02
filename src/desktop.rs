@@ -1,6 +1,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 use gitcrab_core::service::{Request, Response, Service};
 
+#[cfg(all(feature = "native-smoke", not(debug_assertions)))]
+compile_error!("The native-smoke automation server must never be included in release packages");
+
 #[tauri::command]
 async fn execute(request: Request, service: tauri::State<'_, Service>) -> Result<Response, String> {
     service
@@ -25,7 +28,10 @@ fn startup_repository() -> Option<String> {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(feature = "native-smoke")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    builder
         .manage(Service::new())
         .invoke_handler(tauri::generate_handler![
             execute,

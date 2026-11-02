@@ -297,6 +297,96 @@ impl Session {
 mod tests {
     use super::*;
     #[test]
+    fn hunk_tokens_expire_after_mutations_and_failures_refresh() {
+        let path = std::env::temp_dir().join(format!(
+            "gitcrab-service-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let git = Git { path: path.clone() };
+        git.run(&["init", "--quiet", "--initial-branch=main"])
+            .unwrap();
+        std::fs::write(path.join("new ü file.txt"), "new content\n").unwrap();
+        let mut session = Session::default();
+        session
+            .run(
+                1,
+                1,
+                Action::Open {
+                    path: path.to_string_lossy().into_owned(),
+                    limit: 500,
+                },
+            )
+            .unwrap();
+        session
+            .run(
+                1,
+                2,
+                Action::Diff {
+                    id: None,
+                    path: "new ü file.txt".into(),
+                    staged: false,
+                },
+            )
+            .unwrap();
+        let stale = session.execute(Request {
+            epoch: 1,
+            sequence: 3,
+            action: Action::Hunk {
+                token: 1,
+                index: 0,
+                unstage: false,
+            },
+        });
+        assert!(stale.result.unwrap_err().refresh);
+        assert!(git.run(&["diff", "--cached"]).unwrap().is_empty());
+        session
+            .run(
+                1,
+                4,
+                Action::Diff {
+                    id: None,
+                    path: "new ü file.txt".into(),
+                    staged: false,
+                },
+            )
+            .unwrap();
+        session
+            .execute(Request {
+                epoch: 1,
+                sequence: 5,
+                action: Action::Hunk {
+                    token: 4,
+                    index: 0,
+                    unstage: false,
+                },
+            })
+            .result
+            .unwrap();
+        assert!(session.patch.is_none());
+        assert!(git
+            .run(&["diff", "--cached"])
+            .unwrap()
+            .contains("new content"));
+        assert_eq!(
+            std::fs::read_to_string(path.join("new ü file.txt")).unwrap(),
+            "new content\n"
+        );
+        let failed = session.execute(Request {
+            epoch: 1,
+            sequence: 6,
+            action: Action::Commit {
+                message: String::new(),
+            },
+        });
+        assert!(failed.result.unwrap_err().refresh);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn rejects_cross_repository_mutation_and_obsolete_patch() {
         let mut session = Session {
             epoch: 5,
