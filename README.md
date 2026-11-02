@@ -11,7 +11,7 @@ The Windows executable built in this workspace is `target\debug\gitcrab.exe`:
 .\target\debug\gitcrab.exe 'C:\path\to\repository'
 ```
 
-Start without an argument to enter a local repository folder. Git must be available on PATH. The current build was validated on Windows; cross-platform packaging is unfinished.
+Start without an argument to enter a local repository folder. Git must be installed. Windows, Linux, and macOS share the same native Rust implementation. See platform setup and native packages and the [build/test matrix](https://github.com/manusfv/gitcrab/actions/workflows/ci.yml) for the latest platform validation.
 
 With a standard Rust installation and platform linker:
 
@@ -19,6 +19,8 @@ With a standard Rust installation and platform linker:
 cargo run --release -- 'C:\path\to\repository'
 cargo test
 ```
+
+On Linux/macOS, use `cargo run --locked --release -- /path/to/repository`. Linux requires native display/build libraries; macOS requires Xcode Command Line Tools. CI produces Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel packages with checksums. Detailed prerequisites and artifact limitations are in platforms.md.
 
 This workspace also contains an isolated Rust GNU toolchain and binutils under the ignored `.toolchain` folder. It does not change system PATH. Use the wrapper with that installation:
 
@@ -37,7 +39,7 @@ The local wrapper expects the provisioned `.toolchain` directory and is not a ge
 - Use Unstaged/Staged tabs and Split view to compare the worktree, index, and committed changes. Close the diff with `×` or the left rail button to return to history.
 - Enter a summary and optional description, separated by a blank line, then commit the staged changes.
 - Double-click a local branch or use the toolbar/context menu for branch creation, checkout, merge, cherry-pick, and revert. Each operation shows its exact target before execution. Commit checkout intentionally detaches HEAD.
-- Arrow keys select history rows. Ctrl+O opens a repository; F5 refreshes. Search dims unmatched commits while preserving graph topology. The footer loads another 500 commits when the current page is full.
+- Arrow keys select history rows. Ctrl+O opens a repository (Cmd+O on macOS); F5 refreshes. Search dims unmatched commits while preserving graph topology. The footer loads another 500 commits when the current page is full.
 - Resize the branch and details panels using their dividers. Stash/pop are available; the stash list and advanced rebase/reset UI remain unfinished.
 
 Git errors remain visible. Conflicted files are marked and committing is disabled until they are resolved. Edit conflicts and continue/abort the operation using Git externally; GitCrab does not yet provide a conflict editor or operation sequencer. Commit hooks and signing use normal local Git configuration.
@@ -54,4 +56,4 @@ The supplied `fixtures` directory is disposable and ignored by Git. Capture runs
 
 Read [architecture](docs/architecture.md).
 
-Known limits include line-level staging, complete syntax grammars, conflict resolution UI, command cancellation/timeouts, persisted preferences/recent repositories, and installer packaging. Large-repository scalability has not been established.
+Known limits include line-level staging, complete syntax grammars, conflict resolution UI, command cancellation/timeouts, persisted preferences/recent repositories, and signed/notarized installers. Large-repository scalability has not been established.

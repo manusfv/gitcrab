@@ -2,5 +2,6 @@
 /.toolchain/
 /rustup-init.exe
 /fixtures/
+/dist/
 /evidence/rea-bundle.json
 *.log

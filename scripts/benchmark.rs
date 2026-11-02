@@ -1,6 +1,7 @@
 //! Bounded backend/layout measurement. Not a renderer/FPS benchmark.
 #[path = "../src/git.rs"] mod git;
 #[path = "../src/graph.rs"] mod graph;
+#[path = "../src/platform.rs"] mod platform;
 use std::time::Instant;
 
 fn main() {

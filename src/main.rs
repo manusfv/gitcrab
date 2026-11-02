@@ -1,7 +1,8 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod diff;
 mod git;
 mod graph;
+mod platform;
 mod ui;
 
 fn main() -> eframe::Result<()> {

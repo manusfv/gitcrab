@@ -383,10 +383,7 @@ impl GitCrab {
     pub fn new(cc: &eframe::CreationContext<'_>, path: String) -> Self {
         // Use the user's OS text fonts when present; no third-party font asset is bundled.
         let mut fonts = FontDefinitions::default();
-        for (name, path) in [
-            ("system-ui", "C:/Windows/Fonts/segoeui.ttf"),
-            ("system-symbols", "C:/Windows/Fonts/seguisym.ttf"),
-        ] {
+        for (name, path) in crate::platform::font_files() {
             if let Ok(bytes) = std::fs::read(path) {
                 fonts
                     .font_data
@@ -705,7 +702,13 @@ impl GitCrab {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("◉  GitCrab").strong().color(ACCENT));
                     ui.menu_button("File", |ui| {
-                        if ui.button("Open repository…   Ctrl+O").clicked() {
+                        if ui
+                            .button(format!(
+                                "Open repository…   {}",
+                                crate::platform::OPEN_SHORTCUT
+                            ))
+                            .clicked()
+                        {
                             self.open_dialog = true;
                             ui.close_menu();
                         }
@@ -871,7 +874,7 @@ impl GitCrab {
                 for (index,name) in refs {if ui.selectable_label(false,format!("   ◇  {name}")).clicked(){self.select(index);}}
                 ui.add_space(18.0);ui.label(RichText::new("⌄  STASHES").size(11.0).color(MUTED));
                 if ui.small_button("Pop latest stash…").clicked(){self.op("Pop stash",String::new());}
-                ui.add_space(22.0);ui.label(RichText::new("Double-click a local branch\nto check it out.\n\n↑ ↓  Navigate history\nF5    Refresh repository\nCtrl+O  Open repository").size(11.0).color(MUTED));
+                ui.add_space(22.0);ui.label(RichText::new(format!("Double-click a local branch\nto check it out.\n\n↑ ↓  Navigate history\nF5    Refresh repository\n{}  Open repository",crate::platform::OPEN_SHORTCUT)).size(11.0).color(MUTED));
             });
         });
     }
@@ -1608,7 +1611,7 @@ impl eframe::App for GitCrab {
         if self.busy > 0 {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::O)) {
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(Key::O)) {
             self.open_dialog = true;
         }
         if !self.path.is_empty() && ctx.input(|i| i.key_pressed(Key::F5)) {

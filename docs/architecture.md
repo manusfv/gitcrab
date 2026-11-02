@@ -12,13 +12,14 @@ GitCrab is a native Rust desktop application. Its Git boundary, graph layout, pa
 | `git2` considered | The [Repository API](https://docs.rs/git2/latest/git2/struct.Repository.html) exposes apply, merge, rebase, stash, index and diff operations. It offers in-process access but adds libgit2/native dependency management and another behavior boundary to validate. |
 | `gix` considered | [Official gix documentation](https://docs.rs/gix/latest/gix/) describes object/pack caching and conversion to `ThreadSafeRepository`. It is a useful future in-process history/object backend. Choosing the CLI initially keeps mutation behavior aligned with the installed Git; no claim of gix workflow incompleteness is made. |
 
-`Cargo.toml` disables eframe defaults and enables `default_fonts`, `glow`, `x11` and `wayland`. AccessKit is currently disabled, so platform accessibility and screen-reader support remain incomplete. Available Windows system fonts are read locally; fallback fonts are supplied by egui. PNG output uses the `image` crate. Windows is the only platform built and observed in this task; Linux/macOS packaging and behavior remain unverified.
+`Cargo.toml` disables eframe defaults and enables `default_fonts`, `glow`, `x11` and `wayland`. AccessKit is currently disabled, so platform accessibility and screen-reader support remain incomplete. OS-specific fonts are read locally with egui's bundled fonts as fallback. PNG output uses the `image` crate. The native-platform workflow builds/tests Windows, Linux, macOS Apple Silicon and macOS Intel, and packages native artifacts. Linux/macOS also run renderer smoke tests; check the latest CI result for verified scope.
 
 ## Modules and data flow
 
 | Module | Responsibility |
 | --- | --- |
 | `src/main.rs` | Native window, startup repository argument and minimum size. |
+| `src/platform.rs` | OS font candidates, Cmd/Ctrl shortcut labels and Git executable lookup, including macOS GUI launch fallbacks. |
 | `src/git.rs` | Repository discovery, snapshots, refs/HEAD/status, first-parent file/diff queries, index patches and local mutations. Every command uses `std::process::Command`, never shell command composition. |
 | `src/graph.rs` | Original lane allocation from ordered parent identities. Produces lane/color and center-to-next-row edge segments without UI coordinates. |
 | `src/diff.rs` | Unified patch parsing with old/new blob line coordinates; replacement-block pairing for basic split view. |

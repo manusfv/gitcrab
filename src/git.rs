@@ -63,7 +63,7 @@ impl Git {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new("git");
+        let mut cmd = Command::new(crate::platform::git_executable());
         cmd.current_dir(&self.path)
             .args(["--no-pager", "--literal-pathspecs"])
             .args(args)
@@ -78,10 +78,11 @@ impl Git {
     }
 
     fn bytes(&self, args: &[&str]) -> GitResult<Vec<u8>> {
-        let output = self
-            .command(args)
-            .output()
-            .map_err(|e| format!("Could not start Git: {e}"))?;
+        let output = self.command(args).output().map_err(|e| {
+            format!(
+                "Could not start Git: {e}. Install Git or set GITCRAB_GIT to its executable path."
+            )
+        })?;
         if output.status.success() {
             Ok(output.stdout)
         } else {
@@ -521,6 +522,51 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.git.path);
         }
     }
+    #[test]
+    fn real_git_unicode_paths_and_branch_names() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        let name = "notes 日本語 [draft].txt";
+        fixture.write(name, "First version\n");
+        git.stage(name).unwrap();
+        git.commit("Unicode path").unwrap();
+        git.create_branch("feature/日本語").unwrap();
+        git.checkout("feature/日本語").unwrap();
+        fixture.write(name, "Second version\n");
+        let state = git.snapshot(10).unwrap();
+        assert_eq!(state.head, "feature/日本語");
+        assert_eq!(state.status[0].path, name);
+        assert!(git
+            .diff(None, name, false)
+            .unwrap()
+            .contains("+Second version"));
+        let nested = git.path.join("folder with spaces 日本語");
+        std::fs::create_dir(&nested).unwrap();
+        assert_eq!(
+            Git::open(nested).unwrap().path.canonicalize().unwrap(),
+            git.path.canonicalize().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_symlink_preview_cannot_leave_repository() {
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        outside.write("outside.txt", "outside repository\n");
+        std::os::unix::fs::symlink(
+            outside.git.path.join("outside.txt"),
+            fixture.git.path.join("link.txt"),
+        )
+        .unwrap();
+        let error = fixture.git.diff(None, "link.txt", false).unwrap_err();
+        assert!(error.contains("leaves the repository"));
+        assert_eq!(
+            std::fs::read_to_string(outside.git.path.join("outside.txt")).unwrap(),
+            "outside repository\n"
+        );
+    }
+
     #[test]
     fn status_keeps_rename_destination_and_literal_names() {
         let rows = parse_status(b"R  new name\0old name\0 M [literal]*.rs\0?? line\nbreak\0");
