@@ -319,7 +319,9 @@ impl Git {
         let mut args = if self.run(&["rev-parse", "--verify", "HEAD"]).is_ok() {
             vec!["restore", "--staged", "--"]
         } else {
-            vec!["rm", "--cached", "-r", "--"]
+            // An unborn index has no HEAD to restore. --cached guarantees that
+            // even a partially staged file keeps its working-tree contents.
+            vec!["rm", "--cached", "-r", "--force", "--"]
         };
         args.extend(paths.iter().map(String::as_str));
         self.run(&args).map(|_| ())
@@ -487,6 +489,7 @@ pub fn split_hunks(diff: &str) -> Vec<Hunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     struct Fixture {
         git: Git,
     }
@@ -496,8 +499,11 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("gitcrab-backend-{}-{nonce}", std::process::id()));
+            let serial = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "gitcrab-backend-{}-{nonce}-{serial}",
+                std::process::id()
+            ));
             std::fs::create_dir(&path).unwrap();
             let git = Git { path };
             git.run(&["init", "--quiet", "--initial-branch=main"])

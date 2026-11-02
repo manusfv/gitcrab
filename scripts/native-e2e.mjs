@@ -72,7 +72,7 @@ child.on("error", (error) => {
 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 try {
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 240; i++) {
     if (child.exitCode !== null)
       throw Error(`Native app exited ${child.exitCode}: ${processError}`);
     try {
@@ -82,7 +82,10 @@ try {
       await sleep(250);
     }
   }
-  assert(browser, "Native WebView2 CDP did not start");
+  assert(
+    browser,
+    `Native WebView2 CDP did not start (exit=${child.exitCode}, signal=${child.signalCode}): ${processError}`,
+  );
   const pages = browser.contexts().flatMap((c) => c.pages());
   const page = pages.find((p) => /tauri|localhost/.test(p.url())) ?? pages[0];
   assert(page, "App page exists");

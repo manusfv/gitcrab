@@ -28,9 +28,16 @@ fn startup_repository() -> Option<String> {
 }
 
 fn main() {
+    #[cfg(feature = "native-smoke")]
+    eprintln!("GitCrab native smoke: constructing host");
     let builder = tauri::Builder::default();
     #[cfg(feature = "native-smoke")]
-    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    let builder = builder
+        .plugin(tauri_plugin_wdio_webdriver::init())
+        .setup(|_| {
+            eprintln!("GitCrab native smoke: host setup complete");
+            Ok(())
+        });
     builder
         .manage(Service::new())
         .invoke_handler(tauri::generate_handler![

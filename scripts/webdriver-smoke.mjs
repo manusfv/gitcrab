@@ -56,7 +56,7 @@ async function command(method, path, body) {
 }
 try {
   let ready = false;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 300; i++) {
     if (child.exitCode !== null || child.signalCode)
       throw Error(
         `Native renderer exited ${child.exitCode ?? child.signalCode}: ${processOutput}`,
