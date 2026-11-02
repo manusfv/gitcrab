@@ -1135,6 +1135,10 @@ impl GitCrab {
                 .vertical_scroll_offset(self.selected.unwrap_or(0).saturating_sub(4) as f32 * ROW);
             self.scroll_selection = false;
         }
+        // show_rows measures spacing before entering its callback. Match the
+        // virtual row stride to the painted stride, including while scrolling.
+        let previous_spacing = ui.spacing().item_spacing.y;
+        ui.spacing_mut().item_spacing.y = 0.0;
         scroll.show_rows(ui, ROW, self.snapshot.commits.len() + 1, |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for visible in range {
@@ -1357,6 +1361,7 @@ impl GitCrab {
                     });
             }
         });
+        ui.spacing_mut().item_spacing.y = previous_spacing;
         if let Some(i) = clicked {
             self.select(i);
         }
@@ -1432,6 +1437,8 @@ impl GitCrab {
             lines.len()
         };
         let mut stage_hunk = None;
+        let previous_spacing = ui.spacing().item_spacing.y;
+        ui.spacing_mut().item_spacing.y = 0.0;
         ScrollArea::both()
             .id_salt((
                 "diff",
@@ -1588,6 +1595,7 @@ impl GitCrab {
                     }
                 }
             });
+        ui.spacing_mut().item_spacing.y = previous_spacing;
         if let Some(hunk) = stage_hunk {
             self.send(Job::Hunk(hunk, self.staged));
         }
