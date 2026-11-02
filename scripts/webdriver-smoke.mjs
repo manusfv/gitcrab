@@ -144,6 +144,9 @@ try {
     process.platform,
     JSON.stringify(viewport),
   );
+} catch (error) {
+  console.error("Native app diagnostics:", processOutput);
+  throw error;
 } finally {
   if (session) await command("DELETE", `/session/${session}`).catch(() => {});
   child.kill();

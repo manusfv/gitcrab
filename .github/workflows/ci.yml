@@ -106,7 +106,7 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           WEBKIT_DISABLE_DMABUF_RENDERER: "1"
-        run: dbus-run-session -- xvfb-run -a node scripts/webdriver-smoke.mjs target/debug/gitcrab dist/native-smoke
+        run: xvfb-run -a dbus-run-session -- node scripts/webdriver-smoke.mjs target/debug/gitcrab dist/native-smoke
       - name: Exercise native macOS renderer
         if: runner.os == 'macOS'
         run: node scripts/webdriver-smoke.mjs target/debug/gitcrab dist/native-smoke
