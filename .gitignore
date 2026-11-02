@@ -5,3 +5,11 @@
 /dist/
 /evidence/rea-bundle.json
 *.log
+/node_modules/
+/test-results/
+/playwright-report/
+/gen/
+/icons/android/
+/icons/ios/
+/icons/Square*.png
+/icons/StoreLogo.png
