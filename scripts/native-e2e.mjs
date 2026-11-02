@@ -207,6 +207,45 @@ try {
   await page.keyboard.press("Shift+F10");
   await page.getByRole("menuitem", { name: /Cherry-pick/ }).waitFor();
   await page.keyboard.press("Escape");
+  // A real 51-parent fixture verifies horizontal graph clipping/header sync;
+  // drawing cost must not allocate a backing Canvas for every loaded lane.
+  const base = git("rev-parse", "HEAD"),
+    tree = git("rev-parse", "HEAD^{tree}"),
+    parents = [];
+  for (let i = 0; i < 50; i++) {
+    const id = git("commit-tree", tree, "-p", base, "-m", `Wide lane ${i}`);
+    git("update-ref", `refs/heads/wide/${i}`, id);
+    parents.push("-p", id);
+  }
+  const wide = git(
+    "commit-tree",
+    tree,
+    "-p",
+    base,
+    ...parents,
+    "-m",
+    "Wide octopus history",
+  );
+  git("update-ref", "refs/heads/wide-view", wide);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("option", { name: /Wide octopus history/ }).waitFor();
+  await page.evaluate(() => {
+    const viewport = document.querySelector(".history-viewport");
+    viewport.scrollLeft = 550;
+  });
+  await page.waitForFunction(
+    () => parseFloat(document.querySelector(".graph-canvas").style.left) > 140,
+  );
+  assert(
+    await page.evaluate(() => {
+      const viewport = document.querySelector(".history-viewport"),
+        canvas = document.querySelector(".graph-canvas");
+      return (
+        canvas.width <= Math.ceil(viewport.clientWidth * devicePixelRatio) + 1
+      );
+    }),
+  );
+  await capture("wide-history");
   const viewport = await page.evaluate(() => ({
     width: innerWidth,
     height: innerHeight,

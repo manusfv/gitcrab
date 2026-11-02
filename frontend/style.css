@@ -78,6 +78,7 @@ h2 {
   margin: 17px 0 9px;
 }
 .app {
+  height: 100vh;
   height: 100dvh;
   display: flex;
   flex-direction: column;
@@ -256,6 +257,11 @@ aside {
   font-size: 9px;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
+}
+.history-header-clip {
+  height: 25px;
+  overflow: hidden;
+  flex-shrink: 0;
 }
 .history-header > span {
   padding-left: 10px;
@@ -687,6 +693,15 @@ footer > span:last-child {
 }
 .comment {
   color: #88ad65;
+}
+.string {
+  color: #b5bf84;
+}
+.keyword {
+  color: #b589ca;
+}
+.number {
+  color: #72aec8;
 }
 .whitespace {
   word-spacing: 4px;

@@ -1,6 +1,8 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Reply, Line } from "./contract";
+import { highlight } from "./highlight";
 export type DiffData = Extract<Reply, { kind: "Diff" }>["data"];
+const highlightCache = new WeakMap<Line, ReturnType<typeof highlight>>();
 function code(line: Line | null | undefined) {
   if (!line) return "";
   return line.kind === "@" ? line.text : line.text.slice(1);
@@ -12,6 +14,11 @@ function Source({
   line: Line | null | undefined;
   dim: boolean;
 }) {
+  let tokens = line && highlightCache.get(line);
+  if (line && !tokens && line.kind !== "@") {
+    tokens = highlight(code(line));
+    highlightCache.set(line, tokens);
+  }
   return (
     <code
       className={`${
@@ -24,7 +31,13 @@ function Source({
           : ""
       } ${dim ? "whitespace" : ""}`}
     >
-      {code(line)}
+      {line?.kind === "@"
+        ? code(line)
+        : tokens?.map((token, i) => (
+            <span key={i} className={token.kind}>
+              {token.text}
+            </span>
+          ))}
     </code>
   );
 }
@@ -49,6 +62,7 @@ export function Diff({
 }) {
   const [dim, setDim] = useState(false),
     [view, setView] = useState({ top: 0, height: 500 });
+  const [activeHunk, setActiveHunk] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = ref.current!;
@@ -61,16 +75,30 @@ export function Diff({
   useLayoutEffect(() => {
     ref.current!.scrollTop = 0;
     setView((v) => ({ ...v, top: 0 }));
+    setActiveHunk(0);
   }, [data.token]);
   const length = split ? data.split.length : data.lines.length,
     start = Math.max(0, Math.floor(view.top / 24) - 3),
     end = Math.min(length, Math.ceil((view.top + view.height) / 24) + 3);
-  const hunkIndices = new Map<number, number>();
-  let h = -1;
-  if (!split)
-    data.lines.forEach((l, i) => {
-      if (l.text.startsWith("@@ ")) hunkIndices.set(i, ++h);
+  const hunkIndices = useMemo(() => {
+    const indices = new Map<number, number>();
+    let h = -1;
+    data.lines.forEach((line, index) => {
+      if (line.text.startsWith("@@ ")) indices.set(index, ++h);
     });
+    return indices;
+  }, [data.lines]);
+  const splitHeaders = useMemo(
+    () =>
+      data.split.flatMap(([line], index) =>
+        line?.text.startsWith("@@ ") ? [index] : [],
+      ),
+    [data.split],
+  );
+  function goHunk(index: number) {
+    setActiveHunk(index);
+    ref.current!.scrollTop = (splitHeaders[index] ?? 0) * 24;
+  }
   return (
     <section className="diff-view" aria-label={`Diff for ${data.path}`}>
       <div className="diff-title">
@@ -127,16 +155,28 @@ export function Diff({
       </div>
       {split && data.hunks.length > 0 && (
         <div className="split-hunks">
-          {data.hunks.map((title, i) => (
-            <button
-              key={i}
-              title={title}
-              disabled={busy}
-              onClick={() => onHunk(i)}
-            >
-              {data.staged ? "Unstage" : "Stage"} hunk {i + 1}
-            </button>
-          ))}
+          <button
+            aria-label="Previous hunk"
+            disabled={activeHunk === 0}
+            onClick={() => goHunk(activeHunk - 1)}
+          >
+            ↑
+          </button>
+          <button
+            aria-label="Next hunk"
+            disabled={activeHunk >= data.hunks.length - 1}
+            onClick={() => goHunk(activeHunk + 1)}
+          >
+            ↓
+          </button>
+          <button
+            title={data.hunks[activeHunk]}
+            disabled={busy}
+            onClick={() => onHunk(activeHunk)}
+          >
+            {data.staged ? "Unstage" : "Stage"} hunk {activeHunk + 1} of{" "}
+            {data.hunks.length}
+          </button>
         </div>
       )}
       <div

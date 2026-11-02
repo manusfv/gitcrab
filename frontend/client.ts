@@ -52,11 +52,15 @@ export class Client {
         return;
       throw error;
     }
-    performance.measure(`gitcrab.${action.kind}.roundtrip`, {
-      start,
-      end: performance.now(),
-      detail: { worker_ms: response.elapsed_ms },
-    });
+    try {
+      performance.measure(`gitcrab.${action.kind}.roundtrip`, {
+        start,
+        end: performance.now(),
+        detail: { worker_ms: response.elapsed_ms },
+      });
+    } catch {
+      /* Older WebViews may lack User Timing detail/options. */
+    }
     if (epoch !== this.epoch || this.current.get(channel) !== sequence) return;
     if (response.epoch !== epoch || response.sequence !== sequence)
       throw new Error("Invalid response identity. Restart GitCrab.");
