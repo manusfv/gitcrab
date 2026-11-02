@@ -6,6 +6,9 @@ pub struct Line {
     pub new: Option<usize>,
     pub text: String,
     pub kind: char,
+    #[serde(skip)]
+    #[ts(skip)]
+    pub highlights: Vec<crate::highlight::Span>,
 }
 pub fn parse(patch: &str) -> Vec<Line> {
     let (mut old, mut new) = (0, 0);
@@ -57,6 +60,7 @@ pub fn parse(patch: &str) -> Vec<Line> {
                 new: n,
                 text: text.into(),
                 kind,
+                highlights: crate::highlight::spans(text),
             }
         })
         .collect()

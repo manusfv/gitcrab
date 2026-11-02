@@ -1,0 +1,60 @@
+mod theme;
+mod view;
+use gpui::{prelude::*, *};
+use gpui_component::{Root, Theme, ThemeMode};
+fn main() {
+    Application::new().run(|cx| {
+        gpui_component::init(cx);
+        Theme::change(ThemeMode::Dark, None, cx);
+        theme::install(cx);
+        cx.on_action(|_: &view::Quit, cx| cx.quit());
+        cx.set_menus(vec![Menu {
+            name: "GitCrab".into(),
+            items: vec![
+                MenuItem::action("Open repository…", view::Open),
+                MenuItem::action("Refresh", view::Refresh),
+                MenuItem::separator(),
+                MenuItem::action("Quit", view::Quit),
+            ],
+        }]);
+        let primary = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        cx.bind_keys([
+            KeyBinding::new(&format!("{primary}-o"), view::Open, None),
+            KeyBinding::new(&format!("{primary}-q"), view::Quit, None),
+            KeyBinding::new("f5", view::Refresh, None),
+            KeyBinding::new("escape", view::Back, Some("GitCrab")),
+            KeyBinding::new("up", view::Previous, Some("GitCrab")),
+            KeyBinding::new("down", view::Next, Some("GitCrab")),
+            KeyBinding::new(&format!("{primary}-c"), view::Copy, Some("GitCrab")),
+            KeyBinding::new(&format!("{primary}-a"), view::SelectAll, Some("GitCrab")),
+        ]);
+        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(960.), px(600.))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("GitCrab".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            |window, cx| {
+                let view = cx.new(|cx| view::GitCrab::new(window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+        )
+        .expect("open native GitCrab window");
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+        cx.activate(true);
+    });
+}
