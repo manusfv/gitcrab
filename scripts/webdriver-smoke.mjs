@@ -32,6 +32,16 @@ const child = spawn(binary, [fixture], {
   env: { ...process.env, TAURI_WEBDRIVER_PORT: "4445" },
 });
 let session;
+let processOutput = "";
+child.stderr.on("data", (chunk) => {
+  processOutput += chunk.toString();
+});
+child.stdout.on("data", (chunk) => {
+  processOutput += chunk.toString();
+});
+child.on("error", (error) => {
+  processOutput += error.message;
+});
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 async function command(method, path, body) {
   const response = await fetch(`http://127.0.0.1:4445${path}`, {
@@ -45,14 +55,24 @@ async function command(method, path, body) {
   return result.value;
 }
 try {
+  let ready = false;
   for (let i = 0; i < 100; i++) {
+    if (child.exitCode !== null || child.signalCode)
+      throw Error(
+        `Native renderer exited ${child.exitCode ?? child.signalCode}: ${processOutput}`,
+      );
     try {
       await command("GET", "/status");
+      ready = true;
       break;
     } catch {
       await delay(200);
     }
   }
+  if (!ready)
+    throw Error(
+      `Native renderer server unavailable (exit=${child.exitCode}, signal=${child.signalCode}): ${processOutput}`,
+    );
   session = (
     await command("POST", "/session", { capabilities: { alwaysMatch: {} } })
   ).sessionId;
@@ -75,6 +95,9 @@ try {
     await writeFile(join(output, `${view}.png`), Buffer.from(png, "base64"));
   };
   await wait("return document.querySelectorAll('.history-row').length > 1;");
+  const initial_viewport = await execute(
+    "return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio};",
+  );
   await capture("history");
   await click(".history-row:not(.wip)");
   await wait("return !!document.querySelector('.changed-file');");
@@ -91,6 +114,12 @@ try {
   await click('.diff-controls input[type="checkbox"]');
   await wait("return !!document.querySelector('.diff-line.split');");
   await capture("split");
+  await command("POST", `/session/${session}/window/rect`, {
+    width: 900,
+    height: 600,
+  });
+  await wait("return innerWidth <= 900;");
+  await capture("narrow");
   const viewport = await execute(
     "return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio};",
   );
@@ -101,6 +130,7 @@ try {
         binary,
         platform: process.platform,
         viewport,
+        initial_viewport,
         passed: true,
         scope:
           "Actual native test-feature WebView: Git load, history, details, committed diff, staging, unified and split render. Production binary compiled separately without the automation plugin.",

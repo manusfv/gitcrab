@@ -37,6 +37,7 @@ await writeFile(join(fixture, "main.txt"), "Main branch\n");
 git("add", ".");
 git("commit", "--quiet", "-m", "Develop main branch");
 git("merge", "--quiet", "--no-ff", "feature/graph", "-m", "Merge graph");
+git("tag", "v0.1");
 await writeFile(
   join(fixture, "app.rs"),
   original.replace("line 5", "staged line 5"),
@@ -89,6 +90,7 @@ try {
     throw error;
   });
   await page.getByRole("option", { name: /Merge graph/ }).waitFor();
+  await page.getByRole("button", { name: "◇ v0.1", exact: true }).waitFor();
   const capture = async (name) => {
     await page.screenshot({ path: join(output, `${name}.png`) });
   };
@@ -196,6 +198,10 @@ try {
   await page.keyboard.press("ArrowDown");
   assert((await page.getByRole("option", { selected: true }).count()) === 1);
   await page.getByRole("option", { selected: true }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: /Cherry-pick/ }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.getByRole("listbox").focus();
+  await page.keyboard.press("Shift+F10");
   await page.getByRole("menuitem", { name: /Cherry-pick/ }).waitFor();
   await page.keyboard.press("Escape");
   const viewport = await page.evaluate(() => ({

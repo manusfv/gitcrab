@@ -112,27 +112,30 @@ for (const repository of [
     const idle_start = sample();
     await new Promise((r) => setTimeout(r, 3000));
     const idle_end = sample();
-    const frames = await page.evaluate(() =>
-      performance
-        .getEntriesByType("measure")
-        .filter((e) => e.name.startsWith("gitcrab."))
-        .map((e) => ({
-          name: e.name,
-          duration_ms: e.duration,
-          detail: e.detail,
-        })),
-    );
-    let diff;
+    const collectFrames = () =>
+      page.evaluate(() =>
+        performance
+          .getEntriesByType("measure")
+          .filter((e) => e.name.startsWith("gitcrab."))
+          .map((e) => ({
+            name: e.name,
+            duration_ms: e.duration,
+            detail: e.detail,
+          })),
+      );
+    let diff, diff_open_ms;
     if (repository.includes("merge-heavy")) {
       await page
         .getByRole("button", { name: "Working directory", exact: false })
         .click();
+      const diffStart = performance.now();
       await page
         .locator(".file-section")
         .first()
         .getByRole("button", { name: "large.rs", exact: true })
         .click();
       await page.getByRole("region", { name: "Diff for large.rs" }).waitFor();
+      diff_open_ms = performance.now() - diffStart;
       diff = await scroll(".diff-scroll");
     }
     const summarize = ({ samples, ...other }) => {
@@ -158,7 +161,8 @@ for (const repository of [
       })),
       history: summarize(history),
       diff: diff ? summarize(diff) : null,
-      roundtrips: frames,
+      diff_open_ms,
+      roundtrips: await collectFrames(),
       idle: {
         duration_seconds: 3,
         cpu_seconds: idle_end.cpu_seconds - idle_start.cpu_seconds,

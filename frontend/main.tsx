@@ -104,6 +104,7 @@ function App() {
     });
   }
   function refresh(next = limitRef.current) {
+    next = Math.min(next, 100_000);
     if (!repoRef.current) return;
     setLimit(next);
     limitRef.current = next;
@@ -221,6 +222,12 @@ function App() {
   }, []);
   // Keep shortcuts outside editors; normal copy/select-all remains native DOM.
   const shortcuts = useRef({ open, refresh });
+  useEffect(() => {
+    if (menu)
+      document
+        .querySelector<HTMLButtonElement>(".context-menu button:not(:disabled)")
+        ?.focus();
+  }, [menu]);
   shortcuts.current = { open, refresh };
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -234,6 +241,8 @@ function App() {
         shortcuts.current.refresh();
       }
       if (e.key === "Escape") {
+        if (document.activeElement?.closest(".context-menu"))
+          document.querySelector<HTMLElement>(".history-viewport")?.focus();
         setMenu(undefined);
         setOperation(undefined);
       }
@@ -447,7 +456,9 @@ function App() {
               {[
                 ...new Set(
                   snap?.commits.flatMap((c) =>
-                    c.refs.filter((r) => r.startsWith("tag: ")),
+                    c.refs.filter(
+                      (r) => r !== "HEAD" && !snap?.branches.includes(r),
+                    ),
                   ),
                 ),
               ].map((tag) => (
@@ -670,6 +681,23 @@ function App() {
         <div
           className="context-menu"
           role="menu"
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const buttons = [
+                ...e.currentTarget.querySelectorAll<HTMLButtonElement>(
+                  "button:not(:disabled)",
+                ),
+              ];
+              const index = buttons.indexOf(
+                document.activeElement as HTMLButtonElement,
+              );
+              buttons[
+                (index + (e.key === "ArrowDown" ? 1 : buttons.length - 1)) %
+                  buttons.length
+              ]?.focus();
+            }
+          }}
           style={{
             left: Math.min(menu.x, window.innerWidth - 180),
             top: Math.min(menu.y, window.innerHeight - 180),

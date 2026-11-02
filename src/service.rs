@@ -384,6 +384,15 @@ mod tests {
             },
         });
         assert!(failed.result.unwrap_err().refresh);
+        std::fs::create_dir(path.join("nested")).unwrap();
+        std::fs::write(path.join("nested/another.txt"), "keep worktree\n").unwrap();
+        git.stage(".").unwrap();
+        git.unstage(".").unwrap();
+        assert!(git.run(&["diff", "--cached"]).unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(path.join("nested/another.txt")).unwrap(),
+            "keep worktree\n"
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
     #[test]

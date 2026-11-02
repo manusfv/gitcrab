@@ -319,7 +319,7 @@ impl Git {
         let mut args = if self.run(&["rev-parse", "--verify", "HEAD"]).is_ok() {
             vec!["restore", "--staged", "--"]
         } else {
-            vec!["rm", "--cached", "--"]
+            vec!["rm", "--cached", "-r", "--"]
         };
         args.extend(paths.iter().map(String::as_str));
         self.run(&args).map(|_| ())

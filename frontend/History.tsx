@@ -179,6 +179,14 @@ export function History({
             e.preventDefault();
             navigate(e.key);
           }
+          if (
+            selected &&
+            (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))
+          ) {
+            e.preventDefault();
+            const bounds = viewport.current!.getBoundingClientRect();
+            onContext(selected, bounds.left + 100, bounds.top + 60);
+          }
         }}
         onScroll={(e) => {
           const el = e.currentTarget;
@@ -271,7 +279,7 @@ export function History({
             style={{ top: (commits.length + 1) * ROW }}
           >
             {commits.length} commits{" "}
-            {commits.length >= limit && (
+            {commits.length >= limit && limit < 100_000 && (
               <button onClick={onMore}>Load 500 more</button>
             )}
           </div>
