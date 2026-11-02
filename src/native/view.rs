@@ -29,7 +29,10 @@ pub struct GitCrab {
     operation: Option<Operation>,
     split: bool,
     compact: bool,
+    dim_whitespace: bool,
+    active_hunk: usize,
     history_scroll: UniformListScrollHandle,
+    diff_scroll: UniformListScrollHandle,
     selection: Option<Range<usize>>,
     anchor: usize,
     _subscriptions: Vec<Subscription>,
@@ -38,6 +41,8 @@ pub struct GitCrab {
     saving: bool,
     #[cfg(feature = "native-evidence")]
     evidence_phase: u8,
+    #[cfg(feature = "native-evidence")]
+    benchmark: (Option<std::time::Instant>, Vec<f64>),
 }
 impl GitCrab {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -68,7 +73,10 @@ impl GitCrab {
             operation: None,
             split: preferences.split,
             compact: preferences.compact,
+            dim_whitespace: false,
+            active_hunk: 0,
             history_scroll: UniformListScrollHandle::new(),
+            diff_scroll: UniformListScrollHandle::new(),
             selection: None,
             anchor: 0,
             _subscriptions: subscriptions,
@@ -77,6 +85,8 @@ impl GitCrab {
             saving: false,
             #[cfg(feature = "native-evidence")]
             evidence_phase: 0,
+            #[cfg(feature = "native-evidence")]
+            benchmark: (None, vec![]),
         };
         v.focus.focus(window);
         if let Some(path) = std::env::args().nth(1) {
@@ -256,6 +266,8 @@ impl GitCrab {
     }
     fn file(&mut self, path: String, staged: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.selection = None;
+        self.active_hunk = 0;
+        self.diff_scroll = UniformListScrollHandle::new();
         let j = self.state.diff(path, staged);
         self.dispatch(j, window, cx);
     }
@@ -271,10 +283,40 @@ impl GitCrab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.operation = Some(op);
+        if self.state.busy || self.state.snapshot.is_none() {
+            return;
+        }
+        self.operation = Some(op.clone());
         self.target.update(cx, |s, cx| {
             s.set_value(target, window, cx);
             s.focus(window, cx);
+        });
+        let target = self.target.clone();
+        let view = cx.weak_entity();
+        let cancel = view.clone();
+        let epoch = self.state.epoch;
+        let repo = self.state.path.clone();
+        let head = self.state.snapshot.as_ref().unwrap().head.clone();
+        let label = match op {
+            Operation::CreateBranch => "Create branch",
+            Operation::Checkout => "Checkout",
+            Operation::Merge => "Merge",
+            Operation::CherryPick => "Cherry-pick",
+            Operation::Revert => "Revert",
+            Operation::Stash => "Stash",
+            Operation::PopStash => "Pop stash",
+        };
+        window.open_dialog(cx,move|dialog,_,_|{
+            let view=view.clone();let cancel=cancel.clone();let target=target.clone();let op=op.clone();
+            dialog.title(label).confirm().button_props(gpui_component::dialog::DialogButtonProps::default().ok_text(label))
+                .child(div().flex().flex_col().gap_3().child(repo.clone()).child(format!("HEAD: {head}"))
+                    .child(Input::new(&target)).child("Review the target. Git protections apply; failures can leave conflicts and always refresh status."))
+                .on_ok(move|_,w,cx|view.update(cx,|v,cx|{
+                    if v.state.epoch!=epoch {v.state.error=true;v.state.notice="Repository changed. Review this operation again.".into();v.operation=None;cx.notify();return true;}
+                    if v.state.busy{return false;}
+                    let target=v.target.read(cx).value().to_string();v.operation=None;v.mutate(Action::Operation{op:op.clone(),target},w,cx);true
+                }).unwrap_or(true))
+                .on_cancel(move|_,_,cx|{let _=cancel.update(cx,|v,cx|{v.operation=None;cx.notify();});true})
         });
         cx.notify();
     }
@@ -282,6 +324,12 @@ impl GitCrab {
         if self.settings_open {
             self.settings_open = false;
             self.focus.focus(window);
+            cx.notify();
+            return;
+        }
+        if window.has_active_dialog(cx) {
+            window.close_all_dialogs(cx);
+            self.operation = None;
             cx.notify();
             return;
         }
@@ -649,7 +697,7 @@ impl GitCrab {
                             .child(c.date.clone()),
                     )
                     .child(
-                        self.button("copy-id", c.id[..12.min(c.id.len())].to_string())
+                        self.button("copy-id", c.id.clone())
                             .on_click(cx.listener(|v, _, w, cx| v.copy(&Copy, w, cx))),
                     )
                     .child(div().px_3().text_size(px(11.)).child(format!(
@@ -660,15 +708,40 @@ impl GitCrab {
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         )))
+                    .child(
+                        div()
+                            .px_3()
+                            .text_size(px(11.))
+                            .text_color(rgb(ACCENT))
+                            .child(c.refs.join(" · ")),
+                    )
                     .child(heading("FIRST-PARENT CHANGED FILES"));
-                for (i, path) in self.state.files.iter().enumerate() {
-                    let p = path.clone();
-                    el =
-                        el.child(self.button(("changed", i), path.clone()).on_click(
-                            cx.listener(move |v, _, w, cx| v.file(p.clone(), false, w, cx)),
-                        ));
-                }
-                el = el.child(div().flex_1());
+                let weak = cx.weak_entity();
+                el = el.child(
+                    uniform_list(
+                        "committed-files",
+                        self.state.files.len(),
+                        move |range, _, cx| {
+                            weak.update(cx, |v, cx| {
+                                range
+                                    .map(|i| {
+                                        let path = v.state.files[i].clone();
+                                        div().h(px(30.)).child(
+                                            v.button(("changed", i), path.clone()).on_click(
+                                                cx.listener(move |v, _, w, cx| {
+                                                    v.file(path.clone(), false, w, cx)
+                                                }),
+                                            ),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                        },
+                    )
+                    .flex_1()
+                    .min_h_0(),
+                );
                 for (i, (op, label)) in [
                     (Operation::Checkout, "Checkout…"),
                     (Operation::CherryPick, "Cherry-pick…"),
@@ -882,6 +955,20 @@ impl GitCrab {
                     )
                     .child(div().flex_1().truncate().child(p.path.clone()))
                     .child(
+                        self.button(
+                            "dim-whitespace",
+                            if self.dim_whitespace {
+                                "Normal whitespace"
+                            } else {
+                                "Dim whitespace"
+                            },
+                        )
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.dim_whitespace = !v.dim_whitespace;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
                         self.button("split", if self.split { "Unified" } else { "Split" })
                             .on_click(cx.listener(|v, _, _, cx| {
                                 v.split = !v.split;
@@ -944,7 +1031,64 @@ impl GitCrab {
                     }),
             );
         let path = p.path.clone();
-        el=el.child(uniform_list(SharedString::from(format!("diff-{path}-{}",self.split)),n,move|range,_,cx|weak.update(cx,|v,cx|range.map(|i|v.diff_row(i,cx)).collect::<Vec<_>>()).unwrap_or_default()).with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained).flex_1().min_h_0())
+        if !p.hunks.is_empty() {
+            let active = self.active_hunk.min(p.hunks.len() - 1);
+            let token = p.token;
+            let unstage = p.staged;
+            let mut bar = div().h(px(30.)).flex().items_center().px_2().gap_2();
+            for (index, delta, label) in [(0, -1isize, "↑"), (1, 1isize, "↓")] {
+                bar = bar.child(
+                    self.button(("hunk-nav", index), label)
+                        .disabled(if delta < 0 {
+                            active == 0
+                        } else {
+                            active + 1 == p.hunks.len()
+                        })
+                        .on_click(cx.listener(move |v, _, _, cx| {
+                            if let Some(p) = &v.state.patch {
+                                v.active_hunk = (v.active_hunk as isize + delta)
+                                    .clamp(0, p.hunks.len().saturating_sub(1) as isize)
+                                    as usize;
+                                let rows = if v.split {
+                                    &p.split_hunk_rows
+                                } else {
+                                    &p.hunk_rows
+                                };
+                                if let Some(row) = rows.get(v.active_hunk) {
+                                    v.diff_scroll.scroll_to_item(*row, ScrollStrategy::Top);
+                                }
+                                cx.notify();
+                            }
+                        })),
+                );
+            }
+            el = el.child(
+                bar.child(
+                    self.button(
+                        "active-hunk",
+                        format!(
+                            "{} hunk {} / {}",
+                            if staged { "Unstage" } else { "Stage" },
+                            active + 1,
+                            p.hunks.len()
+                        ),
+                    )
+                    .disabled(self.state.busy)
+                    .on_click(cx.listener(move |v, _, w, cx| {
+                        v.mutate(
+                            Action::Hunk {
+                                token,
+                                index: active,
+                                unstage,
+                            },
+                            w,
+                            cx,
+                        )
+                    })),
+                ),
+            );
+        }
+        el=el.child(uniform_list(SharedString::from(format!("diff-{path}-{}",self.split)),n,move|range,_,cx|weak.update(cx,|v,cx|range.map(|i|v.diff_row(i,cx)).collect::<Vec<_>>()).unwrap_or_default()).with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained).track_scroll(self.diff_scroll.clone()).flex_1().min_h_0())
             .child(div().h(px(26.)).px_3().text_size(px(11.)).text_color(rgb(MUTED)).child("Click / Shift-click selects lines · Ctrl/Cmd+A selects all · Ctrl/Cmd+C copies"));
         el.into_any_element()
     }
@@ -958,7 +1102,8 @@ impl GitCrab {
         };
         let mut el = div()
             .id(("diff-line", i))
-            .w(px(width.max(if self.split { 950. } else { 600. })))
+            .w_full()
+            .min_w(px(width.max(if self.split { 950. } else { 600. })))
             .h(px(26.))
             .flex()
             .items_center()
@@ -1032,6 +1177,7 @@ impl GitCrab {
                             )
                         });
                         div()
+                            .when(self.dim_whitespace, |el| el.opacity(0.8))
                             .flex_none()
                             .child(StyledText::new(text).with_highlights(highlights))
                     });
@@ -1080,20 +1226,13 @@ impl GitCrab {
                 cx.notify();
             }),
         )
+        .on_mouse_move(cx.listener(move |v, e: &MouseMoveEvent, _, cx| {
+            if e.dragging() && v.selection.is_some() {
+                v.selection = Some(v.anchor.min(i)..v.anchor.max(i) + 1);
+                cx.notify();
+            }
+        }))
         .into_any_element()
-    }
-    fn operation_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
-        let op = self.operation.clone().unwrap();
-        let label = format!("{op:?}");
-        div().absolute().inset_0().bg(rgba(0x00000099)).flex().items_center().justify_center()
-            .child(div().w(px(480.)).p_5().rounded(px(10.)).bg(rgb(PANEL)).border_1().border_color(rgb(BORDER)).flex().flex_col().gap_3()
-                .child(div().text_lg().child(label.clone()))
-                .child(div().text_color(rgb(MUTED)).child(self.state.path.clone()).child(format!("HEAD: {}",self.state.snapshot.as_ref().map(|s|s.head.as_str()).unwrap_or("unborn"))))
-                .child(Input::new(&self.target))
-                .child("Git protections apply. A failed operation can leave conflicts; state refreshes afterwards.")
-                .child(div().flex().justify_end().gap_2()
-                    .child(self.button("cancel","Cancel").on_click(cx.listener(|v,_,w,cx|v.back(&Back,w,cx))))
-                    .child(Button::new("execute").label(label).primary().disabled(self.state.busy).on_click(cx.listener(move|v,_,w,cx|{let target=v.target.read(cx).value().to_string();v.operation=None;v.mutate(Action::Operation{op:op.clone(),target},w,cx);}))))).into_any_element()
     }
     fn settings_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut content = div()
@@ -1230,6 +1369,41 @@ impl Render for GitCrab {
             });
             window.request_animation_frame();
         }
+        #[cfg(feature = "native-evidence")]
+        if self.evidence_phase == 4 && std::env::var_os("GITCRAB_NATIVE_BENCH").is_some() {
+            if let Some(previous) = self.benchmark.0.replace(std::time::Instant::now()) {
+                self.benchmark
+                    .1
+                    .push(previous.elapsed().as_secs_f64() * 1000.);
+            }
+            if self.benchmark.1.len() < 240 {
+                let i = self.benchmark.1.len();
+                if let Some(p) = &self.state.patch {
+                    self.diff_scroll.scroll_to_item(
+                        (i * 2).min(p.lines.len().saturating_sub(1)),
+                        ScrollStrategy::Top,
+                    );
+                } else {
+                    self.history_scroll.scroll_to_item(
+                        (i * 2).min(self.state.graph.rows.len()),
+                        ScrollStrategy::Top,
+                    );
+                }
+                let weak = cx.weak_entity();
+                window.on_next_frame(move |_, cx| {
+                    let _ = weak.update(cx, |_, cx| cx.notify());
+                });
+                window.request_animation_frame();
+            } else {
+                self.evidence_phase = 5;
+                let data = serde_json::json!({"samples_ms":self.benchmark.1,"conditions":"240 GPUI render/animation intervals with synthetic scroll; not physical presentation or input latency","loaded":self.state.graph.rows.len(),"diff_rows":self.state.patch.as_ref().map(|p|p.lines.len())});
+                let path = format!(
+                    "{}.bench.json",
+                    std::env::var("GITCRAB_NATIVE_READY").unwrap()
+                );
+                let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
+            }
+        }
         let title = self
             .state
             .path
@@ -1305,7 +1479,6 @@ impl Render for GitCrab {
         toolbar = toolbar
             .child(div().flex_1())
             .child(div().w(px(190.)).child(Input::new(&self.search).small()));
-        let operation = self.operation.as_ref().map(|_| self.operation_dialog(cx));
         div()
             .relative()
             .size_full()
@@ -1426,7 +1599,6 @@ impl Render for GitCrab {
                     })
                     .child(format!("GPUI · Git worker {:.1} ms", self.state.worker_ms)),
             )
-            .children(operation)
             .when(self.settings_open, |el| el.child(self.settings_dialog(cx)))
     }
 }

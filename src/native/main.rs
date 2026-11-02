@@ -34,7 +34,24 @@ fn main() {
             KeyBinding::new(&format!("{primary}-c"), view::Copy, Some("GitCrab")),
             KeyBinding::new(&format!("{primary}-a"), view::SelectAll, Some("GitCrab")),
         ]);
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+        #[cfg(not(feature = "native-evidence"))]
+        let viewport = size(px(1280.), px(800.));
+        #[cfg(feature = "native-evidence")]
+        let viewport = size(
+            px(std::env::var("GITCRAB_CAPTURE_WIDTH")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+                .filter(|n| n.is_finite())
+                .unwrap_or(1280.)
+                .clamp(960., 3840.)),
+            px(std::env::var("GITCRAB_CAPTURE_HEIGHT")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+                .filter(|n| n.is_finite())
+                .unwrap_or(800.)
+                .clamp(600., 2160.)),
+        );
+        let bounds = Bounds::centered(None, viewport, cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

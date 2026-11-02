@@ -20,7 +20,7 @@ fn main() {
         total.trim(),
         branch_total
     );
-    println!("  \"conditions\": \"Windows native release-optimized std-only harness; Git subprocess snapshot; one priming run then three measured runs per limit. OS filesystem cache was not flushed; no cold-cache claim. Linear history with offset refs; no merges, large diffs, remote traffic, UI frames, or FPS measured.\",");
+    println!("  \"conditions\": \"Release backend harness; Git subprocess snapshot; one priming run then three measured runs per limit. OS filesystem cache was not flushed; no cold-cache claim. Repository topology is described in the fixture generator. UI frames, large diff parsing and remote traffic are not measured by this harness.\",");
     println!("  \"cases\": [");
     for (case, limit) in [500, 5000, 10000].into_iter().enumerate() {
         let priming = repo.snapshot(limit).expect("warm-up snapshot");

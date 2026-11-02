@@ -67,6 +67,7 @@ for (const repository of [
       );
     }
     const loaded = await page.locator("footer").innerText();
+    const all_loaded_ms = performance.now() - start;
     async function scroll(selector) {
       return page.evaluate(async (selector) => {
         const el = document.querySelector(selector);
@@ -154,6 +155,7 @@ for (const repository of [
       total,
       loaded,
       startup_ms,
+      all_loaded_ms,
       viewport: await page.evaluate(() => ({
         width: innerWidth,
         height: innerHeight,

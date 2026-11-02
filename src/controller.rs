@@ -25,6 +25,8 @@ pub struct Patch {
     pub token: u32,
     pub columns: usize,
     pub split_columns: usize,
+    pub hunk_rows: Vec<usize>,
+    pub split_hunk_rows: Vec<usize>,
 }
 pub struct Controller {
     pub epoch: u32,
@@ -234,6 +236,20 @@ impl Controller {
                         })
                         .max()
                         .unwrap_or(0);
+                    let hunk_rows = lines
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, l)| l.text.starts_with("@@ ").then_some(i))
+                        .collect();
+                    let split_hunk_rows = split
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, (l, _))| {
+                            l.as_ref()
+                                .is_some_and(|l| l.text.starts_with("@@ "))
+                                .then_some(i)
+                        })
+                        .collect();
                     self.patch = Some(Patch {
                         id,
                         path,
@@ -244,6 +260,8 @@ impl Controller {
                         token,
                         columns,
                         split_columns,
+                        hunk_rows,
+                        split_hunk_rows,
                     });
                 }
                 Ok(Reply::Done {

@@ -50,3 +50,7 @@ tauri-build = { version = "2", optional = true }
 [profile.release]
 lto = "thin"
 
+[patch.crates-io]
+# gpui -> zed-async-tar -> xattr 0.2.3 uses a removed libc Linux alias.
+xattr = { path = "vendor/xattr" }
+
