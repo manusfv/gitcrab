@@ -1,6 +1,6 @@
 //! Presentation model for Git unified patches. Line coordinates belong to blobs,
 //! never to the patch's header lines.
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug)]
 pub struct Line {
     pub old: Option<usize>,
     pub new: Option<usize>,

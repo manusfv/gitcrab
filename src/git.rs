@@ -8,7 +8,7 @@ use std::{
 
 pub type GitResult<T> = Result<T, String>;
 
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, Default)]
 pub struct Commit {
     pub id: String,
     pub parents: Vec<String>,
@@ -18,7 +18,7 @@ pub struct Commit {
     pub refs: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, Default)]
 pub struct FileChange {
     /// Destination path for renames; relative to the repository root.
     pub path: String,
@@ -28,7 +28,7 @@ pub struct FileChange {
     pub worktree: char,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, Default)]
 pub struct RepoSnapshot {
     pub commits: Vec<Commit>,
     pub branches: Vec<String>,
@@ -38,14 +38,14 @@ pub struct RepoSnapshot {
     pub status: Vec<FileChange>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug)]
 pub struct Hunk {
     pub title: String,
     /// Self-contained patch with original file headers and one hunk.
     pub patch: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug)]
 pub struct Git {
     pub path: PathBuf,
 }

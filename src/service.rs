@@ -1,0 +1,356 @@
+//! Framework-independent application boundary. One bounded worker owns Git;
+//! no subprocess runs on the UI/event-loop or async executor threads.
+use crate::{
+    diff,
+    git::{Git, Hunk, RepoSnapshot},
+    graph,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::mpsc::{sync_channel, SyncSender};
+use tokio::sync::oneshot;
+use ts_rs::TS;
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", content = "args")]
+pub enum Action {
+    Open {
+        path: String,
+        limit: usize,
+    },
+    Refresh {
+        limit: usize,
+    },
+    Details {
+        id: String,
+    },
+    Diff {
+        id: Option<String>,
+        path: String,
+        staged: bool,
+    },
+    Stage {
+        path: String,
+        unstage: bool,
+    },
+    Hunk {
+        token: u32,
+        index: usize,
+        unstage: bool,
+    },
+    Commit {
+        message: String,
+    },
+    Operation {
+        op: Operation,
+        target: String,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub enum Operation {
+    CreateBranch,
+    Checkout,
+    Merge,
+    CherryPick,
+    Revert,
+    Stash,
+    PopStash,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct Request {
+    pub epoch: u32,
+    pub sequence: u32,
+    pub action: Action,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", content = "data")]
+pub enum Reply {
+    Snapshot {
+        path: String,
+        snapshot: RepoSnapshot,
+        graph: graph::Graph,
+    },
+    Details {
+        id: String,
+        files: Vec<String>,
+    },
+    Diff {
+        id: Option<String>,
+        path: String,
+        staged: bool,
+        lines: Vec<diff::Line>,
+        split: Vec<(Option<diff::Line>, Option<diff::Line>)>,
+        hunks: Vec<String>,
+        token: u32,
+    },
+    Done {
+        message: String,
+        committed_draft: Option<String>,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct Failure {
+    pub message: String,
+    pub refresh: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct Response {
+    pub epoch: u32,
+    pub sequence: u32,
+    pub result: Result<Reply, Failure>,
+}
+struct Pending {
+    request: Request,
+    tx: oneshot::Sender<Response>,
+}
+pub struct Service {
+    tx: SyncSender<Pending>,
+}
+impl Default for Service {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Service {
+    pub fn new() -> Self {
+        let (tx, rx) = sync_channel::<Pending>(8);
+        std::thread::Builder::new()
+            .name("gitcrab-git".into())
+            .spawn(move || {
+                let mut session = Session::default();
+                for Pending { request, tx } in rx {
+                    let _ = tx.send(session.execute(request));
+                }
+            })
+            .expect("start Git worker");
+        Self { tx }
+    }
+    pub fn submit(&self, request: Request) -> Result<oneshot::Receiver<Response>, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.try_send(Pending { request, tx }).map_err(|_| {
+            "Git worker is busy. Wait for the current operation and retry.".to_string()
+        })?;
+        Ok(rx)
+    }
+}
+#[derive(Default)]
+struct Session {
+    repo: Option<Git>,
+    epoch: u32,
+    patch: Option<(u32, bool, Vec<Hunk>)>,
+}
+impl Session {
+    fn execute(&mut self, request: Request) -> Response {
+        let Request {
+            epoch,
+            sequence,
+            action,
+        } = request;
+        let mutation = matches!(
+            action,
+            Action::Stage { .. }
+                | Action::Hunk { .. }
+                | Action::Commit { .. }
+                | Action::Operation { .. }
+        );
+        let result = self
+            .run(epoch, sequence, action)
+            .map_err(|message| Failure {
+                message,
+                refresh: mutation && epoch == self.epoch,
+            });
+        if mutation {
+            self.patch = None;
+        }
+        Response {
+            epoch,
+            sequence,
+            result,
+        }
+    }
+    fn snapshot(&self, limit: usize) -> Result<Reply, String> {
+        let g = self.repo.as_ref().ok_or("Open a local repository first")?;
+        let snapshot = g.snapshot(limit.clamp(1, 100_000))?;
+        let graph = graph::layout_with_head(
+            &snapshot.commits,
+            (!snapshot.head_id.is_empty()).then_some(snapshot.head_id.as_str()),
+        );
+        Ok(Reply::Snapshot {
+            path: g.path.to_string_lossy().into_owned(),
+            snapshot,
+            graph,
+        })
+    }
+    fn run(&mut self, epoch: u32, sequence: u32, action: Action) -> Result<Reply, String> {
+        if let Action::Open { path, limit } = action {
+            if epoch <= self.epoch {
+                return Err("Obsolete repository request".into());
+            }
+            self.epoch = epoch;
+            self.repo = None;
+            self.patch = None;
+            self.repo = Some(Git::open(path)?);
+            return self.snapshot(limit);
+        }
+        if epoch != self.epoch {
+            return Err(
+                "Repository changed. Retry the operation in the current repository.".into(),
+            );
+        }
+        if let Action::Refresh { limit } = action {
+            return self.snapshot(limit);
+        }
+        let g = self.repo.as_ref().ok_or("Open a local repository first")?;
+        let reply = match action {
+            Action::Details { id } => Reply::Details {
+                files: g.changed_files(&id)?,
+                id,
+            },
+            Action::Diff { id, path, staged } => {
+                let patch = g.diff(id.as_deref(), &path, staged)?;
+                let hunks = if id.is_none() {
+                    crate::git::split_hunks(&patch)
+                } else {
+                    vec![]
+                };
+                let titles = hunks.iter().map(|h| h.title.clone()).collect();
+                self.patch = Some((sequence, staged, hunks));
+                let mut lines = diff::parse(&patch);
+                if let Some(first) = lines.iter().position(|l| l.text.starts_with("@@ ")) {
+                    lines.drain(..first);
+                }
+                let split = diff::split(&lines);
+                return Ok(Reply::Diff {
+                    id,
+                    path,
+                    staged,
+                    lines,
+                    split,
+                    hunks: titles,
+                    token: sequence,
+                });
+            }
+            Action::Stage { path, unstage } => {
+                if unstage {
+                    g.unstage(&path)?
+                } else {
+                    g.stage(&path)?
+                };
+                Reply::Done {
+                    message: "Index updated".into(),
+                    committed_draft: None,
+                }
+            }
+            Action::Hunk {
+                token,
+                index,
+                unstage,
+            } => {
+                let (current, staged, hunks) = self
+                    .patch
+                    .as_ref()
+                    .ok_or("Reopen the diff before staging this hunk")?;
+                if *current != token || *staged != unstage {
+                    return Err("Diff changed. Reopen the file and retry.".into());
+                }
+                g.apply_hunk(hunks.get(index).ok_or("Hunk no longer exists")?, unstage)?;
+                Reply::Done {
+                    message: "Index hunk updated".into(),
+                    committed_draft: None,
+                }
+            }
+            Action::Commit { message } => {
+                g.commit(&message)?;
+                Reply::Done {
+                    message: "Commit created".into(),
+                    committed_draft: Some(message),
+                }
+            }
+            Action::Operation { op, target } => {
+                match op {
+                    Operation::CreateBranch => g.create_branch(&target)?,
+                    Operation::Checkout => g.checkout(&target)?,
+                    Operation::Merge => g.merge(&target)?,
+                    Operation::CherryPick => g.cherry_pick(&target)?,
+                    Operation::Revert => g.revert(&target)?,
+                    Operation::Stash => g.stash_with_message(&target)?,
+                    Operation::PopStash => g.stash_pop()?,
+                }
+                Reply::Done {
+                    message: "Operation completed".into(),
+                    committed_draft: None,
+                }
+            }
+            Action::Open { .. } | Action::Refresh { .. } => unreachable!(),
+        };
+        // Even failed mutations can change the index or worktree. A stale patch
+        // must never be reusable after a successful mutation.
+        self.patch = None;
+        Ok(reply)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rejects_cross_repository_mutation_and_obsolete_patch() {
+        let mut session = Session {
+            epoch: 5,
+            ..Default::default()
+        };
+        let response = session.execute(Request {
+            epoch: 4,
+            sequence: 1,
+            action: Action::Commit {
+                message: "must never run".into(),
+            },
+        });
+        assert!(!response.result.unwrap_err().refresh);
+        assert!(session
+            .run(
+                4,
+                2,
+                Action::Open {
+                    path: "invalid".into(),
+                    limit: 500
+                }
+            )
+            .unwrap_err()
+            .contains("Obsolete"));
+        assert_eq!(session.epoch, 5);
+    }
+    #[test]
+    fn export_contract() {
+        let config = ts_rs::Config::default();
+        let types = [
+            crate::git::Commit::decl(&config),
+            crate::git::FileChange::decl(&config),
+            RepoSnapshot::decl(&config),
+            crate::graph::Edge::decl(&config),
+            crate::graph::GraphRow::decl(&config),
+            crate::graph::Graph::decl(&config),
+            diff::Line::decl(&config),
+            Operation::decl(&config),
+            Action::decl(&config),
+            Request::decl(&config),
+            Reply::decl(&config),
+            Failure::decl(&config),
+            Response::decl(&config),
+        ];
+        let content = format!(
+            "// Generated by cargo test export_contract. Do not edit.\n{}\n",
+            types
+                .iter()
+                .map(|t| format!("export {t}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend/contract.ts");
+        if std::env::var_os("GITCRAB_UPDATE_TYPES").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        } else {
+            assert_eq!(std::fs::read_to_string(path).unwrap().replace("\r\n", "\n"), content, "Run GITCRAB_UPDATE_TYPES=1 cargo test export_contract and commit the generated contract");
+        }
+    }
+}

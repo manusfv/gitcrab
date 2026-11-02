@@ -2,19 +2,19 @@
 //! Input order is Git's child-before-parent date order. Coordinates and rendering are UI concerns.
 use crate::git::Commit;
 
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, Default)]
 pub struct Graph {
     pub rows: Vec<GraphRow>,
     pub lanes: usize,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, Default)]
 pub struct GraphRow {
     pub lane: usize,
     pub color: usize,
     /// Segments from this row's center to the next row's center.
     pub edges: Vec<Edge>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
 pub struct Edge {
     pub from_lane: usize,
     pub to_lane: usize,
