@@ -27,6 +27,7 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new(&format!("{primary}-o"), view::Open, None),
             KeyBinding::new(&format!("{primary}-q"), view::Quit, None),
+            KeyBinding::new(&format!("{primary}-enter"), view::CommitStaged, None),
             KeyBinding::new("f5", view::Refresh, None),
             KeyBinding::new("escape", view::Back, Some("GitCrab")),
             KeyBinding::new("up", view::Previous, Some("GitCrab")),
