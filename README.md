@@ -1,59 +1,42 @@
 # GitCrab
 
-An independent Rust desktop Git client inspired by the reference app Desktop's compact dark interface and commit graph. Original implementation, branding, graph algorithm, and UI assets.
+A native Rust Git desktop client inspired by the reference app's Git workflows. GPUI renders the main interface without a WebView. Git operations, history topology, patch parsing and the bounded worker remain framework independent.
 
 
 ## Run
 
-The Windows executable built in this workspace is `target\debug\gitcrab.exe`:
+Install stable Rust, Git and the native prerequisites:
 
-```powershell
-.\target\debug\gitcrab.exe 'C:\path\to\repository'
+```sh
+cargo run --locked --release --bin gitcrab-gpui -- /path/to/repository
+cargo test --locked --no-default-features --lib
 ```
 
-Start without an argument to enter a local repository folder. Git must be installed. Windows, Linux, and macOS share the same native Rust implementation. See platform setup and native packages and the [build/test matrix](https://github.com/manusfv/gitcrab/actions/workflows/ci.yml) for the latest platform validation.
+On Windows, quote paths containing spaces. The executable is `target/release/gitcrab-gpui.exe`; Linux/macOS omit `.exe`. Start without a repository to use the native folder picker. This workspace's provisioned GNU installation can be used through `scripts/cargo-gpui-local.ps1`; Windows release builds also require the SDK shader compiler via `GPUI_FXC_PATH`.
 
-With a standard Rust installation and platform linker:
+## Workflows
 
-```powershell
-cargo run --release -- 'C:\path\to\repository'
-cargo test
+- Navigate branches/tags, search history, select commits with pointer/arrow keys, inspect metadata and open first-parent/root diffs. Load history in bounded 500-commit increments.
+- Select WIP for separate unstaged/index lists and commit editing. Stage/unstage files, all files or complete hunks without discarding worktree contents.
+- Review unified or positional split diffs with original blob line numbers, lexical colors, hunk navigation, whitespace emphasis, horizontal scrolling and explicit line-range selection/copy across virtual rows.
+- Review create-branch, checkout, merge, cherry-pick, revert, stash and pop operations with repository/HEAD/target context. Git errors and conflicts remain visible; state refreshes on success and failure.
+- Use Cmd+O on macOS or Ctrl+O elsewhere, F5 to refresh, and context menus for commit operations. Resize panels and use Appearance for density, text size and keyboard width controls. Explicitly save preferences to the platform configuration directory.
+
+No destructive discard/reset UI or remote writes are exposed. Conflict resolution/continue/abort, line staging, rebase/reset UI, hosting integrations and full the reference app parity remain future work. See the capability matrix.
+
+## Validation and development packages
+
+```sh
+cargo fmt --all -- --check
+cargo test --locked --no-default-features --lib
+cargo build --locked --release --bin gitcrab-gpui
+# Separate evidence executable, never the packaged production binary:
+cargo build --locked --features native-evidence --bin gitcrab-gpui
+pwsh -File scripts/smoke-gpui.ps1
 ```
 
-On Linux/macOS, use `cargo run --locked --release -- /path/to/repository`. Linux requires native display/build libraries; macOS requires Xcode Command Line Tools. CI produces Linux x64, Windows x64, macOS Apple Silicon, and macOS Intel packages with checksums. Detailed prerequisites and artifact limitations are in platforms.md.
-
-This workspace also contains an isolated Rust GNU toolchain and binutils under the ignored `.toolchain` folder. It does not change system PATH. Use the wrapper with that installation:
-
-```powershell
-.\scripts\cargo-local.ps1 build --offline
-.\scripts\cargo-local.ps1 run -- fixtures\showcase
-.\scripts\cargo-local.ps1 test --offline
-```
-
-The local wrapper expects the provisioned `.toolchain` directory and is not a general installer. Rust 1.99.1 and Git 2.53.0.windows.3 were used in this session.
-
-## Use
-
-- Click a commit to inspect its author, parents, references, and changed files. Click a file for its first-parent diff. Merge commits show changes against their first parent.
-- Click Working directory to review separate unstaged and staged lists. The `+`/`−` buttons and Stage/Unstage all update the index. Opening a file shows Stage/Unstage file and inline hunk actions.
-- Use Unstaged/Staged tabs and Split view to compare the worktree, index, and committed changes. Close the diff with `×` or the left rail button to return to history.
-- Enter a summary and optional description, separated by a blank line, then commit the staged changes.
-- Double-click a local branch or use the toolbar/context menu for branch creation, checkout, merge, cherry-pick, and revert. Each operation shows its exact target before execution. Commit checkout intentionally detaches HEAD.
-- Arrow keys select history rows. Ctrl+O opens a repository (Cmd+O on macOS); F5 refreshes. Search dims unmatched commits while preserving graph topology. The footer loads another 500 commits when the current page is full.
-- Resize the branch and details panels using their dividers. Stash/pop are available; the stash list and advanced rebase/reset UI remain unfinished.
-
-Git errors remain visible. Conflicted files are marked and committing is disabled until they are resolved. Edit conflicts and continue/abort the operation using Git externally; GitCrab does not yet provide a conflict editor or operation sequencer. Commit hooks and signing use normal local Git configuration.
-
-## Evidence and validation
-
-```powershell
-# Refuses an existing destination; use -OutputRoot for another location.
-.\scripts\create-fixtures.ps1
-.\scripts\capture-evidence.ps1
-```
-
-The supplied `fixtures` directory is disposable and ignored by Git. Capture runs use real repository state, the actual native renderer, and close each capture process automatically. `GITCRAB_SCREENSHOT`, `GITCRAB_CAPTURE_VIEW` (`history`, `staging`, `diff`, `split`, `commitdiff`), and `GITCRAB_CAPTURE_EXIT` are optional evidence controls.
+The [native workflow](https://github.com/manusfv/gitcrab/actions/workflows/gpui.yml) targets Windows x64, Linux x64, macOS ARM64 and macOS Intel, with real renderer smoke runs and development packages. Check the exact run before claiming a platform passed. Packages are unsigned on Windows/Linux and ad-hoc signed on macOS, without notarization.
 
 Read [architecture](docs/architecture.md).
 
-Known limits include line-level staging, complete syntax grammars, conflict resolution UI, command cancellation/timeouts, persisted preferences/recent repositories, and signed/notarized installers. Large-repository scalability has not been established.
+GPUI is the sole desktop host. The runnable Tauri baseline is preserved in Git at `6000266`; the measured baseline and its harness are identified in the evidence ledger. Tauri/React/WebView source, configuration and dependencies have been removed after native workflow parity. Its four frontend tests/build passed before cutover. Historical WebView and egui evidence is labeled separately.

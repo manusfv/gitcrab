@@ -1,52 +1,27 @@
 # Architecture
 
-GitCrab is a native Rust desktop application. Its Git boundary, graph layout, patch model and presentation are separate modules; proprietary the reference app code, fonts and assets are not dependencies.
-
-## Technology choices
-
-| Choice | Rationale and tradeoff |
-| --- | --- |
-| `eframe = 0.31.1` / egui, Glow renderer | Exact painter coordinates, clipping, cubic edges and immediate pointer interaction suit the graph. Stock widgets supply text editing, menus, scroll areas and resizable panels. The pinned version's native entry point, renderer and font customization were checked in [official API documentation](https://docs.rs/eframe/0.31.1/eframe/). This version is deliberately pinned rather than presented as current. Custom painting requires explicit focus/accessibility work. |
-| Iced and Slint considered | [Iced's application API](https://docs.iced.rs/iced/application/index.html) separates update and view; [Slint](https://docs.slint.dev/latest/docs/slint/) supplies a separate UI language, layouts and Rust integration. They remain plausible alternatives for a larger structured UI. For this implementation, keeping graph geometry and interactions directly in Rust reduced integration work. No comparative runtime benchmark was conducted. |
-| Installed Git CLI behind `Git` | Direct subprocess arguments preserve familiar Git porcelain semantics across branch, commit and index operations. This incurs subprocess latency and requires Git on PATH. The observed warm snapshot of the 43-commit fixture was roughly 255ms; this is a small-repository measurement, not a scalability claim. |
-| `git2` considered | The [Repository API](https://docs.rs/git2/latest/git2/struct.Repository.html) exposes apply, merge, rebase, stash, index and diff operations. It offers in-process access but adds libgit2/native dependency management and another behavior boundary to validate. |
-| `gix` considered | [Official gix documentation](https://docs.rs/gix/latest/gix/) describes object/pack caching and conversion to `ThreadSafeRepository`. It is a useful future in-process history/object backend. Choosing the CLI initially keeps mutation behavior aligned with the installed Git; no claim of gix workflow incompleteness is made. |
-
-`Cargo.toml` disables eframe defaults and enables `default_fonts`, `glow`, `x11` and `wayland`. AccessKit is currently disabled, so platform accessibility and screen-reader support remain incomplete. OS-specific fonts are read locally with egui's bundled fonts as fallback. PNG output uses the `image` crate. The native-platform workflow builds/tests Windows, Linux, macOS Apple Silicon and macOS Intel, and packages native artifacts. Linux/macOS also run renderer smoke tests; check the latest CI result for verified scope.
-
-## Modules and data flow
+The default host is GPUI, with an independent Rust application boundary. Dependency provenance and platform risks are recorded in the dependency decision.
 
 | Module | Responsibility |
 | --- | --- |
-| `src/main.rs` | Native window, startup repository argument and minimum size. |
-| `src/platform.rs` | OS font candidates, Cmd/Ctrl shortcut labels and Git executable lookup, including macOS GUI launch fallbacks. |
-| `src/git.rs` | Repository discovery, snapshots, refs/HEAD/status, first-parent file/diff queries, index patches and local mutations. Every command uses `std::process::Command`, never shell command composition. |
-| `src/graph.rs` | Original lane allocation from ordered parent identities. Produces lane/color and center-to-next-row edge segments without UI coordinates. |
-| `src/diff.rs` | Unified patch parsing with old/new blob line coordinates; replacement-block pairing for basic split view. |
-| `src/ui.rs` | UI state, serial background worker, response reconciliation, panels, custom graph/diff painting, local operation review and screenshot capture. |
+| `src/git.rs` | Direct Git subprocess arguments, literal paths, repository boundaries, refs/status/diffs, index-only hunks and local mutations. |
+| `src/graph.rs` | Original topology-based lane layout, HEAD reservation, disconnected roots, octopus joins and unchanged-prefix stability. |
+| `src/diff.rs`, `src/highlight.rs` | Original blob coordinates, positional split alignment, UTF-8 safe bounded lexical spans, unchanged patch text. |
+| `src/service.rs` | Typed operations and replies; one dedicated worker; bounded queue of eight; repository epochs, mutation serialization and backend-issued cached hunk tokens. |
+| `src/controller.rs` | Framework-independent native state; one active and one replaceable pending read per snapshot/details/diff lane; latest-sequence/epoch reconciliation, draft preservation, mutation refresh and obsolete action clearing. |
+| `src/native/main.rs` | Native application/window, platform actions, menu definitions, shortcuts, component initialization and assets. |
+| `src/native/view.rs` | GPUI entity, worker adapter, virtual history/diff/status/file rows, visible custom graph painting, native input/menus/dialogs, staging and commit interactions. |
+| `src/native/theme.rs`, `preferences.rs`, `assets.rs` | Semantic styling, bounded appearance preferences and original embedded GitCrab assets. |
+| `src/platform.rs` | Git executable lookup including macOS GUI-launch fallbacks and `GITCRAB_GIT`. |
 
-The UI sends typed jobs over an MPSC channel. One worker serializes Git operations and owns the current backend. It also computes graph layout and parses/aligns diff lines. Replies wake the UI. Repository-open epochs reject responses from an earlier repository; details and diff replies additionally match the selected commit, file and index/worktree source. Repeated refresh requests are coalesced while one is pending. Mutations refresh state on both success and failure because a failed merge can still leave a conflict state. Commit text is cleared only when the submitted draft still matches the current editor text.
+Git, layout, patch parsing, split alignment and lexical highlighting execute on the dedicated worker, not on the UI thread. The adapter awaits Tokio's runtime-independent oneshot Future on GPUI's executor: it creates no Tokio runtime and uses no Tokio timer/I/O/reactor. Completion updates use a weak entity plus the window context, so closed windows safely reject late updates. Dropped receivers do not stop the worker. No blocking Git call or receive runs on GPUI's event thread.
 
-Ignoring stale replies is not process cancellation. Commands have no timeout or cancellation mechanism; slow Git commands or user hooks can delay later jobs in the serial queue. Cancellation, bounded/latest-only read queues and explicit operation lifecycle controls are follow-up work.
+Reads are coalesced before the bounded service queue. Selection/repository changes invalidate old details/diff actions immediately. Mutations are serialized, cross-repository stale requests are rejected by the service, and hunk actions carry backend tokens rather than patch text. Refresh follows successful and failed mutations because Git can leave conflicts after an error. The controller only clears a committed draft if no newer edit replaced it. Operation dialogs also recheck the repository epoch at confirmation.
 
-## Graph and viewport
+History references, edges, nodes and subjects share a uniform-list scroll coordinate. The retained graph model changes on data refresh, not hover/scroll. Each visible row paints outgoing and incoming edge halves under clipping; work remains proportional to visible rows/edges. Large lane sets can scroll horizontally. Diff rows are virtualized with shared horizontal scrolling; source line coordinates and the original full patch remain authoritative. Selection is an explicit line range independent of mounted rows, with copy/select-all and drag/Shift-click. Per-line lexical spans are prepared once by the worker; display/shaping is bounded to an 8,192-byte UTF-8 boundary, while copying preserves the original line. Large patches and split storage are still retained in memory in full.
 
-Git supplies `--all --date-order` history, including detached HEAD. Parent identities remain the topology source. Layout reserves cyan lane0 for HEAD even when a newer disconnected history appears first or HEAD lies outside the loaded page. First-parent continuation retains color where possible; additional parents get independent lanes, and vacated lanes can be reused. This is an original algorithm constrained by observed appearance; the reference app's algorithm remains unknown.
+Appearance settings use platform configuration directories and explicit saving on GPUI's background executor. Values are clamped and invalid settings fall back to defaults. `GITCRAB_SETTINGS` selects an isolated file for validation.
 
-Rendering converts this model to 28px rows, 22px lanes, 2px edge strokes and clipped cubic joins. A 140px reference column precedes a graph column at least 150px wide. Branch overflow is compact; full identifiers remain available in tooltips/details. The working-tree row opens staging. A fixed history prefix retains its lane geometry when additional ancestors arrive; repository changes can alter Git ordering and therefore layout.
+`native-evidence` is an explicit, separate build feature. It enables deterministic view selection, a one-shot readiness file and bounded synthetic animation measurements. It exposes no network/control endpoint and is excluded from development packages. Production code has no application polling or forced continuous repaint loop. Component/platform internals still consume measurable idle CPU.
 
-History and diff views use `ScrollArea::show_rows`, drawing the visible rows and necessary incoming edge halves. The application initially requests 500 commits; an explicit button increases the limit by 500 and reloads that bounded prefix. It does not stream arbitrary history or retain a persistent graph index. Search dims nonmatching messages while preserving graph topology. Layout/storage costs still grow with loaded commits and active lanes; no unmeasured large-repository guarantee is implied.
-
-## Diffs, staging and mutations
-
-Commit changes are compared with the first parent; root commits have a separate query path. Working-tree and index diffs are explicitly distinguished. New-file previews use `git diff --no-index`, accepting its difference exit code, after ensuring the canonical preview path stays inside the repository. Binary/mode-only changes retain Git's summaries and remain stageable as files. Text must be valid UTF-8.
-
-File staging uses literal Git pathspecs and `--`; rename staging/unstaging handles both relevant index paths. Individual hunks retain file headers and are applied only to the index with `git apply --cached`, adding `--reverse` to unstage. Git's [apply documentation](https://git-scm.com/docs/git-apply) establishes these index/reverse semantics. A stale patch is allowed to fail visibly; the application does not discard work to force it through.
-
-Unified and basic split presentation share parsed blob line numbers, added/deleted backgrounds and a lightweight keyword/string/comment highlighter. Split pairing is positional within replacement blocks, not semantic alignment. “Dim whitespace” changes display emphasis; it does not run Git's whitespace-ignore algorithms or change the patch being staged. Hunk controls operate on the original complete patch. Line-level staging is absent.
-
-Local operation dialogs display repository, current HEAD and target before execution. Revision inputs reject empty/option-like/NUL values, and branch names are checked with Git. Normal Git protections remain in force: checkout does not force over user changes, merge/revert/cherry-pick errors are surfaced, and conflicts refresh into status. User-configured Git hooks may run as they normally do for these operations. No remote write action is exposed. Conflict continuation/abort and an integrated resolution editor are not yet available; users must complete those states with Git or another tool.
-
-## Maintenance limits
-
-There is no persistent settings layer, filesystem watcher, native directory picker, undo system or application installer yet. Refresh is explicit. Non-UTF-8 filenames/output, very large patches, submodule-specialized UX, signing prompts and hook interaction need further work. The current source structure keeps these concerns behind a small boundary but is not a finished production architecture.
+GPUI is the sole host; the runnable Tauri baseline remains in Git history. Tauri/React/WebView configuration, dependencies and smoke scripts have been removed. The original `gitcrab_core` boundary has no GPUI types; `cargo test --no-default-features --lib` verifies that property. ts-rs and its frontend-generation test were replaced by a Rust serialization round-trip regression. serde remains for typed data/preferences/evidence, and Tokio sync remains necessary for the runtime-independent worker adapter.
