@@ -289,7 +289,6 @@ impl GitCrab {
         self.operation = Some(op.clone());
         self.target.update(cx, |s, cx| {
             s.set_value(target, window, cx);
-            s.focus(window, cx);
         });
         let target = self.target.clone();
         let view = cx.weak_entity();
@@ -318,6 +317,7 @@ impl GitCrab {
                 }).unwrap_or(true))
                 .on_cancel(move|_,_,cx|{let _=cancel.update(cx,|v,cx|{v.operation=None;cx.notify();});true})
         });
+        self.target.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
     }
     fn back(&mut self, _: &Back, window: &mut Window, cx: &mut Context<Self>) {
