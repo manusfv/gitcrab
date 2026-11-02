@@ -96,6 +96,8 @@ pub struct Failure {
 pub struct Response {
     pub epoch: u32,
     pub sequence: u32,
+    /// Worker execution only; excludes queueing, serialization and IPC.
+    pub elapsed_ms: f64,
     pub result: Result<Reply, Failure>,
 }
 struct Pending {
@@ -140,6 +142,7 @@ struct Session {
 }
 impl Session {
     fn execute(&mut self, request: Request) -> Response {
+        let start = std::time::Instant::now();
         let Request {
             epoch,
             sequence,
@@ -164,6 +167,7 @@ impl Session {
         Response {
             epoch,
             sequence,
+            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
             result,
         }
     }

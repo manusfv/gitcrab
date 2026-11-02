@@ -27,4 +27,8 @@ export type Action = { "kind": "Open", "args": { path: string, limit: number, } 
 export type Request = { epoch: number, sequence: number, action: Action, };
 export type Reply = { "kind": "Snapshot", "data": { path: string, snapshot: RepoSnapshot, graph: Graph, } } | { "kind": "Details", "data": { id: string, files: Array<string>, } } | { "kind": "Diff", "data": { id: string | null, path: string, staged: boolean, lines: Array<Line>, split: Array<[Line | null, Line | null]>, hunks: Array<string>, token: number, } } | { "kind": "Done", "data": { message: string, committed_draft: string | null, } };
 export type Failure = { message: string, refresh: boolean, };
-export type Response = { epoch: number, sequence: number, result: { Ok : Reply } | { Err : Failure }, };
+export type Response = { epoch: number, sequence: number, 
+/**
+ * Worker execution only; excludes queueing, serialization and IPC.
+ */
+elapsed_ms: number, result: { Ok : Reply } | { Err : Failure }, };

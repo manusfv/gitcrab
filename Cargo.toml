@@ -13,9 +13,14 @@ name = "gitcrab"
 path = "src/desktop.rs"
 required-features = ["desktop"]
 
+[[example]]
+name = "benchmark"
+path = "scripts/benchmark.rs"
+
 [features]
 default = []
 desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd"]
+custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

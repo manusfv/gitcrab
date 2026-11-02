@@ -1,0 +1,6 @@
+frontend/contract.ts
+dist
+target
+.toolchain
+node_modules
+evidence
