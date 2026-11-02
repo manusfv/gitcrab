@@ -31,6 +31,7 @@ foreach($view in @('history','details','staging','diff','split','commitdiff','di
     $data=Get-Content $ready -Raw | ConvertFrom-Json
     if($data.loaded -ne 43){throw 'Unexpected fixture history'}
     if($view -in @('diff','split','commitdiff') -and !$data.diff_rows){throw 'Diff did not load'}
+    if($view -eq 'dialog' -and !$data.dialog_layer){throw 'Native dialog layer was not mounted'}
     # OS screenshots are separate evidence from the native ready marker.
     if($IsLinux){& scrot (Join-Path $OutputRoot "$view.png");if($LASTEXITCODE -ne 0){throw 'scrot failed'}}
     if($IsMacOS){& screencapture -x (Join-Path $OutputRoot "$view.png");if($LASTEXITCODE -ne 0){throw 'screencapture failed'}}

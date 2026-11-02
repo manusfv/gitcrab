@@ -1174,7 +1174,7 @@ impl GitCrab {
         } else {
             vec![Some(&p.lines[i])]
         };
-        for line in cells {
+        for (side, line) in cells.into_iter().enumerate() {
             let mut cell = div()
                 .flex_1()
                 .min_w_0()
@@ -1197,14 +1197,21 @@ impl GitCrab {
                     }))
                     .child(
                         div()
-                            .w(px(if self.split { 45. } else { 80. }))
+                            .w(px(if self.split { 45. } else { 90. }))
                             .flex_none()
+                            .whitespace_nowrap()
                             .text_color(rgb(MUTED))
-                            .child(format!(
-                                "{:>4} {:>4}",
-                                l.old.map(|n| n.to_string()).unwrap_or_default(),
-                                l.new.map(|n| n.to_string()).unwrap_or_default()
-                            )),
+                            .child(if self.split {
+                                (if side == 0 { l.old } else { l.new })
+                                    .map(|n| format!("{n:>4}"))
+                                    .unwrap_or_default()
+                            } else {
+                                format!(
+                                    "{:>4} {:>4}",
+                                    l.old.map(|n| n.to_string()).unwrap_or_default(),
+                                    l.new.map(|n| n.to_string()).unwrap_or_default()
+                                )
+                            }),
                     )
                     .child({
                         let mut end = l.text.len().min(8192);
@@ -1231,11 +1238,16 @@ impl GitCrab {
                             )
                         });
                         div()
+                            .whitespace_nowrap()
                             .when(self.dim_whitespace, |el| el.opacity(0.8))
                             .flex_none()
                             .child(StyledText::new(text).with_highlights(highlights))
                     });
-                if l.kind == '@' && l.text.starts_with("@@ ") && p.id.is_none() {
+                if l.kind == '@'
+                    && l.text.starts_with("@@ ")
+                    && p.id.is_none()
+                    && (!self.split || side == 0)
+                {
                     let index = p.hunks.iter().position(|h| h == &l.text);
                     let token = p.token;
                     let unstage = p.staged;
@@ -1413,10 +1425,11 @@ impl GitCrab {
 }
 impl Render for GitCrab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialogs = gpui_component::Root::render_dialog_layer(window, cx);
         #[cfg(feature = "native-evidence")]
         if self.evidence_phase == 3 {
             self.evidence_phase = 4;
-            let data = serde_json::json!({"loaded":self.state.graph.rows.len(),"view":std::env::var("GITCRAB_CAPTURE_VIEW").unwrap_or_else(|_|"history".into()),"width":f32::from(window.viewport_size().width),"height":f32::from(window.viewport_size().height),"scale":window.scale_factor(),"worker_ms":self.state.worker_ms,"diff_rows":self.state.patch.as_ref().map(|p|p.lines.len()),"renderer":"GPUI 0.2.2 native","present_time_measured":false});
+            let data = serde_json::json!({"loaded":self.state.graph.rows.len(),"view":std::env::var("GITCRAB_CAPTURE_VIEW").unwrap_or_else(|_|"history".into()),"width":f32::from(window.viewport_size().width),"height":f32::from(window.viewport_size().height),"scale":window.scale_factor(),"worker_ms":self.state.worker_ms,"diff_rows":self.state.patch.as_ref().map(|p|p.lines.len()),"dialog_layer":dialogs.is_some(),"renderer":"GPUI 0.2.2 native","present_time_measured":false});
             let path = std::env::var("GITCRAB_NATIVE_READY").unwrap();
             window.on_next_frame(move |_, _| {
                 let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
@@ -1654,5 +1667,6 @@ impl Render for GitCrab {
                     .child(format!("GPUI · Git worker {:.1} ms", self.state.worker_ms)),
             )
             .when(self.settings_open, |el| el.child(self.settings_dialog(cx)))
+            .children(dialogs)
     }
 }
