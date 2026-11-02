@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Name)
+param([Parameter(Mandatory=$true)][ValidatePattern('^[a-z0-9-]+$')][string]$Name)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $out=Join-Path $root 'dist/gpui-packages'
@@ -23,6 +23,8 @@ if($IsMacOS){
 }elseif($IsWindows){Copy-Item "$root/target/release/gitcrab-gpui.exe" "$stage/gitcrab.exe"}
 else{Copy-Item "$root/target/release/gitcrab-gpui" "$stage/gitcrab"; & chmod +x "$stage/gitcrab"}
 Copy-Item "$root/LICENSE" $stage
+Copy-Item "$root/THIRD_PARTY.md" $stage
+& "$PSScriptRoot/dependency-notices.ps1" -Destination (Join-Path $stage 'DEPENDENCY-LICENSES.txt')
 if($IsWindows){$archive="$stage.zip";if(Test-Path $archive){throw 'Archive already exists'};Compress-Archive "$stage/*" $archive}
 else{$archive="$stage.tar.gz";if(Test-Path $archive){throw 'Archive already exists'};& tar -czf $archive -C $out "gitcrab-$Name";if($LASTEXITCODE -ne 0){throw 'tar failed'}}
 $hash=(Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
