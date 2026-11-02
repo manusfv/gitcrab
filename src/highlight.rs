@@ -1,5 +1,5 @@
 //! Small UTF-8 safe lexical cache. Original patch text/coordinates are untouched.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

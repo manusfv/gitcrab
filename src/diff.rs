@@ -1,13 +1,12 @@
 //! Presentation model for Git unified patches. Line coordinates belong to blobs,
 //! never to the patch's header lines.
-#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Line {
     pub old: Option<usize>,
     pub new: Option<usize>,
     pub text: String,
     pub kind: char,
     #[serde(skip)]
-    #[ts(skip)]
     pub highlights: Vec<crate::highlight::Span>,
 }
 pub fn parse(patch: &str) -> Vec<Line> {
