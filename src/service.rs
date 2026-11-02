@@ -457,4 +457,52 @@ mod tests {
             assert_eq!(std::fs::read_to_string(path).unwrap().replace("\r\n", "\n"), content, "Run GITCRAB_UPDATE_TYPES=1 cargo test export_contract and commit the generated contract");
         }
     }
+    #[test]
+    fn bounded_queue_reports_busy_without_blocking() {
+        let (tx, _rx) = sync_channel::<Pending>(8);
+        let service = Service { tx };
+        let mut receivers = vec![];
+        for sequence in 0..8 {
+            receivers.push(
+                service
+                    .submit(Request {
+                        epoch: 1,
+                        sequence,
+                        action: Action::Refresh { limit: 500 },
+                    })
+                    .unwrap(),
+            );
+        }
+        assert!(service
+            .submit(Request {
+                epoch: 1,
+                sequence: 9,
+                action: Action::Refresh { limit: 500 }
+            })
+            .unwrap_err()
+            .contains("busy"));
+    }
+    #[test]
+    fn dropped_window_receiver_does_not_stop_worker() {
+        let service = Service::new();
+        let first = service
+            .submit(Request {
+                epoch: 1,
+                sequence: 1,
+                action: Action::Refresh { limit: 1 },
+            })
+            .unwrap();
+        drop(first);
+        let second = service
+            .submit(Request {
+                epoch: 1,
+                sequence: 2,
+                action: Action::Refresh { limit: 1 },
+            })
+            .unwrap()
+            .blocking_recv()
+            .unwrap();
+        assert_eq!(second.sequence, 2);
+        assert!(second.result.is_err());
+    }
 }

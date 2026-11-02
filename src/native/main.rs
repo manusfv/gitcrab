@@ -1,9 +1,11 @@
+mod assets;
+mod preferences;
 mod theme;
 mod view;
 use gpui::{prelude::*, *};
 use gpui_component::{Root, Theme, ThemeMode};
 fn main() {
-    Application::new().run(|cx| {
+    Application::new().with_assets(assets::Assets).run(|cx| {
         gpui_component::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         theme::install(cx);

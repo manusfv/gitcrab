@@ -1,3 +1,4 @@
+use super::preferences::Preferences;
 use super::theme::*;
 use gitcrab_core::{
     controller::{Controller, Lane},
@@ -32,6 +33,9 @@ pub struct GitCrab {
     selection: Option<Range<usize>>,
     anchor: usize,
     _subscriptions: Vec<Subscription>,
+    preferences: Preferences,
+    settings_open: bool,
+    saving: bool,
     #[cfg(feature = "native-evidence")]
     evidence_phase: u8,
 }
@@ -52,6 +56,8 @@ impl GitCrab {
             }),
             cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()),
         ];
+        let preferences = Preferences::load();
+        gpui_component::Theme::global_mut(cx).font_size = px(preferences.font_size);
         let mut v = Self {
             state: Controller::default(),
             service: Service::new(),
@@ -60,12 +66,15 @@ impl GitCrab {
             search,
             target,
             operation: None,
-            split: false,
-            compact: false,
+            split: preferences.split,
+            compact: preferences.compact,
             history_scroll: UniformListScrollHandle::new(),
             selection: None,
             anchor: 0,
             _subscriptions: subscriptions,
+            preferences,
+            settings_open: false,
+            saving: false,
             #[cfg(feature = "native-evidence")]
             evidence_phase: 0,
         };
@@ -270,6 +279,12 @@ impl GitCrab {
         cx.notify();
     }
     fn back(&mut self, _: &Back, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open {
+            self.settings_open = false;
+            self.focus.focus(window);
+            cx.notify();
+            return;
+        }
         self.operation = None;
         self.state.close_diff();
         self.focus.focus(window);
@@ -415,6 +430,14 @@ impl GitCrab {
         }
         nav.child(div().flex_1())
             .child(heading("WORKSPACE"))
+            .child(
+                self.button("settings", "Appearance…")
+                    .on_click(cx.listener(|v, _, w, cx| {
+                        v.settings_open = true;
+                        v.focus.focus(w);
+                        cx.notify();
+                    })),
+            )
             .child(
                 self.button(
                     "density",
@@ -1072,6 +1095,128 @@ impl GitCrab {
                     .child(self.button("cancel","Cancel").on_click(cx.listener(|v,_,w,cx|v.back(&Back,w,cx))))
                     .child(Button::new("execute").label(label).primary().disabled(self.state.busy).on_click(cx.listener(move|v,_,w,cx|{let target=v.target.read(cx).value().to_string();v.operation=None;v.mutate(Action::Operation{op:op.clone(),target},w,cx);}))))).into_any_element()
     }
+    fn settings_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut content = div()
+            .w(px(430.))
+            .rounded(px(10.))
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(div().text_lg().child("Appearance"))
+            .child("Atom One Dark · native system fonts")
+            .child(
+                self.button(
+                    "settings-density",
+                    if self.compact {
+                        "Density: Compact"
+                    } else {
+                        "Density: Comfortable"
+                    },
+                )
+                .on_click(cx.listener(|v, _, _, cx| {
+                    v.compact = !v.compact;
+                    cx.notify();
+                })),
+            );
+        for (index, label, value) in [
+            (0, "Text size", self.preferences.font_size),
+            (1, "Navigation width", self.preferences.nav_width),
+            (2, "Inspector width", self.preferences.inspector_width),
+        ] {
+            let mut row = div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(format!("{label}: {value:.0}"));
+            for direction in [-1., 1.] {
+                row = row.child(
+                    self.button(
+                        ("appearance", index * 2 + usize::from(direction > 0.)),
+                        if direction > 0. { "+" } else { "−" },
+                    )
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        match index {
+                            0 => {
+                                v.preferences.font_size =
+                                    (v.preferences.font_size + direction).clamp(11., 18.);
+                                gpui_component::Theme::global_mut(cx).font_size =
+                                    px(v.preferences.font_size);
+                            }
+                            1 => {
+                                v.preferences.nav_width =
+                                    (v.preferences.nav_width + direction * 10.).clamp(150., 330.)
+                            }
+                            _ => {
+                                v.preferences.inspector_width = (v.preferences.inspector_width
+                                    + direction * 10.)
+                                    .clamp(260., 560.)
+                            }
+                        };
+                        cx.notify();
+                    })),
+                );
+            }
+            content = content.child(row);
+        }
+        content = content
+            .child(
+                "Panel widths can also be dragged. These controls provide keyboard alternatives.",
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        self.button("settings-close", "Close")
+                            .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
+                    )
+                    .child(
+                        Button::new("save-appearance")
+                            .label("Save appearance")
+                            .primary()
+                            .disabled(self.saving)
+                            .on_click(cx.listener(|v, _, w, cx| {
+                                v.preferences.compact = v.compact;
+                                v.preferences.split = v.split;
+                                let p = v.preferences.clone();
+                                v.saving = true;
+                                let task = cx.background_executor().spawn(async move { p.save() });
+                                cx.spawn_in(w, async move |view, cx| {
+                                    let result = task.await;
+                                    let _ = view.update_in(cx, |v, _, cx| {
+                                        v.saving = false;
+                                        match result {
+                                            Ok(()) => {
+                                                v.state.notice = "Appearance saved".into();
+                                                v.settings_open = false;
+                                            }
+                                            Err(e) => {
+                                                v.state.error = true;
+                                                v.state.notice = e;
+                                            }
+                                        }
+                                        cx.notify();
+                                    });
+                                })
+                                .detach();
+                            })),
+                    ),
+            );
+        div()
+            .absolute()
+            .inset_0()
+            .bg(rgba(0x00000099))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(content)
+            .into_any_element()
+    }
 }
 impl Render for GitCrab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1168,7 +1313,7 @@ impl Render for GitCrab {
             .flex_col()
             .bg(rgb(CANVAS))
             .text_color(rgb(TEXT))
-            .text_size(px(13.))
+            .text_size(px(self.preferences.font_size))
             .track_focus(&self.focus)
             .key_context("GitCrab")
             .on_action(cx.listener(Self::pick))
@@ -1221,14 +1366,33 @@ impl Render for GitCrab {
             })
             .child(
                 div().flex_1().min_h_0().p_2().child(
-                    h_resizable(if in_diff {
-                        "diff-workspace"
-                    } else {
-                        "workspace"
-                    })
+                    h_resizable(SharedString::from(format!(
+                        "workspace-{in_diff}-{}-{}",
+                        self.preferences.nav_width, self.preferences.inspector_width
+                    )))
+                    .on_resize(cx.listener(
+                        move |v,
+                              state: &Entity<gpui_component::resizable::ResizableState>,
+                              _,
+                              cx| {
+                            let sizes = state.read(cx).sizes();
+                            if sizes.len() == 3 {
+                                if !in_diff {
+                                    v.preferences.nav_width = f32::from(sizes[0]).clamp(150., 330.);
+                                }
+                                v.preferences.inspector_width =
+                                    f32::from(sizes[2]).clamp(260., 560.);
+                            }
+                            cx.notify();
+                        },
+                    ))
                     .child(
                         resizable_panel()
-                            .size(px(if in_diff { 44. } else { 210. }))
+                            .size(px(if in_diff {
+                                44.
+                            } else {
+                                self.preferences.nav_width
+                            }))
                             .size_range(if in_diff {
                                 px(44.)..px(45.)
                             } else {
@@ -1239,7 +1403,7 @@ impl Render for GitCrab {
                     .child(resizable_panel().child(center))
                     .child(
                         resizable_panel()
-                            .size(px(330.))
+                            .size(px(self.preferences.inspector_width))
                             .size_range(px(260.)..px(560.))
                             .child(inspector),
                     ),
@@ -1263,5 +1427,6 @@ impl Render for GitCrab {
                     .child(format!("GPUI · Git worker {:.1} ms", self.state.worker_ms)),
             )
             .children(operation)
+            .when(self.settings_open, |el| el.child(self.settings_dialog(cx)))
     }
 }

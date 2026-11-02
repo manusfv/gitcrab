@@ -20,7 +20,7 @@ path = "scripts/benchmark.rs"
 
 [features]
 default = ["gpui-desktop"]
-gpui-desktop = ["dep:gpui", "dep:gpui-component", "dep:anyhow"]
+gpui-desktop = ["dep:gpui", "dep:gpui-component", "dep:anyhow", "dep:serde_json"]
 native-evidence = ["gpui-desktop", "dep:serde_json"]
 desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd"]
 custom-protocol = ["tauri/custom-protocol"]
