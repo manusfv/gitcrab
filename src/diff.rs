@@ -60,7 +60,18 @@ pub fn parse(patch: &str) -> Vec<Line> {
                 new: n,
                 text: text.into(),
                 kind,
-                highlights: crate::highlight::spans(text),
+                highlights: if kind != '@' && !text.is_empty() {
+                    crate::highlight::spans(&text[1..])
+                        .into_iter()
+                        .map(|mut s| {
+                            s.start += 1;
+                            s.end += 1;
+                            s
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                },
             }
         })
         .collect()

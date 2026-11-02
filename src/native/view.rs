@@ -522,6 +522,7 @@ impl GitCrab {
                     .unwrap_or_default()
                 })
                 .track_scroll(self.history_scroll.clone())
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
                 .flex_1()
                 .min_h_0(),
             )
@@ -538,16 +539,61 @@ impl GitCrab {
     fn history_row(&self, index: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let height = if self.compact { 24. } else { 30. };
         if index == 0 {
+            let graph_width = (self.state.graph.lanes as f32 * 18. + 24.).max(110.);
+            let has_head = self
+                .state
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| !s.head_id.is_empty());
             return div()
                 .id("wip-row")
                 .h(px(height))
                 .flex()
                 .items_center()
-                .px_3()
-                .gap_3()
+                .px_2()
+                .gap_2()
+                .min_w(px(graph_width + 360.))
                 .text_color(rgb(ACCENT))
                 .hover(|s| s.bg(rgb(SELECTED)))
-                .child("◌")
+                .child(
+                    div()
+                        .w(px(110.))
+                        .flex_none()
+                        .text_size(px(11.))
+                        .child("WIP"),
+                )
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, w, _| {
+                            let x = bounds.origin.x + px(12.);
+                            let y = bounds.origin.y + px(height / 2.);
+                            if has_head {
+                                w.paint_quad(fill(
+                                    Bounds::new(
+                                        point(x - px(0.8), y + px(5.)),
+                                        size(px(1.6), px(height / 2. - 5.)),
+                                    ),
+                                    rgb(PALETTE[0]),
+                                ));
+                            }
+                            w.paint_quad(
+                                outline(
+                                    Bounds::new(
+                                        point(x - px(5.), y - px(5.)),
+                                        size(px(10.), px(10.)),
+                                    ),
+                                    rgb(PALETTE[0]),
+                                    BorderStyle::Dashed,
+                                )
+                                .corner_radii(px(5.)),
+                            );
+                        },
+                    )
+                    .w(px(graph_width))
+                    .h(px(height))
+                    .flex_none(),
+                )
                 .child("Working directory / index")
                 .on_click(cx.listener(|v, _, w, cx| v.select(None, w, cx)))
                 .into_any_element();
@@ -566,10 +612,18 @@ impl GitCrab {
             || c.id.contains(&search)
             || c.author.to_lowercase().contains(&search);
         let row = self.state.graph.rows[i].clone();
-        let incoming = i
+        let mut incoming = i
             .checked_sub(1)
             .map(|p| self.state.graph.rows[p].edges.clone())
             .unwrap_or_default();
+        if i == 0 && !snap.head_id.is_empty() {
+            incoming.push(gitcrab_core::graph::Edge {
+                from_lane: 0,
+                to_lane: 0,
+                color: 0,
+                parent: snap.head_id.clone(),
+            });
+        }
         let graph_width = (self.state.graph.lanes as f32 * 18. + 24.).max(110.);
         let refs = c.refs.join(" · ");
         let full_refs = refs.clone();
@@ -579,7 +633,7 @@ impl GitCrab {
             .h(px(height))
             .flex()
             .items_center()
-            .min_w_0()
+            .min_w(px(graph_width + 360.))
             .px_2()
             .gap_2()
             .cursor_pointer()
@@ -1038,7 +1092,7 @@ impl GitCrab {
             let mut bar = div().h(px(30.)).flex().items_center().px_2().gap_2();
             for (index, delta, label) in [(0, -1isize, "↑"), (1, 1isize, "↓")] {
                 bar = bar.child(
-                    self.button(("hunk-nav", index), label)
+                    self.button(("hunk-nav", index as usize), label)
                         .disabled(if delta < 0 {
                             active == 0
                         } else {
