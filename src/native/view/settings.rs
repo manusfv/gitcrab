@@ -166,6 +166,7 @@ impl GitCrab {
         div()
             .absolute()
             .inset_0()
+            .occlude()
             .bg(rgba(0x00000099))
             .flex()
             .items_center()

@@ -389,9 +389,13 @@ impl GitCrab {
         }));
     }
     fn search_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open || window.has_active_dialog(cx) {
+            return;
+        }
         if self.search_matches.is_empty() {
             return;
         }
+        let keep_focus = self.search.read(cx).focus_handle(cx).is_focused(window);
         let current = self
             .state
             .selected
@@ -401,6 +405,9 @@ impl GitCrab {
             .map(|i| (i as isize + delta).rem_euclid(self.search_matches.len() as isize) as usize)
             .unwrap_or(0);
         self.select(Some(self.search_matches[index].clone()), window, cx);
+        if keep_focus {
+            self.search.update(cx, |s, cx| s.focus(window, cx));
+        }
     }
     fn review_placeholder(&self, cx: &mut Context<Self>) -> AnyElement {
         let loading = self.state.diff_loading();
@@ -659,7 +666,11 @@ impl GitCrab {
         cx.notify();
     }
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        if window.has_focused_input(cx) || self.operation.is_some() || self.state.patch.is_some() {
+        if self.settings_open
+            || window.has_focused_input(cx)
+            || self.operation.is_some()
+            || self.state.diff_context.is_some()
+        {
             return;
         }
         if let Some(s) = &self.state.snapshot {
@@ -677,6 +688,9 @@ impl GitCrab {
         }
     }
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open {
+            return;
+        }
         if let Some(patch) = &self.state.patch {
             let range = self.selection.clone().unwrap_or(0..0);
             let text = range
@@ -701,6 +715,9 @@ impl GitCrab {
         }
     }
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open {
+            return;
+        }
         if let Some(p) = &self.state.patch {
             self.selection = Some(
                 0..if self.split {
