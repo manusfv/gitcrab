@@ -12,14 +12,10 @@ impl GitCrab {
         let weak = cx.weak_entity();
         let mut el = panel()
             .child(
-                div()
-                    .h(px(42.))
-                    .flex()
-                    .items_center()
-                    .px_2()
-                    .gap_2()
+                section_bar()
                     .child(
-                        self.button("back", "‹ History")
+                        self.button("back", "History")
+                            .icon(icon("back"))
                             .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
                     )
                     .child(
@@ -27,32 +23,17 @@ impl GitCrab {
                             .flex_1()
                             .truncate()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(p.path.clone()),
-                    )
-                    .child(
-                        self.button(
-                            "dim-whitespace",
-                            if self.dim_whitespace {
-                                "Normal whitespace"
-                            } else {
-                                "Dim whitespace"
-                            },
-                        )
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.dim_whitespace = !v.dim_whitespace;
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .p(px(2.))
-                            .rounded(px(6.))
-                            .bg(rgb(CHROME))
                             .child(
-                                self.button("unified-mode", "Unified")
-                                    .when(!self.split, |b| b.bg(rgb(RAISED)).text_color(rgb(TEXT)))
+                                p.original_path
+                                    .as_ref()
+                                    .map(|old| format!("{old} → {}", p.path))
+                                    .unwrap_or_else(|| p.path.clone()),
+                            ),
+                    )
+                    .child(
+                        segmented_group()
+                            .child(
+                                self.segment_button("unified-mode", "Unified", !self.split)
                                     .on_click(cx.listener(|v, _, w, cx| {
                                         v.split = false;
                                         v.selection = None;
@@ -61,8 +42,7 @@ impl GitCrab {
                                     })),
                             )
                             .child(
-                                self.button("split-mode", "Split")
-                                    .when(self.split, |b| b.bg(rgb(RAISED)).text_color(rgb(TEXT)))
+                                self.segment_button("split-mode", "Split", self.split)
                                     .on_click(cx.listener(|v, _, w, cx| {
                                         v.split = true;
                                         v.selection = None;
@@ -73,27 +53,19 @@ impl GitCrab {
                     ),
             )
             .child(
-                div()
-                    .h(px(34.))
-                    .flex()
-                    .items_center()
-                    .px_2()
-                    .gap_2()
-                    .bg(rgb(CHROME))
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
+                section_bar()
                     .when(p.id.is_none(), |bar| {
-                        bar.child(div().flex().items_center().gap_1().children(
-                            [false, true].into_iter().map(|side| {
-                                self.button(
+                        bar.child(segmented_group().children([false, true].into_iter().map(
+                            |side| {
+                                self.segment_button(
                                     if side {
                                         "source-staged"
                                     } else {
                                         "source-unstaged"
                                     },
                                     if side { "Staged" } else { "Unstaged" },
+                                    side == staged,
                                 )
-                                .when(side == staged, |b| b.bg(rgb(RAISED)).text_color(rgb(TEXT)))
                                 .on_click(cx.listener(
                                     move |v, _, w, cx| {
                                         if let Some(p) = &v.state.patch {
@@ -101,8 +73,8 @@ impl GitCrab {
                                         }
                                     },
                                 ))
-                            }),
-                        ))
+                            },
+                        )))
                     })
                     .when(p.id.is_some(), |bar| {
                         bar.child(badge(
@@ -128,7 +100,7 @@ impl GitCrab {
                     .child(div().flex_1())
                     .when(p.id.is_none(), |el| {
                         el.child(
-                            self.button(
+                            self.action_button(
                                 "stage-file",
                                 if staged { "Unstage file" } else { "Stage file" },
                             )
@@ -197,7 +169,11 @@ impl GitCrab {
                         .justify_center()
                         .gap_3()
                         .p_4()
-                        .child(div().text_size(type_size(cx, 16.)).child("File renamed"))
+                        .child(
+                            div()
+                                .text_size(type_size(cx, 16.))
+                                .child("File renamed · contents unchanged"),
+                        )
                         .children(
                             metadata
                                 .into_iter()
@@ -216,30 +192,38 @@ impl GitCrab {
                 .gap_2()
                 .border_b_1()
                 .border_color(rgb(BORDER));
-            for (index, delta, label) in [(0, -1isize, "↑"), (1, 1isize, "↓")] {
+            for (index, delta, label) in [(0, -1isize, "up"), (1, 1isize, "down")] {
                 bar = bar.child(
-                    self.button(("hunk-nav", index as usize), label)
-                        .disabled(if delta < 0 {
-                            active == 0
+                    self.icon_button(
+                        ("hunk-nav", index as usize),
+                        label,
+                        if delta < 0 {
+                            "Previous hunk"
                         } else {
-                            active + 1 == p.hunks.len()
-                        })
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            if let Some(p) = &v.state.patch {
-                                v.active_hunk = (v.active_hunk as isize + delta)
-                                    .clamp(0, p.hunks.len().saturating_sub(1) as isize)
-                                    as usize;
-                                let rows = if v.split {
-                                    &p.split_hunk_rows
-                                } else {
-                                    &p.hunk_rows
-                                };
-                                if let Some(row) = rows.get(v.active_hunk) {
-                                    v.diff_scroll.scroll_to_item(*row, ScrollStrategy::Top);
-                                }
-                                cx.notify();
+                            "Next hunk"
+                        },
+                    )
+                    .disabled(if delta < 0 {
+                        active == 0
+                    } else {
+                        active + 1 == p.hunks.len()
+                    })
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        if let Some(p) = &v.state.patch {
+                            v.active_hunk = (v.active_hunk as isize + delta)
+                                .clamp(0, p.hunks.len().saturating_sub(1) as isize)
+                                as usize;
+                            let rows = if v.split {
+                                &p.split_hunk_rows
+                            } else {
+                                &p.hunk_rows
+                            };
+                            if let Some(row) = rows.get(v.active_hunk) {
+                                v.diff_scroll.scroll_to_item(*row, ScrollStrategy::Top);
                             }
-                        })),
+                            cx.notify();
+                        }
+                    })),
                 );
             }
             el = el.child(
@@ -252,8 +236,45 @@ impl GitCrab {
             );
         }
         el=el.child(uniform_list(SharedString::from(format!("diff-{path}-{}",self.split)),n,move|range,_,cx|weak.update(cx,|v,cx|range.map(|i|v.diff_row(i,cx)).collect::<Vec<_>>()).unwrap_or_default()).with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained).track_scroll(self.diff_scroll.clone()).flex_1().min_h_0())
-            .child(div().h(px(26.)).px_3().text_size(type_size(cx, 12.)).text_color(rgb(MUTED)).child("Click / Shift-click selects lines · Ctrl/Cmd+A selects all · Ctrl/Cmd+C copies"));
+            .child(div().h(px(32.)).flex_none().px_2().flex().items_center().gap_2()
+                .when(self.split, |e| e.child(self.action_button("split-before", "Before").icon(icon("back")).on_click(cx.listener(|v,_,_,cx| {v.pan_diff(false);cx.notify();})))
+                    .child(self.action_button("split-after", "After").icon(icon("right")).on_click(cx.listener(|v,_,_,cx| {v.pan_diff(true);cx.notify();}))))
+                .child(self.action_button("dim-whitespace", "Dim whitespace").outline().selected(self.dim_whitespace).on_click(cx.listener(|v,_,_,cx| {v.dim_whitespace=!v.dim_whitespace;cx.notify();})))
+                .child(self.action_button("selection-help", "Help").on_click(|_,w,cx| { w.open_dialog(cx,|d,_,_| d.title("Diff help").alert().child("Split: Before / After or Alt+Left / Alt+Right reveals either pane. The horizontal wheel scrolls. Click / Shift-click selects lines. Ctrl/Cmd+A selects all; Ctrl/Cmd+C copies original source.")); })));
         el.into_any_element()
+    }
+    pub(super) fn keyboard_pan_diff(
+        &self,
+        after: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.split
+            && self.state.patch.is_some()
+            && !self.settings_open
+            && !window.has_active_dialog(cx)
+        {
+            self.pan_diff(after);
+            cx.notify();
+        }
+    }
+    fn pan_diff(&self, after: bool) {
+        let state = self.diff_scroll.0.borrow();
+        let width = state
+            .last_item_size
+            .map(|item| item.contents.width)
+            .unwrap_or(px(0.));
+        let handle = state.base_handle.clone();
+        drop(state);
+        let mut offset = handle.offset();
+        // Reveal the right pane origin, including its source gutter. A long
+        // right pane may still need scrolling to inspect the end of a line.
+        offset.x = if after {
+            -(width / 2.).min(handle.max_offset().width)
+        } else {
+            px(0.)
+        };
+        handle.set_offset(offset);
     }
     fn diff_row(&self, i: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = self.state.patch.as_ref().unwrap();
@@ -277,11 +298,7 @@ impl GitCrab {
             .max(px(self.preferences.code_size + 5.)))
             .flex()
             .items_center()
-            .font_family(if cfg!(windows) {
-                "Consolas"
-            } else {
-                "DejaVu Sans Mono"
-            })
+            .font_family(CODE_FONT)
             .text_size(px(self.preferences.code_size))
             .overflow_hidden();
         let cells = if self.split {
@@ -343,8 +360,8 @@ impl GitCrab {
                                         rgb(match s.kind {
                                             'c' => MUTED,
                                             's' => GREEN,
-                                            'k' => 0xc678dd,
-                                            'n' => 0xd19a66,
+                                            'k' => SYNTAX_KEYWORD,
+                                            'n' => SYNTAX_NUMBER,
                                             _ => TEXT,
                                         })
                                         .into(),
@@ -369,7 +386,7 @@ impl GitCrab {
                     let unstage = p.staged;
                     if let Some(index) = index {
                         cell = cell.child(
-                            self.button(
+                            self.action_button(
                                 ("hunk", i),
                                 if unstage {
                                     "Unstage hunk"
@@ -377,7 +394,14 @@ impl GitCrab {
                                     "Stage hunk"
                                 },
                             )
-                            .xsmall()
+                            .outline()
+                            .h(px((if self.preferences.compact_diff {
+                                18.0_f32
+                            } else {
+                                20.0_f32
+                            })
+                            .max(self.preferences.code_size + 5.)))
+                            .text_size(px(12.))
                             .disabled(self.state.busy)
                             .on_click(cx.listener(
                                 move |v, _, w, cx| {

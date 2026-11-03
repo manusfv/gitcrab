@@ -37,6 +37,19 @@ impl AssetSource for Assets {
             ))),
             "icons/tag.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/tag.svg"))),
             "icons/copy.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/copy.svg"))),
+            "icons/plus.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/plus.svg"))),
+            "icons/minus.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/native/minus.svg"
+            ))),
+            "icons/up.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/up.svg"))),
+            "icons/down.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/down.svg"))),
+            "icons/back.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/back.svg"))),
+            "icons/right.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/native/right.svg"
+            ))),
+            "icons/remote.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/native/remote.svg"
+            ))),
             _ => None,
         })
     }

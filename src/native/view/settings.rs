@@ -28,7 +28,7 @@ impl GitCrab {
                     )),
             )
             .child(
-                self.button(
+                self.action_button(
                     "settings-density",
                     if self.compact {
                         "Density: Compact"
@@ -36,6 +36,7 @@ impl GitCrab {
                         "Density: Comfortable"
                     },
                 )
+                .selected(self.compact)
                 .tab_stop(true)
                 .on_click(cx.listener(|v, _, _, cx| {
                     v.compact = !v.compact;
@@ -43,7 +44,7 @@ impl GitCrab {
                 })),
             )
             .child(
-                self.button(
+                self.action_button(
                     "diff-density",
                     if self.preferences.compact_diff {
                         "Code spacing: Compact"
@@ -51,6 +52,7 @@ impl GitCrab {
                         "Code spacing: Comfortable"
                     },
                 )
+                .selected(self.preferences.compact_diff)
                 .tab_stop(true)
                 .on_click(cx.listener(|v, _, _, cx| {
                     v.preferences.compact_diff = !v.preferences.compact_diff;
@@ -58,7 +60,7 @@ impl GitCrab {
                 })),
             )
             .child(
-                self.button("reset-appearance", "Reset appearance and layout")
+                self.action_button("reset-appearance", "Reset appearance and layout")
                     .tab_stop(true)
                     .on_click(cx.listener(|v, _, _, cx| {
                         let recent = v.preferences.recent.clone();
@@ -82,14 +84,28 @@ impl GitCrab {
             let mut row = div()
                 .flex()
                 .items_center()
-                .justify_between()
-                .child(format!("{label}: {value:.0}"));
+                .gap_2()
+                .child(div().flex_1().min_w_0().child(label))
+                .child(div().w(px(36.)).flex_none().child(format!("{value:.0}")));
             for direction in [-1., 1.] {
                 row = row.child(
-                    self.button(
+                    self.icon_button(
                         ("appearance", index * 2 + usize::from(direction > 0.)),
-                        if direction > 0. { "+" } else { "−" },
+                        if direction > 0. { "plus" } else { "minus" },
+                        format!(
+                            "{} {label}",
+                            if direction > 0. {
+                                "Increase"
+                            } else {
+                                "Decrease"
+                            }
+                        ),
                     )
+                    .disabled(if direction < 0. {
+                        value <= [11., 150., 260., 11.][index]
+                    } else {
+                        value >= [18., 330., 560., 20.][index]
+                    })
                     .tab_stop(true)
                     .on_click(cx.listener(move |v, _, _, cx| {
                         match index {
@@ -133,40 +149,26 @@ impl GitCrab {
                     .justify_end()
                     .gap_2()
                     .child(
-                        self.button("settings-close", "Close")
+                        self.action_button("settings-close", "Close")
                             .tab_stop(true)
                             .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
                     )
                     .child(
-                        Button::new("save-appearance")
-                            .label("Save appearance")
-                            .primary()
-                            .disabled(self.saving)
-                            .on_click(cx.listener(|v, _, w, cx| {
-                                v.preferences.compact = v.compact;
-                                v.preferences.split = v.split;
+                        self.primary_button("save-appearance", "Save appearance")
+                            .tab_stop(true)
+                            .on_click(cx.listener(|v, _, _, cx| {
                                 v.preference_save = None;
-                                let p = v.preferences.clone();
-                                v.saving = true;
-                                let task = cx.background_executor().spawn(async move { p.save() });
-                                cx.spawn_in(w, async move |view, cx| {
-                                    let result = task.await;
-                                    let _ = view.update_in(cx, |v, _, cx| {
-                                        v.saving = false;
-                                        match result {
-                                            Ok(()) => {
-                                                v.state.notice = "Appearance saved".into();
-                                                v.settings_open = false;
-                                            }
-                                            Err(e) => {
-                                                v.state.error = true;
-                                                v.state.notice = e;
-                                            }
-                                        }
-                                        cx.notify();
-                                    });
-                                })
-                                .detach();
+                                match v.save_preferences(cx) {
+                                    Ok(()) => {
+                                        v.state.notice = "Appearance saved".into();
+                                        v.settings_open = false;
+                                    }
+                                    Err(error) => {
+                                        v.state.error = true;
+                                        v.state.notice = error;
+                                    }
+                                }
+                                cx.notify();
                             })),
                     ),
             );
@@ -174,7 +176,7 @@ impl GitCrab {
             .absolute()
             .inset_0()
             .occlude()
-            .bg(rgba(0x00000099))
+            .bg(rgba(OVERLAY))
             .flex()
             .items_center()
             .justify_center()

@@ -5,6 +5,7 @@ mod theme;
 mod trace;
 mod view;
 mod watch;
+mod workspace;
 use gpui::{prelude::*, *};
 use gpui_component::{Root, Theme, ThemeMode};
 fn main() {
@@ -17,6 +18,8 @@ fn main() {
             name: "GitCrab".into(),
             items: vec![
                 MenuItem::action("Open repository…", view::Open),
+                MenuItem::action("New tab", workspace::NewTab),
+                MenuItem::action("Close tab", workspace::CloseTab),
                 MenuItem::action("Refresh", view::Refresh),
                 MenuItem::separator(),
                 MenuItem::action("Quit", view::Quit),
@@ -29,12 +32,18 @@ fn main() {
         };
         cx.bind_keys([
             KeyBinding::new(&format!("{primary}-o"), view::Open, None),
+            KeyBinding::new(&format!("{primary}-t"), workspace::NewTab, None),
+            KeyBinding::new(&format!("{primary}-w"), workspace::CloseTab, None),
+            KeyBinding::new("ctrl-tab", workspace::NextTab, None),
+            KeyBinding::new("ctrl-shift-tab", workspace::PreviousTab, None),
             KeyBinding::new(&format!("{primary}-q"), view::Quit, None),
             KeyBinding::new(&format!("{primary}-enter"), view::CommitStaged, None),
             KeyBinding::new(&format!("{primary}-f"), view::Find, None),
             KeyBinding::new("f3", view::SearchNext, None),
             KeyBinding::new("shift-f3", view::SearchPrevious, None),
             KeyBinding::new("f5", view::Refresh, None),
+            KeyBinding::new("alt-left", view::SplitBefore, Some("GitCrab")),
+            KeyBinding::new("alt-right", view::SplitAfter, Some("GitCrab")),
             KeyBinding::new("escape", view::Back, Some("GitCrab")),
             KeyBinding::new("up", view::Previous, Some("GitCrab")),
             KeyBinding::new("down", view::Next, Some("GitCrab")),
@@ -70,7 +79,7 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| view::GitCrab::new(window, cx));
+                let view = cx.new(|cx| workspace::Workspace::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )

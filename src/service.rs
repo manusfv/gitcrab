@@ -55,6 +55,61 @@ pub enum Operation {
     Stash,
     PopStash,
 }
+impl Operation {
+    pub fn validate_target(&self, target: &str) -> Result<(), String> {
+        if matches!(self, Self::Stash | Self::PopStash) {
+            return Ok(());
+        }
+        if target.trim().is_empty() {
+            return Err("Enter a target before continuing.".into());
+        }
+        if matches!(self, Self::CreateBranch | Self::CreateBranchAt { .. }) {
+            if target == "@"
+                || target.starts_with('-')
+                || target.starts_with('/')
+                || target.ends_with('/')
+                || target.ends_with('.')
+                || target.contains("..")
+                || target.contains("@{")
+                || target.contains("//")
+                || target
+                    .chars()
+                    .any(|c| c.is_control() || " ~^:?*[\\".contains(c))
+                || target
+                    .split('/')
+                    .any(|part| part.starts_with('.') || part.ends_with(".lock"))
+            {
+                return Err(
+                    "Use a valid Git branch name; spaces and revision syntax are not allowed."
+                        .into(),
+                );
+            }
+        } else if target.starts_with('-') || target.contains('\0') {
+            return Err("Enter a branch or revision, without command options.".into());
+        }
+        Ok(())
+    }
+    pub fn placeholder(&self) -> &'static str {
+        match self {
+            Self::CreateBranch | Self::CreateBranchAt { .. } => "feature/branch-name",
+            Self::Stash => "Optional message",
+            Self::PopStash => "",
+            _ => "Branch name or commit revision",
+        }
+    }
+    pub fn help(&self) -> &'static str {
+        match self {
+            Self::CreateBranch | Self::CreateBranchAt { .. } => {
+                "Creates a local branch without switching your working tree."
+            }
+            Self::Stash => "Stashes tracked changes. Untracked files stay in the working tree.",
+            Self::PopStash => {
+                "Applies the latest stash. Conflicts remain visible in Working changes."
+            }
+            _ => "Git checks the target and local changes. Failures remain here for correction.",
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
     pub epoch: u32,
@@ -71,12 +126,13 @@ pub enum Reply {
     },
     Details {
         id: String,
-        files: Vec<String>,
+        files: Vec<crate::git::FileChange>,
     },
     Diff {
         id: Option<String>,
         path: String,
         staged: bool,
+        original_path: Option<String>,
         lines: Vec<diff::Line>,
         split: Vec<(Option<diff::Line>, Option<diff::Line>)>,
         hunks: Vec<String>,
@@ -223,10 +279,12 @@ impl Session {
                     lines.drain(..first);
                 }
                 let split = diff::split(&lines);
+                let original_path = g.diff_identity(id.as_deref(), &path, staged)?;
                 return Ok(Reply::Diff {
                     id,
                     path,
                     staged,
+                    original_path,
                     lines,
                     split,
                     hunks: titles,
@@ -297,6 +355,51 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn operation_targets_match_git_branch_syntax_and_optional_messages() {
+        for name in [
+            "",
+            " ",
+            "-bad",
+            "a..b",
+            "a.lock",
+            "a/.hidden",
+            "a/b.lock",
+            "a b",
+            "a@{b",
+            "@",
+            "a/",
+            "/a",
+            "a//b",
+            "a.",
+            "a?b",
+            "a[b",
+            "a\\b",
+        ] {
+            assert!(
+                Operation::CreateBranch.validate_target(name).is_err(),
+                "{name}"
+            );
+        }
+        for name in ["feature/日本語", "topic-1", "a.b", "release/v1"] {
+            assert!(
+                Operation::CreateBranch.validate_target(name).is_ok(),
+                "{name}"
+            );
+        }
+        for op in [
+            Operation::Checkout,
+            Operation::Merge,
+            Operation::CherryPick,
+            Operation::Revert,
+        ] {
+            assert!(op.validate_target("").is_err());
+            assert!(op.validate_target("--bad").is_err());
+            assert!(op.validate_target("HEAD~1").is_ok());
+        }
+        assert!(Operation::Stash.validate_target("").is_ok());
+        assert!(Operation::PopStash.validate_target("").is_ok());
+    }
     #[test]
     fn hunk_tokens_expire_after_mutations_and_failures_refresh() {
         let path = std::env::temp_dir().join(format!(

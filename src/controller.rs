@@ -18,6 +18,7 @@ struct Slot {
 pub struct Patch {
     pub id: Option<String>,
     pub path: String,
+    pub original_path: Option<String>,
     pub staged: bool,
     pub lines: Vec<diff::Line>,
     pub split: Vec<(Option<diff::Line>, Option<diff::Line>)>,
@@ -36,7 +37,7 @@ pub struct Controller {
     pub snapshot: Option<RepoSnapshot>,
     pub graph: Graph,
     pub selected: Option<String>,
-    pub files: Vec<String>,
+    pub files: Vec<crate::git::FileChange>,
     pub patch: Option<Patch>,
     /// Selected review context survives asynchronous reads and refreshes.
     pub diff_context: Option<(Option<String>, String, bool)>,
@@ -250,7 +251,7 @@ impl Controller {
                         }
                     }
                     if !self.error {
-                        self.notice = format!("{} commits loaded", self.graph.rows.len());
+                        self.notice = String::new();
                     }
                     if let Some((id, mut path, staged)) = self.reopen.take() {
                         if id == self.selected {
@@ -295,6 +296,7 @@ impl Controller {
                     id,
                     path,
                     staged,
+                    original_path,
                     lines,
                     split,
                     hunks,
@@ -333,6 +335,7 @@ impl Controller {
                         id,
                         path,
                         staged,
+                        original_path,
                         lines,
                         split,
                         hunks,
@@ -525,7 +528,10 @@ mod tests {
                 &a,
                 Ok(Reply::Details {
                     id: "a".into(),
-                    files: vec!["obsolete".into()],
+                    files: vec![crate::git::FileChange {
+                        path: "obsolete".into(),
+                        ..Default::default()
+                    }],
                 }),
             ),
         );

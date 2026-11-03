@@ -1,4 +1,5 @@
 //! User-owned native appearance settings. The Git backend has no settings dependency.
+use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 #[derive(Clone, Serialize, Deserialize)]
@@ -20,7 +21,7 @@ impl Default for Preferences {
             compact: false,
             font_size: 13.,
             nav_width: 210.,
-            inspector_width: 330.,
+            inspector_width: 360.,
             split: false,
             code_size: 13.,
             compact_diff: false,
@@ -29,7 +30,62 @@ impl Default for Preferences {
         }
     }
 }
+struct SharedPreferences(Preferences);
+impl Global for SharedPreferences {}
+
 impl Preferences {
+    pub fn current(cx: &mut App) -> Self {
+        if let Some(shared) = cx.try_global::<SharedPreferences>() {
+            shared.0.clone()
+        } else {
+            let preferences = Self::load();
+            cx.set_global(SharedPreferences(preferences.clone()));
+            preferences
+        }
+    }
+
+    pub fn add_recent(path: &str, cx: &mut App) -> Result<(), String> {
+        let mut shared = Self::current(cx);
+        if shared.recent.first().is_some_and(|recent| recent == path) {
+            return Ok(());
+        }
+        shared.recent.retain(|recent| recent != path);
+        shared.recent.insert(0, path.to_owned());
+        shared.recent.truncate(10);
+        cx.set_global(SharedPreferences(shared.clone()));
+        shared.save()
+    }
+
+    // Merge only the fields this tab edited since its last save.
+    pub fn save_changes(&self, previous: &Self, cx: &mut App) -> Result<(), String> {
+        let mut shared = Self::current(cx);
+        macro_rules! merge {
+            ($($field:ident),+ $(,)?) => {$(
+                if self.$field != previous.$field {
+                    shared.$field = self.$field;
+                }
+            )+};
+        }
+        merge!(
+            compact,
+            font_size,
+            nav_width,
+            inspector_width,
+            split,
+            code_size,
+            compact_diff
+        );
+        for key in previous.collapsed.difference(&self.collapsed) {
+            shared.collapsed.remove(key);
+        }
+        shared
+            .collapsed
+            .extend(self.collapsed.difference(&previous.collapsed).cloned());
+        shared.save()?;
+        cx.set_global(SharedPreferences(shared));
+        Ok(())
+    }
+
     fn path() -> Option<PathBuf> {
         if let Some(p) = std::env::var_os("GITCRAB_SETTINGS") {
             return Some(p.into());
@@ -44,6 +100,32 @@ impl Preferences {
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
         Some(base.join("GitCrab/appearance.json"))
     }
+    fn session_path() -> Option<PathBuf> {
+        Some(Self::path()?.with_extension("session.json"))
+    }
+
+    pub fn last_repository() -> Option<String> {
+        let bytes = std::fs::read(Self::session_path()?).ok()?;
+        serde_json::from_slice::<String>(&bytes)
+            .ok()
+            .filter(|path| !path.is_empty())
+    }
+
+    pub fn remember_repository(repository: &str) -> Result<(), String> {
+        let path = Self::session_path().ok_or("No configuration directory is available")?;
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let bytes = serde_json::to_vec(repository).map_err(|e| e.to_string())?;
+        let result =
+            std::fs::write(&temporary, bytes).and_then(|_| std::fs::rename(&temporary, &path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result.map_err(|e| e.to_string())
+    }
+
     pub fn load() -> Self {
         let mut p = Self::path()
             .and_then(|p| std::fs::read(p).ok())
@@ -62,7 +144,7 @@ impl Preferences {
         p.inspector_width = if p.inspector_width.is_finite() {
             p.inspector_width.clamp(260., 560.)
         } else {
-            330.
+            360.
         };
         p.code_size = if p.code_size.is_finite() {
             p.code_size.clamp(11., 20.)

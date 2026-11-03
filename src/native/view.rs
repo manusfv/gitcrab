@@ -9,12 +9,12 @@ use gitcrab_core::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonVariant, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt, PopupMenuItem},
+    menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
     resizable::{h_resizable, resizable_panel},
     tooltip::Tooltip,
-    Disableable, Sizable, WindowExt,
+    Disableable, Selectable, Sizable, WindowExt,
 };
 use std::ops::Range;
 
@@ -50,6 +50,83 @@ fn display_date(date: &str) -> String {
     }
 }
 
+const GRAPH_LANE_PITCH: f32 = 26.;
+const GRAPH_LANE_INSET: f32 = 14.;
+const AUTHOR_IMAGE_SIZE: f32 = 20.;
+
+fn local_author_images() -> std::collections::HashMap<String, std::path::PathBuf> {
+    let Some(directory) = std::env::var_os("GITCRAB_AVATAR_DIR") else {
+        return Default::default();
+    };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Default::default();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let extension = path.extension()?.to_str()?;
+            if !entry.file_type().ok()?.is_file() || !matches!(extension, "png" | "jpg" | "jpeg") {
+                return None;
+            }
+            Some((path.file_stem()?.to_str()?.to_owned(), path))
+        })
+        .collect()
+}
+
+fn author_avatar_colors(author: &str) -> (u32, u32) {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    const BACKGROUNDS: [u32; 24] = [
+        0x9c3448, 0xdc7a89, 0x96432d, 0xf08e64, 0x835119, 0xe7a447, 0x6b561b, 0xd4bd53, 0x4c612c,
+        0xa4c36c, 0x316347, 0x73c597, 0x226466, 0x5fc3bf, 0x265d80, 0x74b7de, 0x3d528d, 0x8da5ec,
+        0x5d458d, 0xb19ae2, 0x743d79, 0xcf92d3, 0x873b61, 0xe38db7,
+    ];
+    let mut hash = DefaultHasher::new();
+    author.hash(&mut hash);
+    let background = BACKGROUNDS[(hash.finish() % BACKGROUNDS.len() as u64) as usize];
+
+    let linear = |shift: u32| {
+        let channel = f64::from((background >> shift) & 0xff) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0);
+    let black_contrast = (luminance + 0.05) / 0.05;
+    let white_contrast = 1.05 / (luminance + 0.05);
+    let foreground = if black_contrast >= white_contrast {
+        0x000000
+    } else {
+        0xffffff
+    };
+    (background, foreground)
+}
+
+fn graph_width(lanes: usize) -> f32 {
+    (lanes as f32 * GRAPH_LANE_PITCH + 12.).max(92.)
+}
+
+fn graph_stroke(scale: f32) -> Pixels {
+    px((2. * scale).round() / scale)
+}
+
+fn graph_lane_x(origin: Pixels, lane: usize, scale: f32) -> Pixels {
+    let logical = f32::from(origin) + GRAPH_LANE_INSET + lane as f32 * GRAPH_LANE_PITCH;
+    let half_stroke = f32::from(graph_stroke(scale)) / 2.;
+    px(((logical - half_stroke) * scale).round() / scale + half_stroke)
+}
+
+fn paint_vertical_lane(w: &mut Window, x: Pixels, top: Pixels, bottom: Pixels, color: u32) {
+    let stroke = graph_stroke(w.scale_factor());
+    w.paint_quad(fill(
+        Bounds::new(point(x - stroke / 2., top), size(stroke, bottom - top)),
+        rgb(color),
+    ));
+}
+
 actions!(
     gitcrab,
     [
@@ -60,6 +137,8 @@ actions!(
         Previous,
         Copy,
         SelectAll,
+        SplitBefore,
+        SplitAfter,
         Quit,
         CommitStaged,
         Find,
@@ -67,8 +146,14 @@ actions!(
         SearchPrevious
     ]
 );
+#[derive(Default)]
+struct OperationFeedback {
+    error: Option<String>,
+    busy: bool,
+}
 pub struct GitCrab {
     state: Controller,
+    active: bool,
     service: Service,
     focus: FocusHandle,
     draft: Entity<InputState>,
@@ -76,6 +161,7 @@ pub struct GitCrab {
     search: Entity<InputState>,
     target: Entity<InputState>,
     operation: Option<Operation>,
+    operation_feedback: Entity<OperationFeedback>,
     split: bool,
     compact: bool,
     dim_whitespace: bool,
@@ -87,8 +173,9 @@ pub struct GitCrab {
     _subscriptions: Vec<Subscription>,
     preferences: Preferences,
     settings_open: bool,
-    saving: bool,
+    last_repository: Option<String>,
     preference_save: Option<Task<()>>,
+    saved_preferences: Preferences,
     layout_revision: u64,
     panels: [Entity<gpui_component::resizable::ResizableState>; 2],
     panel_subscriptions: Vec<Subscription>,
@@ -98,6 +185,7 @@ pub struct GitCrab {
     watch_warning: Option<String>,
     external_dirty: bool,
     search_matches: Vec<String>,
+    author_images: std::collections::HashMap<String, std::path::PathBuf>,
     #[cfg(feature = "native-evidence")]
     evidence_phase: u8,
     #[cfg(feature = "native-evidence")]
@@ -108,7 +196,12 @@ pub struct GitCrab {
     benchmark: (Option<std::time::Instant>, Vec<f64>),
 }
 impl GitCrab {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        path: Option<String>,
+        active: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let draft = cx.new(|cx| InputState::new(window, cx).placeholder("Commit summary"));
         let description = cx.new(|cx| {
             InputState::new(window, cx)
@@ -118,7 +211,17 @@ impl GitCrab {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search history…"));
         let target = cx
             .new(|cx| InputState::new(window, cx).placeholder("Branch, revision or stash message"));
+        let operation_feedback = cx.new(|_| OperationFeedback::default());
         let subscriptions = vec![
+            cx.subscribe(&target, |v, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    v.operation_feedback.update(cx, |state, cx| {
+                        state.error = None;
+                        cx.notify();
+                    });
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&draft, |v, input, event: &InputEvent, cx| {
                 if !matches!(event, InputEvent::Change) {
                     return;
@@ -148,16 +251,17 @@ impl GitCrab {
                 cx.notify();
             }),
             cx.observe_window_activation(window, |v, w, cx| {
-                if w.is_window_active() && !v.state.busy {
+                if v.active && w.is_window_active() && !v.state.busy {
                     v.external_dirty = false;
                     v.refresh(&Refresh, w, cx);
                 }
             }),
         ];
-        let preferences = Preferences::load();
+        let preferences = Preferences::current(cx);
         gpui_component::Theme::global_mut(cx).font_size = px(preferences.font_size);
         let mut v = Self {
             state: Controller::default(),
+            active,
             service: Service::new(),
             focus: cx.focus_handle(),
             draft,
@@ -165,6 +269,7 @@ impl GitCrab {
             search,
             target,
             operation: None,
+            operation_feedback,
             split: preferences.split,
             compact: preferences.compact,
             dim_whitespace: false,
@@ -174,9 +279,10 @@ impl GitCrab {
             selection: None,
             anchor: 0,
             _subscriptions: subscriptions,
+            saved_preferences: preferences.clone(),
             preferences,
             settings_open: false,
-            saving: false,
+            last_repository: Preferences::last_repository(),
             preference_save: None,
             layout_revision: 0,
             panels: [
@@ -190,6 +296,7 @@ impl GitCrab {
             watch_warning: None,
             external_dirty: false,
             search_matches: vec![],
+            author_images: local_author_images(),
             #[cfg(feature = "native-evidence")]
             evidence_phase: 0,
             #[cfg(feature = "native-evidence")]
@@ -200,9 +307,13 @@ impl GitCrab {
             benchmark: (None, vec![]),
         };
         v.reset_panels(cx);
-        v.focus.focus(window);
-        if let Some(path) = std::env::args().nth(1) {
-            let mut job = v.state.open(path);
+        if active {
+            v.focus.focus(window);
+        }
+        if let Some(path) = path {
+            let job = v.state.open(path);
+            #[cfg(feature = "native-evidence")]
+            let mut job = job;
             #[cfg(feature = "native-evidence")]
             if let Ok(limit) = std::env::var("GITCRAB_CAPTURE_LIMIT")
                 .unwrap_or_default()
@@ -278,7 +389,40 @@ impl GitCrab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if lane == Lane::Mutation && self.operation.is_some() {
+            match &response.result {
+                Ok(_) => {
+                    self.operation = None;
+                    self.set_operation_feedback(None, false, cx);
+                    window.close_dialog(cx);
+                }
+                Err(failure) => {
+                    self.set_operation_feedback(Some(failure.message.clone()), false, cx);
+                    self.target.update(cx, |s, cx| s.focus(window, cx));
+                }
+            }
+        }
+        let opening = lane == Lane::Snapshot && self.state.snapshot.is_none();
         let jobs = self.state.complete(lane, response);
+        if opening && !self.state.loading() {
+            if self.state.snapshot.is_some() {
+                if self.last_repository.as_deref() != Some(self.state.path.as_str()) {
+                    match Preferences::remember_repository(&self.state.path) {
+                        Ok(()) => self.last_repository = Some(self.state.path.clone()),
+                        Err(error) => eprintln!("Could not save the last repository: {error}"),
+                    }
+                }
+            } else if self.state.error {
+                self.state.notice = if std::path::Path::new(&self.state.path).is_dir() {
+                    format!("Could not open {}. {}", self.state.path, self.state.notice)
+                } else {
+                    format!(
+                        "The repository folder is unavailable at {}. Open a repository to continue.",
+                        self.state.path
+                    )
+                };
+            }
+        }
         #[cfg(feature = "native-evidence")]
         if lane == Lane::Snapshot && !self.state.loading() {
             if let Some(start) = self.watch_start.take() {
@@ -299,10 +443,10 @@ impl GitCrab {
         if lane == Lane::Snapshot && self.state.snapshot.is_some() {
             self.update_search(cx);
             self.install_watch(window, cx);
-            if !self.preferences.recent.contains(&self.state.path) {
-                self.preferences.recent.insert(0, self.state.path.clone());
-                self.preferences.recent.truncate(10);
-                self.persist_preferences(window, cx);
+            if opening {
+                if let Err(error) = Preferences::add_recent(&self.state.path, cx) {
+                    eprintln!("Could not save recent repositories: {error}");
+                }
             }
         }
         for job in jobs {
@@ -340,7 +484,7 @@ impl GitCrab {
                 let keep = view.update_in(cx, |v, w, cx| {
                     if v.state.epoch != epoch { return false; }
                     if let Some(error) = error { v.watch_warning = Some(format!("Live refresh interrupted: {error}. Use F5.")); }
-                    if !v.state.busy && w.is_window_active() {
+                    if v.active && !v.state.busy && w.is_window_active() {
                         #[cfg(feature="native-evidence")]
                         {v.watch_start=Some(event_time);}
                         #[cfg(not(feature="native-evidence"))]
@@ -382,22 +526,24 @@ impl GitCrab {
             .timer(std::time::Duration::from_millis(200));
         self.preference_save = Some(cx.spawn_in(window, async move |view, cx| {
             timer.await;
-            let Ok(preferences) = view.update_in(cx, |v, _, _| v.preferences.clone()) else {
-                return;
-            };
-            let result = cx
-                .background_executor()
-                .spawn(async move { preferences.save() })
-                .await;
-            if let Err(error) = result {
-                let _ = view.update_in(cx, |v, _, cx| {
+            let _ = view.update_in(cx, |v, _, cx| {
+                if let Err(error) = v.save_preferences(cx) {
                     v.state.error = true;
                     v.state.notice = format!("Could not save appearance: {error}");
                     cx.notify();
-                });
-            }
+                }
+            });
         }));
     }
+
+    fn save_preferences(&mut self, cx: &mut App) -> Result<(), String> {
+        self.preferences.compact = self.compact;
+        self.preferences.split = self.split;
+        self.preferences.save_changes(&self.saved_preferences, cx)?;
+        self.saved_preferences = self.preferences.clone();
+        Ok(())
+    }
+
     fn reset_panels(&mut self, cx: &mut Context<Self>) {
         self.panels = [
             cx.new(|_| Default::default()),
@@ -421,7 +567,8 @@ impl GitCrab {
             .collect();
     }
     fn inspector_editor_width(&self) -> f32 {
-        (self.actual_inspector_width[usize::from(self.state.diff_context.is_some())] - 32.)
+        (self.actual_inspector_width[usize::from(self.state.diff_context.is_some())]
+            - (2. * INSPECTOR_INSET + SEAM))
             .max(100.)
     }
     fn search_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -469,7 +616,7 @@ impl GitCrab {
                 "Choose another file, review staged changes, or create your commit."
             }))
             .child(
-                self.button("review-history", "Return to history")
+                self.action_button("review-history", "Return to history")
                     .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
             )
             .into_any_element()
@@ -510,7 +657,7 @@ impl GitCrab {
             }
         } else if self.evidence_phase == 1 && lane == Lane::Details {
             if mode == "commitdiff" {
-                if let Some(path) = self.state.files.first().cloned() {
+                if let Some(path) = self.state.files.first().map(|file| file.path.clone()) {
                     self.file(path, false, window, cx);
                     self.evidence_phase = 2;
                 }
@@ -521,34 +668,40 @@ impl GitCrab {
             self.evidence_phase = 3;
         }
     }
-    fn pick(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.busy || self.settings_open || window.has_active_dialog(cx) {
-            return;
+    pub fn repository_path(&self) -> &str {
+        &self.state.path
+    }
+
+    pub fn has_repository(&self) -> bool {
+        self.state.snapshot.is_some() || self.state.loading()
+    }
+
+    pub fn settings_open(&self) -> bool {
+        self.settings_open
+    }
+
+    pub fn mutating(&self) -> bool {
+        self.state.busy
+    }
+
+    pub fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.active = true;
+        self.focus.focus(window);
+        gpui_component::Theme::global_mut(cx).font_size = px(self.preferences.font_size);
+        if self.external_dirty && !self.state.busy {
+            self.external_dirty = false;
+            self.refresh(&Refresh, window, cx);
         }
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Open Git repository".into()),
-        });
-        cx.spawn_in(window, async move |view, cx| {
-            let result = rx.await;
-            let _ = view.update_in(cx, |v, window, cx| match result {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(p) = paths.first() {
-                        let j = v.state.open(p.to_string_lossy().into_owned());
-                        v.dispatch(j, window, cx);
-                    }
-                }
-                Ok(Err(e)) => {
-                    v.state.notice = e.to_string();
-                    v.state.error = true;
-                    cx.notify();
-                }
-                _ => {}
-            });
-        })
-        .detach();
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    pub fn open_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        let job = self.state.open(path);
+        self.dispatch(job, window, cx);
+        cx.notify();
     }
     fn refresh(&mut self, _: &Refresh, window: &mut Window, cx: &mut Context<Self>) {
         let j = self.state.refresh();
@@ -637,16 +790,19 @@ impl GitCrab {
         if self.state.busy || self.state.snapshot.is_none() {
             return;
         }
+        self.set_operation_feedback(None, false, cx);
         self.operation = Some(op.clone());
         self.target.update(cx, |s, cx| {
+            s.set_placeholder(op.placeholder(), window, cx);
             s.set_value(target, window, cx);
         });
         let target = self.target.clone();
+        let feedback = self.operation_feedback.clone();
         let view = cx.weak_entity();
         let cancel = view.clone();
         let epoch = self.state.epoch;
         let repo = self.state.path.clone();
-        let head = self.state.snapshot.as_ref().unwrap().head.clone();
+        let head = self.state.snapshot.as_ref().unwrap().head_label();
         let label = match op {
             Operation::CreateBranch | Operation::CreateBranchAt { .. } => "Create branch",
             Operation::Checkout => "Checkout",
@@ -656,29 +812,171 @@ impl GitCrab {
             Operation::Stash => "Stash",
             Operation::PopStash => "Pop stash",
         };
-        window.open_dialog(cx,move|dialog,_,cx|{
-            let view=view.clone();let cancel=cancel.clone();let target=target.clone();let op=op.clone();
-            dialog.title(label).confirm().button_props(gpui_component::dialog::DialogButtonProps::default().ok_text(label))
-                .child(div().flex().flex_col().gap_3()
-                    .child(div().p_3().rounded(px(6.)).bg(rgb(CANVAS)).border_1().border_color(rgb(BORDER))
-                        .child(div().text_size(type_size(cx, 12.)).text_color(rgb(SUBTLE)).child("REPOSITORY"))
-                        .child(div().mt_1().text_size(type_size(cx, 12.)).child(repo.clone()))
-                        .child(div().mt_2().child(badge(format!("Current branch · {head}"), ACCENT))))
-                    .child(div().font_weight(FontWeight::MEDIUM).child(match op {
-                        Operation::CreateBranch | Operation::CreateBranchAt { .. } => "New branch name", Operation::Stash => "Stash message (optional)",
-                        Operation::PopStash => "Latest stash", _ => "Target branch or commit" }))
-                    .when(!matches!(op, Operation::PopStash), |e| e.child(Input::new(&target)))
-                    .when_some(match &op { Operation::CreateBranchAt {start}=>Some(start.clone()), _=>None }, |e,start| e.child(format!("Starting at {}",start)))
-                    .child(div().text_size(type_size(cx, 12.)).text_color(rgb(MUTED)).child("Review this operation before continuing. Conflicts will appear in Working changes.")))
-                .on_ok(move|_,w,cx|view.update(cx,|v,cx|{
-                    if v.state.epoch!=epoch {v.state.error=true;v.state.notice="Repository changed. Review this operation again.".into();v.operation=None;cx.notify();return true;}
-                    if v.state.busy{return false;}
-                    let target=v.target.read(cx).value().to_string();v.operation=None;v.mutate(Action::Operation{op:op.clone(),target},w,cx);true
-                }).unwrap_or(true))
-                .on_cancel(move|_,_,cx|{let _=cancel.update(cx,|v,cx|{v.operation=None;cx.notify();});true})
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let view = view.clone();
+            let cancel = cancel.clone();
+            let target = target.clone();
+            let op = op.clone();
+            let issue = feedback
+                .read(cx)
+                .error
+                .clone()
+                .or_else(|| op.validate_target(target.read(cx).value().as_ref()).err());
+            let invalid = issue.is_some();
+            let busy = feedback.read(cx).busy;
+            let submit = view.clone();
+            let submit_op = op.clone();
+            dialog
+                .title(label)
+                .confirm()
+                .footer(move |_, cancel, w, cx| {
+                    vec![
+                        cancel(w, cx),
+                        Button::new("operation-submit")
+                            .label(label)
+                            .primary()
+                            .small()
+                            .h(px(CONTROL_HEIGHT))
+                            .rounded(px(CONTROL_RADIUS))
+                            .text_size(rems(12. / 13.))
+                            .disabled(busy || invalid)
+                            .on_click({
+                                let submit = submit.clone();
+                                let op = submit_op.clone();
+                                move |_, w, cx| {
+                                    let _ = submit.update(cx, |v, cx| {
+                                        v.confirm_operation(op.clone(), epoch, w, cx);
+                                    });
+                                }
+                            })
+                            .into_any_element(),
+                    ]
+                })
+                .button_props(gpui_component::dialog::DialogButtonProps::default().ok_text(label))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .p_3()
+                                .rounded(px(6.))
+                                .bg(rgb(CANVAS))
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .child(
+                                    div()
+                                        .text_size(type_size(cx, 12.))
+                                        .text_color(rgb(SUBTLE))
+                                        .child("REPOSITORY"),
+                                )
+                                .child(
+                                    div()
+                                        .mt_1()
+                                        .text_size(type_size(cx, 12.))
+                                        .child(repo.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .mt_2()
+                                        .child(badge(format!("Current branch · {head}"), ACCENT)),
+                                ),
+                        )
+                        .child(div().font_weight(FontWeight::MEDIUM).child(match op {
+                            Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
+                                "New branch name"
+                            }
+                            Operation::Stash => "Stash message (optional)",
+                            Operation::PopStash => "Latest stash",
+                            _ => "Target branch or commit",
+                        }))
+                        .when(!matches!(op, Operation::PopStash), |e| {
+                            e.child(Input::new(&target))
+                        })
+                        .when_some(
+                            match &op {
+                                Operation::CreateBranchAt { start } => Some(start.clone()),
+                                _ => None,
+                            },
+                            |e, start| e.child(format!("Starting at {}", start)),
+                        )
+                        .child(
+                            div()
+                                .text_size(type_size(cx, 12.))
+                                .text_color(rgb(MUTED))
+                                .child(op.help()),
+                        )
+                        .when_some(issue, |e, issue| {
+                            e.child(div().text_color(rgb(RED)).child(issue))
+                        }),
+                )
+                .on_ok(move |_, w, cx| {
+                    view.update(cx, |v, cx| {
+                        if v.state.epoch != epoch {
+                            v.state.error = true;
+                            v.state.notice =
+                                "Repository changed. Review this operation again.".into();
+                            v.operation = None;
+                            cx.notify();
+                            return true;
+                        }
+                        if v.state.busy {
+                            return false;
+                        }
+                        v.confirm_operation(op.clone(), epoch, w, cx);
+                        false
+                    })
+                    .unwrap_or(true)
+                })
+                .on_cancel(move |_, _, cx| {
+                    cancel
+                        .update(cx, |v, cx| {
+                            if v.state.busy {
+                                return false;
+                            }
+                            v.operation = None;
+                            v.set_operation_feedback(None, false, cx);
+                            cx.notify();
+                            true
+                        })
+                        .unwrap_or(true)
+                })
         });
         self.target.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
+    }
+    fn set_operation_feedback(
+        &mut self,
+        error: Option<String>,
+        busy: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.operation_feedback.update(cx, |state, cx| {
+            state.error = error;
+            state.busy = busy;
+            cx.notify();
+        });
+    }
+    fn confirm_operation(
+        &mut self,
+        op: Operation,
+        epoch: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.busy || self.state.epoch != epoch {
+            return;
+        }
+        let target = self.target.read(cx).value().to_string();
+        if let Err(issue) = op.validate_target(&target) {
+            self.set_operation_feedback(Some(issue), false, cx);
+            self.target.update(cx, |s, cx| s.focus(window, cx));
+            cx.notify();
+            return;
+        }
+        self.set_operation_feedback(None, true, cx);
+        self.mutate(Action::Operation { op, target }, window, cx);
     }
     fn back(&mut self, _: &Back, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_open {
@@ -771,8 +1069,45 @@ impl GitCrab {
             .label(label)
             .small()
             .ghost()
-            .rounded(px(6.))
+            .h(px(CONTROL_HEIGHT))
+            .text_size(rems(12. / 13.))
+            .rounded(px(CONTROL_RADIUS))
             .tab_stop(!self.settings_open)
+    }
+    // Actions and icon-only targets are separate from quiet row navigation.
+    fn action_button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+        self.button(id, label)
+            .with_variant(ButtonVariant::Secondary)
+            .outline()
+    }
+    fn primary_button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+        self.button(id, label).primary()
+    }
+
+    fn segment_button(
+        &self,
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        selected: bool,
+    ) -> Button {
+        self.button(id, label)
+            .selected(selected)
+            .when(selected, |button| {
+                button.bg(rgb(SELECTED)).text_color(rgb(TEXT))
+            })
+    }
+
+    fn icon_button(
+        &self,
+        id: impl Into<ElementId>,
+        glyph: &str,
+        name: impl Into<SharedString>,
+    ) -> Button {
+        self.button(id, "")
+            .icon(icon(glyph).size(px(GLYPH_SIZE)))
+            .size(px(CONTROL_HEIGHT))
+            .flex_none()
+            .tooltip(name)
     }
     fn editor(
         &self,
@@ -806,6 +1141,25 @@ impl GitCrab {
         }
     }
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.state.snapshot.is_none() {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(rgb(CHROME))
+                .child(div().flex_1())
+                .child(
+                    self.button("startup-appearance", "Appearance")
+                        .icon(icon("settings"))
+                        .h(px(32.))
+                        .on_click(cx.listener(|v, _, w, cx| {
+                            v.settings_open = true;
+                            v.focus.focus(w);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element();
+        }
         let changes = self
             .state
             .snapshot
@@ -822,16 +1176,6 @@ impl GitCrab {
             .gap_1()
             .overflow_y_scroll()
             .child(heading("REPOSITORY"))
-            .child(
-                self.button("open", "Open repository…")
-                    .icon(icon("folder"))
-                    .w_full()
-                    .justify_start()
-                    .h(px(32.))
-                    .tooltip("Open a Git repository · Ctrl/Cmd+O")
-                    .disabled(self.state.busy)
-                    .on_click(cx.listener(|v, _, w, cx| v.pick(&Open, w, cx))),
-            )
             .child(
                 div()
                     .flex()
@@ -852,32 +1196,44 @@ impl GitCrab {
                         changes.to_string(),
                         if changes > 0 { ACCENT } else { MUTED },
                     )),
-            )
-            .child(
-                div()
-                    .mt_3()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(heading("LOCAL BRANCHES"))
-                    .child(
-                        div()
-                            .pr_2()
-                            .text_size(type_size(cx, 12.))
-                            .text_color(rgb(SUBTLE))
-                            .child(
-                                self.state
-                                    .snapshot
-                                    .as_ref()
-                                    .map(|s| s.branches.len())
-                                    .unwrap_or(0)
-                                    .to_string(),
-                            ),
-                    ),
             );
         if let Some(s) = &self.state.snapshot {
+            let local_key = format!("{}|", self.state.path);
+            let local_collapsed = self.preferences.collapsed.contains(&local_key);
+            nav = nav.child(
+                self.button("local-branches", "LOCAL")
+                    .mt_2()
+                    .w_full()
+                    .h(px(28.))
+                    .px_2()
+                    .justify_start()
+                    .icon(icon(if local_collapsed { "right" } else { "down" }))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(TEXT))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_color(rgb(MUTED))
+                            .child(s.branches.len().to_string()),
+                    )
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .tooltip(if local_collapsed {
+                        "Expand local branches"
+                    } else {
+                        "Collapse local branches"
+                    })
+                    .on_click(cx.listener(move |v, _, w, cx| {
+                        if !v.preferences.collapsed.remove(&local_key) {
+                            v.preferences.collapsed.insert(local_key.clone());
+                        }
+                        v.persist_preferences(w, cx);
+                        cx.notify();
+                    })),
+            );
+            let mut tree = div().flex().flex_col().min_w_0();
             let mut groups = std::collections::BTreeSet::new();
-            for (i, b) in s.branches.iter().enumerate() {
+            for (i, b) in s.branches.iter().enumerate().filter(|_| !local_collapsed) {
                 let parts = b.split('/').collect::<Vec<_>>();
                 let mut hidden = false;
                 for depth in 1..parts.len() {
@@ -885,17 +1241,21 @@ impl GitCrab {
                     let key = format!("{}|{}", self.state.path, prefix);
                     let collapsed = self.preferences.collapsed.contains(&key);
                     if groups.insert(prefix.clone()) {
-                        let label =
-                            format!("{} {}", if collapsed { "▸" } else { "▾" }, parts[depth - 1]);
-                        nav = nav.child(
-                            div().pl(px((depth - 1) as f32 * 12.)).child(
+                        let label = parts[depth - 1].to_string();
+                        tree = tree.child(
+                            div().pl(px(8. + (depth - 1) as f32 * 12.)).child(
                                 self.button(
                                     SharedString::from(format!("branch-group-{prefix}")),
                                     label,
                                 )
+                                .icon(icon(if collapsed { "right" } else { "down" }))
+                                .tooltip(format!(
+                                    "{} {prefix}",
+                                    if collapsed { "Expand" } else { "Collapse" }
+                                ))
                                 .w_full()
                                 .justify_start()
-                                .h(px(28.))
+                                .h(px(24.))
                                 .text_color(rgb(MUTED))
                                 .on_click(cx.listener(
                                     move |v, _, w, cx| {
@@ -923,20 +1283,22 @@ impl GitCrab {
                     .find(|c| c.refs.contains(b))
                     .map(|c| c.id.clone());
                 let branch = b.clone();
-                nav = nav.child(
-                    self.button(("branch", i), parts.last().unwrap().to_string())
-                        .icon(icon("branch"))
+                let current = b == &s.head;
+                let selected = id.is_some() && id == self.state.selected;
+                tree = tree.child(
+                    self.button(("branch", i), "")
+                        .icon(icon(if current { "check" } else { "branch" }).text_color(rgb(
+                            if current { ACCENT } else { MUTED },
+                        )))
+                        .child(div().min_w_0().truncate().child(parts.last().unwrap().to_string()))
                         .w_full()
                         .justify_start()
-                        .h(px(30.))
-                        .ml(px((parts.len()-1) as f32 * 12.))
-                        .text_color(rgb(MUTED))
-                        .when(b == &s.head, |b| {
-                            b.bg(rgb(RAISED))
-                                .text_color(rgb(TEXT))
-                                .font_weight(FontWeight::MEDIUM)
-                        })
-                        .when(id.is_some() && id == self.state.selected, |b| b.bg(rgb(SELECTED)).text_color(rgb(TEXT)))
+                        .h(px(24.))
+                        .pl(px(20. + (parts.len() - 1) as f32 * 12.))
+                        .pr_2()
+                        .text_color(rgb(if current || selected { TEXT } else { MUTED }))
+                        .when(current, |b| b.font_weight(FontWeight::SEMIBOLD))
+                        .when(selected, |b| b.bg(rgb(SELECTED)))
                         .tooltip(format!("{} · Double-click to checkout", b))
                         .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| {
                             if e.click_count() == 2 {
@@ -948,7 +1310,9 @@ impl GitCrab {
                         })),
                 );
             }
-            nav = nav.child(div().mt_3().child(heading("TAGS & REFERENCES")));
+            nav = nav
+                .child(tree)
+                .child(div().mt_3().child(heading("TAGS & REFERENCES")));
             let mut seen = std::collections::HashSet::new();
             for c in &s.commits {
                 for r in &c.refs {
@@ -961,7 +1325,11 @@ impl GitCrab {
                             ("ref", seen.len()),
                             r.trim_start_matches("tag: ").to_string(),
                         )
-                        .icon(icon("tag"))
+                        .icon(icon(if s.remote_refs.contains(r) {
+                            "remote"
+                        } else {
+                            "tag"
+                        }))
                         .w_full()
                         .justify_start()
                         .h(px(30.))
@@ -980,9 +1348,6 @@ impl GitCrab {
             .flex()
             .flex_col()
             .bg(rgb(CHROME))
-            .rounded(px(10.))
-            .border_1()
-            .border_color(rgb(BORDER))
             .overflow_hidden()
             .child(nav)
             .child(
@@ -994,11 +1359,18 @@ impl GitCrab {
                     .flex_col()
                     .gap_1()
                     .child(
-                        self.button("stash-pop", "Restore latest stash…")
+                        self.action_button("stash-pop", "Restore latest stash…")
                             .icon(icon("stash"))
                             .w_full()
                             .justify_start()
-                            .disabled(self.state.busy || self.state.snapshot.is_none())
+                            .disabled(
+                                self.state.busy
+                                    || !self
+                                        .state
+                                        .snapshot
+                                        .as_ref()
+                                        .is_some_and(|s| s.stash_count > 0),
+                            )
                             .on_click(cx.listener(|v, _, w, cx| {
                                 v.review(Operation::PopStash, String::new(), w, cx)
                             })),
@@ -1053,7 +1425,7 @@ impl GitCrab {
                         .icon(icon("folder"))
                         .label("Open a repository")
                         .disabled(self.state.loading() || self.settings_open)
-                        .on_click(cx.listener(|v, _, w, cx| v.pick(&Open, w, cx))),
+                        .on_click(|_, w, cx| w.dispatch_action(Box::new(Open), cx)),
                 )
                 .child(
                     div()
@@ -1087,7 +1459,7 @@ impl GitCrab {
                     )
                     .child(
                         div()
-                            .w(px((self.state.graph.lanes as f32 * 18. + 24.).max(92.)))
+                            .w(px(graph_width(self.state.graph.lanes)))
                             .flex_none()
                             .child("Graph"),
                     )
@@ -1106,29 +1478,40 @@ impl GitCrab {
                 .flex_1()
                 .min_h_0(),
             )
-            .child(
-                self.button(
-                    "more",
-                    if count < self.state.limit {
-                        format!("All {count} commits loaded")
-                    } else {
-                        format!("Load 500 more commits · {count} shown")
-                    },
-                )
-                .h(px(30.))
-                .text_color(rgb(MUTED))
-                .disabled(self.state.loading() || count < self.state.limit)
-                .on_click(cx.listener(|v, _, w, cx| {
-                    v.state.limit = (v.state.limit + 500).min(100_000);
-                    v.refresh(&Refresh, w, cx);
-                })),
+            .when(
+                count < self.state.limit || self.state.limit == 100_000,
+                |e| {
+                    e.child(div().h(px(30.)).px_3().text_color(rgb(MUTED)).child(
+                        if self.state.limit == 100_000 && count == 100_000 {
+                            format!("{count} commits shown · history limit reached")
+                        } else {
+                            format!("All {count} commits loaded")
+                        },
+                    ))
+                },
+            )
+            .when(
+                count >= self.state.limit && self.state.limit < 100_000,
+                |e| {
+                    e.child(
+                        self.action_button(
+                            "more",
+                            format!("Load 500 more commits · {count} shown"),
+                        )
+                        .disabled(self.state.loading())
+                        .on_click(cx.listener(|v, _, w, cx| {
+                            v.state.limit = (v.state.limit + 500).min(100_000);
+                            v.refresh(&Refresh, w, cx);
+                        })),
+                    )
+                },
             )
             .into_any_element()
     }
     fn history_row(&self, index: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let height = if self.compact { 26. } else { 30. };
         if index == 0 {
-            let graph_width = (self.state.graph.lanes as f32 * 18. + 24.).max(92.);
+            let graph_width = graph_width(self.state.graph.lanes);
             let has_head = self
                 .state
                 .snapshot
@@ -1161,16 +1544,10 @@ impl GitCrab {
                     canvas(
                         |_, _, _| (),
                         move |bounds, _, w, _| {
-                            let x = bounds.origin.x + px(12.);
+                            let x = graph_lane_x(bounds.origin.x, 0, w.scale_factor());
                             let y = bounds.origin.y + px(height / 2.);
                             if has_head {
-                                w.paint_quad(fill(
-                                    Bounds::new(
-                                        point(x - px(0.8), y + px(5.)),
-                                        size(px(1.6), px(height / 2. - 5.)),
-                                    ),
-                                    rgb(PALETTE[0]),
-                                ));
+                                paint_vertical_lane(w, x, y + px(5.), bounds.bottom(), PALETTE[0]);
                             }
                             w.paint_quad(
                                 outline(
@@ -1199,7 +1576,13 @@ impl GitCrab {
                     self.state
                         .snapshot
                         .as_ref()
-                        .map(|s| format!("{} files", s.status.len()))
+                        .map(|s| {
+                            format!(
+                                "{} {}",
+                                s.status.len(),
+                                if s.status.len() == 1 { "file" } else { "files" }
+                            )
+                        })
                         .unwrap_or_else(|| "Clean".into()),
                     MUTED,
                 ))
@@ -1232,13 +1615,23 @@ impl GitCrab {
                 parent: snap.head_id.clone(),
             });
         }
-        let graph_width = (self.state.graph.lanes as f32 * 18. + 24.).max(92.);
+        let graph_width = graph_width(self.state.graph.lanes);
         let full_refs = c.refs.join(" · ");
         let ref_count = c.refs.iter().filter(|r| r.as_str() != "HEAD").count();
         let refs = c
             .refs
             .iter()
-            .find(|r| r.as_str() != "HEAD" && !r.starts_with("HEAD ->"))
+            .find(|r| {
+                self.state
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.head_id == c.id && &s.head == *r)
+            })
+            .or_else(|| {
+                c.refs
+                    .iter()
+                    .find(|r| r.as_str() != "HEAD" && !r.starts_with("HEAD ->"))
+            })
             .or(c.refs.first())
             .cloned()
             .unwrap_or_default();
@@ -1247,8 +1640,19 @@ impl GitCrab {
             .trim_start_matches("HEAD -> ")
             .to_string();
         let color = row.color;
+        let author_image = self.author_images.get(&c.author).cloned();
+        let (avatar_background, avatar_foreground) = author_avatar_colors(&c.author);
+        let initial = c
+            .author
+            .chars()
+            .find(|ch| ch.is_alphabetic())
+            .and_then(|ch| ch.to_uppercase().next())
+            .unwrap_or('?')
+            .to_string();
+        let avatar_top = px((height - AUTHOR_IMAGE_SIZE) / 2.);
+        let lane_left =
+            px(GRAPH_LANE_INSET + row.lane as f32 * GRAPH_LANE_PITCH - AUTHOR_IMAGE_SIZE / 2.);
         let merge = c.parents.len() > 1;
-        let has_refs = !c.refs.is_empty();
         let mut el = div()
             .id(("commit", i))
             .w_full()
@@ -1268,84 +1672,163 @@ impl GitCrab {
                     .id(("refs", i))
                     .w(px(110.))
                     .flex_none()
-                    .truncate()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .overflow_hidden()
                     .text_size(type_size(cx, 12.))
                     .text_color(rgb(PALETTE[color % 8]))
                     .when(!refs.is_empty(), |e| {
-                        e.child(badge(
-                            if ref_count > 1 {
-                                format!("{} +{}", refs, ref_count - 1)
-                            } else {
-                                refs
-                            },
-                            PALETTE[color % 8],
-                        ))
+                        e.child(
+                            self.button(("ref-detail", i), "")
+                                .child(div().flex_1().min_w_0().truncate().child(refs))
+                                .flex_1()
+                                .min_w_0()
+                                .justify_start()
+                                .overflow_hidden()
+                                .px_1()
+                                .h(px(REF_BADGE_HEIGHT))
+                                .bg(branch_tint(color, REF_TINT))
+                                .tooltip(full_refs.clone())
+                                .on_click(cx.listener({
+                                    let id = c.id.clone();
+                                    move |v, _, w, cx| v.select(Some(id.clone()), w, cx)
+                                })),
+                        )
+                    })
+                    .when(ref_count > 1, |e| {
+                        e.child(
+                            div()
+                                .flex_none()
+                                .whitespace_nowrap()
+                                .h(px(REF_BADGE_HEIGHT))
+                                .flex()
+                                .items_center()
+                                .px(px(4.))
+                                .rounded(px(CONTROL_RADIUS))
+                                .bg(branch_tint(color, REF_TINT))
+                                .child(format!("+{}", ref_count - 1)),
+                        )
                     })
                     .tooltip(move |w, cx| Tooltip::new(full_refs.clone()).build(w, cx)),
             )
             .child(
-                canvas(
-                    move |_, _, _| (),
-                    move |bounds, _, w, _| {
-                        let origin = bounds.origin;
-                        let x = |lane: usize| origin.x + px(12. + lane as f32 * 18.);
-                        let y = origin.y + px(height / 2.);
-                        if has_refs {
-                            w.paint_quad(fill(
-                                Bounds::new(
-                                    point(origin.x - px(8.), y - px(0.75)),
-                                    size(px(20. + row.lane as f32 * 18.), px(1.5)),
-                                ),
-                                rgb(PALETTE[row.color % 8]),
-                            ));
-                        }
-                        for (edge, above) in row
-                            .edges
-                            .iter()
-                            .map(|e| (e, false))
-                            .chain(incoming.iter().map(|e| (e, true)))
-                        {
-                            let mut path = PathBuilder::stroke(px(1.6));
-                            let y0 = if above { y - px(height) } else { y };
-                            let y1 = y0 + px(height);
-                            path.move_to(point(x(edge.from_lane), y0));
-                            path.cubic_bezier_to(
-                                point(x(edge.to_lane), y1),
-                                point(x(edge.from_lane), y0 + px(height * 0.5)),
-                                point(x(edge.to_lane), y1 - px(height * 0.5)),
-                            );
-                            if let Ok(path) = path.build() {
-                                w.paint_path(path, rgb(PALETTE[edge.color % 8]));
-                            }
-                        }
-                        if selected || merge {
-                            w.paint_quad(
-                                outline(
+                div()
+                    .relative()
+                    .w(px(graph_width))
+                    .h(px(height))
+                    .flex_none()
+                    .child(
+                        canvas(
+                            move |_, _, _| (),
+                            move |bounds, _, w, _| {
+                                let origin = bounds.origin;
+                                let scale = w.scale_factor();
+                                let x = |lane| graph_lane_x(origin.x, lane, scale);
+                                let y = origin.y + px(height / 2.);
+                                let band_x = origin.x;
+                                let band_y = origin.y + px(2.);
+                                let band_height = bounds.size.height - px(4.);
+                                let band_right = bounds.right();
+                                w.paint_quad(fill(
                                     Bounds::new(
-                                        point(x(row.lane) - px(7.), y - px(7.)),
-                                        size(px(14.), px(14.)),
+                                        point(band_x, band_y),
+                                        size(band_right - band_x, band_height),
                                     ),
-                                    rgb(PALETTE[row.color % 8]),
-                                    BorderStyle::Solid,
-                                )
-                                .corner_radii(px(7.)),
-                            );
-                        }
-                        w.paint_quad(
-                            fill(
-                                Bounds::new(
-                                    point(x(row.lane) - px(4.), y - px(4.)),
-                                    size(px(8.), px(8.)),
-                                ),
-                                rgb(PALETTE[row.color % 8]),
-                            )
-                            .corner_radii(px(4.)),
-                        );
-                    },
-                )
-                .w(px(graph_width))
-                .h(px(height))
-                .flex_none(),
+                                    branch_tint(color, if selected { 0x32 } else { 0x27 }),
+                                ));
+                                w.paint_quad(fill(
+                                    Bounds::new(
+                                        point(band_right - px(1.), band_y),
+                                        size(px(1.), band_height),
+                                    ),
+                                    branch_tint(color, 0xb0),
+                                ));
+                                let edges = || {
+                                    incoming
+                                        .iter()
+                                        .map(|e| (e, true))
+                                        .chain(row.edges.iter().map(|e| (e, false)))
+                                };
+                                for (edge, above) in
+                                    edges().filter(|(e, _)| e.from_lane == e.to_lane)
+                                {
+                                    let (top, bottom) = if above {
+                                        (bounds.top(), y)
+                                    } else {
+                                        (y, bounds.bottom())
+                                    };
+                                    paint_vertical_lane(
+                                        w,
+                                        x(edge.from_lane),
+                                        top,
+                                        bottom,
+                                        PALETTE[edge.color % PALETTE.len()],
+                                    );
+                                }
+                                for (edge, above) in
+                                    edges().filter(|(e, _)| e.from_lane != e.to_lane)
+                                {
+                                    let mut path = PathBuilder::stroke(graph_stroke(scale));
+                                    let y0 = if above { y - px(height) } else { y };
+                                    let y1 = y0 + px(height);
+                                    path.move_to(point(x(edge.from_lane), y0));
+                                    path.cubic_bezier_to(
+                                        point(x(edge.to_lane), y1),
+                                        point(x(edge.from_lane), y0 + px(height * 0.6)),
+                                        point(x(edge.to_lane), y1 - px(height * 0.6)),
+                                    );
+                                    if let Ok(path) = path.build() {
+                                        w.paint_path(
+                                            path,
+                                            rgb(PALETTE[edge.color % PALETTE.len()]),
+                                        );
+                                    }
+                                }
+                                let center_x = x(row.lane);
+                                let radius = if selected || merge { 12. } else { 11. };
+                                w.paint_quad(
+                                    fill(
+                                        Bounds::new(
+                                            point(center_x - px(radius), y - px(radius)),
+                                            size(px(radius * 2.), px(radius * 2.)),
+                                        ),
+                                        rgb(PALETTE[color % PALETTE.len()]),
+                                    )
+                                    .corner_radii(px(radius)),
+                                );
+                            },
+                        )
+                        .size_full(),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(lane_left)
+                            .top(avatar_top)
+                            .size(px(AUTHOR_IMAGE_SIZE))
+                            .rounded_full()
+                            .bg(rgb(avatar_background))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(11.))
+                            .line_height(px(AUTHOR_IMAGE_SIZE))
+                            .text_color(rgb(avatar_foreground))
+                            .child(initial),
+                    )
+                    .when_some(author_image, |el, path| {
+                        el.child(
+                            img(path)
+                                .absolute()
+                                .left(lane_left)
+                                .top(avatar_top)
+                                .size(px(AUTHOR_IMAGE_SIZE))
+                                .rounded_full()
+                                .object_fit(ObjectFit::Cover),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -1362,13 +1845,22 @@ impl GitCrab {
                     .whitespace_nowrap()
                     .truncate()
                     .text_size(type_size(cx, 12.))
-                    .font_family("monospace")
+                    .font_family(CODE_FONT)
                     .text_color(rgb(SUBTLE))
                     .child(c.id[..8.min(c.id.len())].to_string()),
             )
             .on_click(cx.listener(move |v, _, w, cx| v.select(Some(id.clone()), w, cx)));
         if c.id == snap.head_id {
-            el = el.border_l_2().border_color(rgb(ACCENT));
+            // Paint the marker over the row so it cannot shift the lane origin.
+            el = el.relative().child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .w(px(2.))
+                    .bg(rgb(ACCENT)),
+            );
         }
         let view = cx.entity();
         el.context_menu(move |mut menu, _, _| {
@@ -1487,14 +1979,16 @@ impl Render for GitCrab {
             div()
                 .flex()
                 .flex_col()
+                .items_center()
                 .size_full()
+                .bg(rgb(CHROME))
                 .gap_2()
                 .child(
-                    self.button("rail-back", "‹")
+                    self.icon_button("rail-back", "back", "Return to history · Escape")
                         .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
                 )
                 .child(
-                    self.button("rail-working", "◇")
+                    self.icon_button("rail-working", "changes", "Working changes")
                         .on_click(cx.listener(|v, _, w, cx| v.select(None, w, cx))),
                 )
                 .into_any_element()
@@ -1513,12 +2007,19 @@ impl Render for GitCrab {
             .state
             .snapshot
             .as_ref()
-            .map(|s| s.head.clone())
+            .map(|s| s.head_label())
             .unwrap_or_default();
-        let recent = self.preferences.recent.clone();
-        let menu_view = cx.entity();
+        let recent = Preferences::current(cx)
+            .recent
+            .iter()
+            .filter(|path| *path != &self.state.path)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let menu_focus = self.focus.clone();
         let mut toolbar = div()
-            .h(px(42.))
+            .h(px(TOOLBAR_HEIGHT))
+            .bg(rgb(RAISED))
             .flex_none()
             .flex()
             .items_center()
@@ -1527,16 +2028,49 @@ impl Render for GitCrab {
             .border_b_1()
             .border_color(rgb(BORDER))
             .child(
-                div().w(px(210.)).flex_none().flex().items_center().gap_1()
-                    .child(self.button("repository-selector", title.clone()).icon(icon("folder"))
-                        .flex_1().min_w_0().justify_start().tooltip("Open repository · Ctrl/Cmd+O. Right-click for recent repositories.")
-                        .disabled(self.state.busy).on_click(cx.listener(|v,_,w,cx|v.pick(&Open,w,cx))))
-                    .context_menu(move |mut menu,_,_| {
-                        for path in recent.iter() {
-                            let path=path.clone(); let view=menu_view.clone();
-                            menu=menu.item(PopupMenuItem::new(path.clone()).on_click(move|_,w,cx|view.update(cx,|v,cx|{
-                                let job=v.state.open(path.clone());v.dispatch(job,w,cx);
-                            })));
+                self.action_button("repository-selector", title.clone())
+                    .icon(icon("down"))
+                    .w(px(210.))
+                    .h(px(32.))
+                    .justify_start()
+                    .tooltip(format!(
+                        "{} · Open repository · Ctrl/Cmd+O",
+                        self.state.path
+                    ))
+                    .disabled(self.state.busy)
+                    .dropdown_menu(move |menu, _, _| {
+                        let mut menu = menu.action_context(menu_focus.clone());
+                        menu = menu.item(PopupMenuItem::new("Open repository…").action(Box::new(Open)));
+                        for path in &recent {
+                            let path = path.clone();
+                            let name = std::path::Path::new(&path)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy();
+                            menu = menu.item(
+                                PopupMenuItem::element({
+                                    let label = format!(
+                                        "{} · {}",
+                                        name,
+                                        std::path::Path::new(&path)
+                                            .parent()
+                                            .and_then(|p| p.file_name())
+                                            .unwrap_or_default()
+                                            .to_string_lossy()
+                                    );
+                                    let full = path.clone();
+                                    move |_, _| {
+                                        div()
+                                            .id(SharedString::from(format!("recent-{full}")))
+                                            .child(label.clone())
+                                            .tooltip({
+                                                let full = full.clone();
+                                                move |w, cx| Tooltip::new(full.clone()).build(w, cx)
+                                            })
+                                    }
+                                })
+                                .action(Box::new(super::workspace::OpenRecent(path))),
+                            );
                         }
                         menu
                     }),
@@ -1566,7 +2100,15 @@ impl Render for GitCrab {
                     .icon(icon(glyph))
                     .h(px(32.))
                     .tooltip(format!("{label} · Review before applying"))
-                    .disabled(self.state.busy || self.state.snapshot.is_none())
+                    .disabled(
+                        self.state.busy
+                            || !self
+                                .state
+                                .snapshot
+                                .as_ref()
+                                .is_some_and(|s| !s.head_id.is_empty()),
+                    )
+                    .when(narrow_toolbar, |b| b.w(px(32.)))
                     .on_click(
                         cx.listener(move |v, _, w, cx| v.review(op.clone(), String::new(), w, cx)),
                     ),
@@ -1589,13 +2131,13 @@ impl Render for GitCrab {
                         .child(format!("{} matches", self.search_matches.len())),
                 )
                 .child(
-                    self.button("search-prev", "↑")
+                    self.icon_button("search-prev", "up", "Previous match · Shift+F3")
                         .tooltip("Previous match · Shift+Enter")
                         .disabled(self.search_matches.is_empty())
                         .on_click(cx.listener(|v, _, w, cx| v.search_step(-1, w, cx))),
                 )
                 .child(
-                    self.button("search-next", "↓")
+                    self.icon_button("search-next", "down", "Next match · F3")
                         .tooltip("Next match · Enter. Searches loaded history.")
                         .disabled(self.search_matches.is_empty())
                         .on_click(cx.listener(|v, _, w, cx| v.search_step(1, w, cx))),
@@ -1611,13 +2153,14 @@ impl Render for GitCrab {
             .text_size(px(self.preferences.font_size))
             .track_focus(&self.focus)
             .key_context("GitCrab")
-            .on_action(cx.listener(Self::pick))
             .on_action(cx.listener(Self::refresh))
             .on_action(cx.listener(Self::back))
             .on_action(cx.listener(|v, _: &Next, w, cx| v.move_selection(1, w, cx)))
             .on_action(cx.listener(|v, _: &Previous, w, cx| v.move_selection(-1, w, cx)))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(|v, _: &SplitBefore, w, cx| v.keyboard_pan_diff(false, w, cx)))
+            .on_action(cx.listener(|v, _: &SplitAfter, w, cx| v.keyboard_pan_diff(true, w, cx)))
             .on_action(cx.listener(Self::commit_staged))
             .on_key_down(cx.listener(|v, event: &KeyDownEvent, w, cx| {
                 if event.keystroke.key == "enter"
@@ -1673,7 +2216,7 @@ impl Render for GitCrab {
                 )
             })
             .child(
-                div().flex_1().min_h_0().p_2().child(
+                div().flex_1().min_h_0().bg(rgb(BORDER)).child(
                     h_resizable(SharedString::from(format!(
                         "workspace-{in_diff}-{}",
                         self.layout_revision
@@ -1710,18 +2253,21 @@ impl Render for GitCrab {
                             })
                             .child(sidebar),
                     )
-                    .child(resizable_panel().child(div().size_full().pl(px(6.)).child(center)))
+                    .child(resizable_panel().child(div().size_full().pl(px(SEAM)).child(center)))
                     .child(
                         resizable_panel()
                             .size(px(self.preferences.inspector_width))
                             .size_range(px(260.)..px(560.))
-                            .child(div().size_full().pl(px(6.)).child(inspector)),
+                            .child(div().size_full().pl(px(SEAM)).child(inspector)),
                     ),
                 ),
             )
             .child(
                 div()
                     .h(px(24.))
+                    .bg(rgb(CHROME))
+                    .border_t_1()
+                    .border_color(rgb(BORDER))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -1759,7 +2305,7 @@ impl Render for GitCrab {
                     .when_some(self.watch_warning.clone(), |bar, warning| {
                         bar.child(
                             self.button("watch-warning", "Live refresh unavailable")
-                                .text_color(rgb(0xe5c07b))
+                                .text_color(rgb(WARNING))
                                 .tooltip(warning),
                         )
                     }),
