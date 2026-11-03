@@ -76,6 +76,13 @@ impl Default for Controller {
     }
 }
 impl Controller {
+    fn draft_key(path: &str) -> String {
+        // Windows pickers use backslashes; Git reports forward-slash roots.
+        // Keep literal backslashes distinct on Unix filesystems.
+        #[cfg(windows)]
+        let path = path.replace('\\', "/");
+        path.trim_end_matches('/').to_string()
+    }
     fn invalidate(&mut self, lane: Lane) {
         self.sequence += 1;
         let s = &mut self.slots[lane as usize];
@@ -87,8 +94,13 @@ impl Controller {
             return None;
         }
         self.epoch += 1;
-        self.drafts.insert(self.path.clone(), self.draft.clone());
-        self.draft = self.drafts.get(&path).cloned().unwrap_or_default();
+        self.drafts
+            .insert(Self::draft_key(&self.path), self.draft.clone());
+        self.draft = self
+            .drafts
+            .get(&Self::draft_key(&path))
+            .cloned()
+            .unwrap_or_default();
         self.path = path.clone();
         for l in [Lane::Snapshot, Lane::Details, Lane::Diff] {
             self.invalidate(l);
@@ -370,6 +382,16 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn native_picker_path_preserves_a_canonical_repository_draft() {
+        let mut c = Controller::default();
+        c.path = "C:/work/repo".into();
+        c.draft = "Unicode draft 日本語".into();
+        c.open("C:\\work\\other".into());
+        c.open("C:\\work\\repo\\".into());
+        assert_eq!(c.draft, "Unicode draft 日本語");
+    }
     fn change(path: &str, index: char, worktree: char) -> crate::git::FileChange {
         crate::git::FileChange {
             path: path.into(),
