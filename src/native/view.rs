@@ -742,13 +742,14 @@ impl GitCrab {
         &self,
         input: &Entity<InputState>,
         height: f32,
+        width: f32,
         placeholder: &str,
         cx: &App,
     ) -> AnyElement {
         if self.settings_open {
             let value = input.read(cx).value();
             div()
-                .w_full()
+                .w(px(width))
                 .h(px(height))
                 .px_2()
                 .rounded(px(6.))
@@ -762,7 +763,10 @@ impl GitCrab {
                 })
                 .into_any_element()
         } else {
-            Input::new(input).w_full().h(px(height)).into_any_element()
+            Input::new(input)
+                .w(px(width))
+                .h(px(height))
+                .into_any_element()
         }
     }
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1534,11 +1538,13 @@ impl Render for GitCrab {
         }
         toolbar = toolbar
             .child(div().flex_1())
-            .child(
-                div()
-                    .w(px(180.))
-                    .child(self.editor(&self.search, 32., "Search history…", cx)),
-            )
+            .child(div().w(px(180.)).child(self.editor(
+                &self.search,
+                32.,
+                180.,
+                "Search history…",
+                cx,
+            )))
             .when(!self.search.read(cx).value().is_empty(), |bar| {
                 bar.child(
                     div()
