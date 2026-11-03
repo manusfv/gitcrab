@@ -1,6 +1,7 @@
-param([string]$Executable='target/release/gitcrab-gpui.exe',[string]$Destination='evidence/gpui/performance.json')
+param([string]$Executable='target/release/gitcrab-gpui.exe',[string]$Destination='evidence/gpui/performance.json',[string]$ExecutableSource='')
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
+if(!$ExecutableSource){$ExecutableSource=(& git -C $root rev-parse HEAD)}
 $Executable=[IO.Path]::GetFullPath((Join-Path $root $Executable))
 $out=Join-Path $root ('.references/measure-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -31,5 +32,8 @@ foreach($case in @(@{repo='showcase';limit=500;view='history'},@{repo='large';li
   $cases+=@{fixture=$case.repo;view=$case.view;total=[int]$total;samples=$samples}
 }
 $result=@{date=[DateTime]::UtcNow.ToString('o');source=(&git -C $root rev-parse HEAD);binary_sha256=(Get-FileHash $Executable).Hash;hardware=@{cpu=(Get-CimInstance Win32_Processor|Select-Object -First 1 -ExpandProperty Name);logical_cpus=[Environment]::ProcessorCount;gpu=(Get-CimInstance Win32_VideoController|Select-Object -ExpandProperty Name);os=[Environment]::OSVersion.VersionString};conditions='Release native-evidence build; 1172x636 logical, scale recorded per case. Three fresh processes per workload, unflushed OS caches, concurrent desktop apps. 240 synthetic GPUI scroll/render intervals per sample, not compositor presentation or physical input latency. Startup includes process launch and 10ms ready polling; first layout marker is not physical presentation. Total native descendants included in resource samples after Git worker becomes idle.';cases=$cases}
+$result.source=$ExecutableSource
+$result.harness_source=(& git -C $root rev-parse HEAD)
+$result.conditions+=' Process ancestry requires child creation time at or after its parent, excluding stale parent PIDs reused by Windows.'
 $result|ConvertTo-Json -Depth 12|Set-Content (Join-Path $root $Destination)
 Remove-Item Env:GITCRAB_NATIVE_BENCH,Env:GITCRAB_NATIVE_READY,Env:GITCRAB_CAPTURE_VIEW,Env:GITCRAB_CAPTURE_LIMIT,Env:GITCRAB_CAPTURE_WIDTH,Env:GITCRAB_CAPTURE_HEIGHT,Env:GITCRAB_SETTINGS -ErrorAction SilentlyContinue
