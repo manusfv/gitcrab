@@ -37,90 +37,106 @@ impl GitCrab {
                     )
                     .child(
                         div()
-                            .px_3()
-                            .pt_3()
-                            .pb_2()
-                            .text_size(type_size(cx, 15.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(c.subject.clone()),
-                    )
-                    .child(
-                        div()
-                            .id("commit-author")
-                            .px_3()
-                            .pb_2()
+                            .id("commit-information")
                             .flex()
-                            .items_center()
-                            .gap_2()
+                            .flex_col()
+                            .flex_none()
+                            .max_h(relative(0.5))
+                            .overflow_y_scroll()
                             .child(
                                 div()
-                                    .size(px(30.))
-                                    .flex_none()
-                                    .rounded_full()
-                                    .bg(rgb(RAISED))
+                                    .px_3()
+                                    .pt_3()
+                                    .pb_2()
+                                    .text_size(type_size(cx, 15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(c.subject.clone()),
+                            )
+                            .child(
+                                div()
+                                    .id("commit-author")
+                                    .px_3()
+                                    .pb_2()
                                     .flex()
                                     .items_center()
-                                    .justify_center()
-                                    .text_color(rgb(ACCENT))
-                                    .child(initials),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(div().truncate().child(c.author.clone()))
+                                    .gap_2()
                                     .child(
                                         div()
-                                            .text_size(type_size(cx, 12.))
-                                            .text_color(rgb(MUTED))
-                                            .child(display_date(&c.date)),
-                                    ),
+                                            .size(px(30.))
+                                            .flex_none()
+                                            .rounded_full()
+                                            .bg(rgb(RAISED))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_color(rgb(ACCENT))
+                                            .child(initials),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(div().truncate().child(c.author.clone()))
+                                            .child(
+                                                div()
+                                                    .text_size(type_size(cx, 12.))
+                                                    .text_color(rgb(MUTED))
+                                                    .child(display_date(&c.date)),
+                                            ),
+                                    )
+                                    .tooltip(move |w, cx| {
+                                        Tooltip::new(timestamp.clone()).build(w, cx)
+                                    }),
                             )
-                            .tooltip(move |w, cx| Tooltip::new(timestamp.clone()).build(w, cx)),
-                    )
-                    .child(
-                        self.button("copy-id", c.id.chars().take(10).collect::<String>())
-                            .icon(icon("copy"))
-                            .font_family("monospace")
-                            .text_size(type_size(cx, 12.))
-                            .mx_2()
-                            .tooltip("Copy full commit SHA")
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(copy_id.clone()))
-                            }),
-                    )
-                    .child(div().px_3().flex().flex_wrap().gap_1().children(
-                        c.parents.iter().enumerate().map(|(i, parent)| {
-                            let id = parent.clone();
-                            self.button(
-                                ("parent", i),
-                                format!("Parent {}", parent.chars().take(8).collect::<String>()),
+                            .child(
+                                self.button("copy-id", c.id.chars().take(10).collect::<String>())
+                                    .icon(icon("copy"))
+                                    .font_family("monospace")
+                                    .text_size(type_size(cx, 12.))
+                                    .mx_2()
+                                    .tooltip("Copy full commit SHA")
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_id.clone(),
+                                        ))
+                                    }),
                             )
-                            .disabled(
-                                !self
-                                    .state
-                                    .snapshot
-                                    .as_ref()
-                                    .unwrap()
-                                    .commits
-                                    .iter()
-                                    .any(|c| c.id == *parent),
-                            )
-                            .tooltip(parent.clone())
-                            .on_click(
-                                cx.listener(move |v, _, w, cx| v.select(Some(id.clone()), w, cx)),
-                            )
-                        }),
-                    ))
-                    .child(
-                        div()
-                            .px_3()
-                            .text_size(type_size(cx, 12.))
-                            .text_color(rgb(ACCENT))
-                            .child(c.refs.join(" · ")),
+                            .child(div().px_3().flex().flex_wrap().gap_1().children(
+                                c.parents.iter().enumerate().map(|(i, parent)| {
+                                    let id = parent.clone();
+                                    self.button(
+                                        ("parent", i),
+                                        format!(
+                                            "Parent {}",
+                                            parent.chars().take(8).collect::<String>()
+                                        ),
+                                    )
+                                    .disabled(
+                                        !self
+                                            .state
+                                            .snapshot
+                                            .as_ref()
+                                            .unwrap()
+                                            .commits
+                                            .iter()
+                                            .any(|c| c.id == *parent),
+                                    )
+                                    .tooltip(parent.clone())
+                                    .on_click(cx.listener(
+                                        move |v, _, w, cx| v.select(Some(id.clone()), w, cx),
+                                    ))
+                                }),
+                            ))
+                            .child(
+                                div()
+                                    .px_3()
+                                    .text_size(type_size(cx, 12.))
+                                    .text_color(rgb(ACCENT))
+                                    .child(c.refs.join(" · ")),
+                            ),
                     )
                     .child(heading(format!(
                         "Changed files · {}",
