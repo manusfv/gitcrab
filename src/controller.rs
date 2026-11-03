@@ -38,6 +38,8 @@ pub struct Controller {
     pub selected: Option<String>,
     pub files: Vec<String>,
     pub patch: Option<Patch>,
+    /// Selected review context survives asynchronous reads and refreshes.
+    pub diff_context: Option<(Option<String>, String, bool)>,
     pub draft: String,
     pub busy: bool,
     pub notice: String,
@@ -45,6 +47,8 @@ pub struct Controller {
     pub limit: usize,
     pub worker_ms: f64,
     reopen: Option<(Option<String>, String, bool)>,
+    reopen_position: usize,
+    drafts: std::collections::HashMap<String, String>,
 }
 impl Default for Controller {
     fn default() -> Self {
@@ -58,6 +62,7 @@ impl Default for Controller {
             selected: None,
             files: vec![],
             patch: None,
+            diff_context: None,
             draft: String::new(),
             busy: false,
             notice: "Open a local repository to begin".into(),
@@ -65,6 +70,8 @@ impl Default for Controller {
             limit: 500,
             worker_ms: 0.,
             reopen: None,
+            reopen_position: 0,
+            drafts: Default::default(),
         }
     }
 }
@@ -80,6 +87,9 @@ impl Controller {
             return None;
         }
         self.epoch += 1;
+        self.drafts.insert(self.path.clone(), self.draft.clone());
+        self.draft = self.drafts.get(&path).cloned().unwrap_or_default();
+        self.path = path.clone();
         for l in [Lane::Snapshot, Lane::Details, Lane::Diff] {
             self.invalidate(l);
         }
@@ -88,6 +98,7 @@ impl Controller {
         self.selected = None;
         self.files.clear();
         self.patch = None;
+        self.diff_context = None;
         self.reopen = None;
         self.limit = 500;
         self.notice = "Opening repository…".into();
@@ -100,12 +111,14 @@ impl Controller {
         self.selected = id.clone();
         self.files.clear();
         self.patch = None;
+        self.diff_context = None;
         self.reopen = None;
         id.and_then(|id| self.read(Lane::Details, Action::Details { id }))
     }
     pub fn diff(&mut self, path: String, staged: bool) -> Option<(Lane, Request)> {
         self.invalidate(Lane::Diff);
         self.patch = None;
+        self.diff_context = Some((self.selected.clone(), path.clone(), staged));
         self.read(
             Lane::Diff,
             Action::Diff {
@@ -118,6 +131,7 @@ impl Controller {
     pub fn close_diff(&mut self) {
         self.invalidate(Lane::Diff);
         self.patch = None;
+        self.diff_context = None;
         self.reopen = None;
     }
     pub fn refresh(&mut self) -> Option<(Lane, Request)> {
@@ -127,9 +141,34 @@ impl Controller {
         self.read(Lane::Snapshot, Action::Refresh { limit: self.limit })
     }
     fn remember_patch(&mut self) {
-        if let Some(p) = self.patch.take() {
-            self.reopen = Some((p.id, p.path, p.staged));
+        self.patch = None;
+        if let Some(context) = self.diff_context.clone() {
+            self.reopen_position = self
+                .snapshot
+                .as_ref()
+                .map(|s| {
+                    s.status
+                        .iter()
+                        .filter(|f| Self::on_side(f, context.2))
+                        .position(|f| f.path == context.1)
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0);
+            self.reopen = Some(context);
         }
+    }
+    pub fn on_side(f: &crate::git::FileChange, staged: bool) -> bool {
+        if staged {
+            f.index != ' ' && f.index != '?'
+        } else {
+            f.worktree != ' ' || f.index == '?'
+        }
+    }
+    pub fn diff_loading(&self) -> bool {
+        self.diff_context.is_some()
+            && (self.slots[Lane::Diff as usize].active.is_some()
+                || self.slots[Lane::Snapshot as usize].active.is_some()
+                || self.busy)
     }
     fn request(&mut self, lane: Lane, action: Action) -> Option<(Lane, Request)> {
         self.sequence += 1;
@@ -201,10 +240,38 @@ impl Controller {
                     if !self.error {
                         self.notice = format!("{} commits loaded", self.graph.rows.len());
                     }
-                    if let Some((id, path, staged)) = self.reopen.take() {
+                    if let Some((id, mut path, staged)) = self.reopen.take() {
                         if id == self.selected {
-                            if let Some(job) = self.diff(path, staged) {
-                                jobs.push(job);
+                            if id.is_none() {
+                                let files = self
+                                    .snapshot
+                                    .as_ref()
+                                    .unwrap()
+                                    .status
+                                    .iter()
+                                    .filter(|f| Self::on_side(f, staged))
+                                    .collect::<Vec<_>>();
+                                if !files.iter().any(|f| f.path == path) {
+                                    if let Some(next) = files.get(
+                                        self.reopen_position.min(files.len().saturating_sub(1)),
+                                    ) {
+                                        path = next.path.clone();
+                                    } else {
+                                        self.diff_context = Some((None, String::new(), staged));
+                                        self.notice = if staged {
+                                            "No staged changes remain"
+                                        } else {
+                                            "All working changes reviewed"
+                                        }
+                                        .into();
+                                        path.clear();
+                                    }
+                                }
+                            }
+                            if !path.is_empty() {
+                                if let Some(job) = self.diff(path, staged) {
+                                    jobs.push(job);
+                                }
                             }
                         }
                     }
@@ -303,6 +370,118 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn change(path: &str, index: char, worktree: char) -> crate::git::FileChange {
+        crate::git::FileChange {
+            path: path.into(),
+            index,
+            worktree,
+            original_path: None,
+        }
+    }
+    fn refresh_review(
+        old: Vec<crate::git::FileChange>,
+        new: Vec<crate::git::FileChange>,
+        staged: bool,
+    ) -> (Controller, Vec<(Lane, Request)>) {
+        let mut c = Controller::default();
+        c.epoch = 1;
+        c.snapshot = Some(RepoSnapshot {
+            status: old,
+            ..Default::default()
+        });
+        c.diff_context = Some((None, "b".into(), staged));
+        let (_, mutation) = c
+            .mutate(Action::Stage {
+                path: "b".into(),
+                unstage: staged,
+            })
+            .unwrap();
+        let refresh = c.complete(
+            Lane::Mutation,
+            reply(
+                &mutation,
+                Ok(Reply::Done {
+                    message: "ok".into(),
+                    committed_draft: None,
+                }),
+            ),
+        );
+        let jobs = c.complete(
+            Lane::Snapshot,
+            reply(
+                &refresh[0].1,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot: RepoSnapshot {
+                        status: new,
+                        ..Default::default()
+                    },
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        (c, jobs)
+    }
+    #[test]
+    fn stage_advances_at_same_position_and_unstage_falls_back() {
+        let (_, jobs) = refresh_review(
+            vec![
+                change("a", ' ', 'M'),
+                change("b", ' ', 'M'),
+                change("c", ' ', 'M'),
+            ],
+            vec![
+                change("a", ' ', 'M'),
+                change("b", 'M', ' '),
+                change("c", ' ', 'M'),
+            ],
+            false,
+        );
+        assert!(matches!(&jobs[0].1.action,Action::Diff{path,staged:false,..} if path=="c"));
+        let (_, jobs) = refresh_review(
+            vec![change("a", 'M', ' '), change("b", 'M', ' ')],
+            vec![change("a", 'M', ' '), change("b", ' ', 'M')],
+            true,
+        );
+        assert!(matches!(&jobs[0].1.action,Action::Diff{path,staged:true,..} if path=="a"));
+    }
+    #[test]
+    fn final_file_completes_review_without_an_empty_patch_request() {
+        let (c, jobs) = refresh_review(
+            vec![change("b", ' ', 'M')],
+            vec![change("b", 'M', ' ')],
+            false,
+        );
+        assert!(jobs.is_empty());
+        assert!(c.patch.is_none());
+        assert!(!c.diff_loading());
+        assert_eq!(c.diff_context, Some((None, String::new(), false)));
+    }
+    #[test]
+    fn remaining_hunks_keep_the_current_file() {
+        let (_, jobs) = refresh_review(
+            vec![change("b", ' ', 'M'), change("c", ' ', 'M')],
+            vec![change("b", 'M', 'M'), change("c", ' ', 'M')],
+            false,
+        );
+        assert!(matches!(&jobs[0].1.action,Action::Diff{path,..} if path=="b"));
+    }
+    #[test]
+    fn repository_switch_drops_pending_review_but_preserves_each_draft() {
+        let mut c = Controller::default();
+        c.path = "a".into();
+        c.draft = "draft a".into();
+        c.diff_context = Some((None, "old".into(), false));
+        c.open("b".into());
+        assert!(c.diff_context.is_none());
+        assert!(c.draft.is_empty());
+        c.draft = "draft b".into();
+        c.open("c".into());
+        c.open("a".into());
+        assert_eq!(c.draft, "draft a");
+        c.open("b".into());
+        assert_eq!(c.draft, "draft b");
+    }
     fn reply(r: &Request, result: Result<Reply, Failure>) -> Response {
         Response {
             epoch: r.epoch,
