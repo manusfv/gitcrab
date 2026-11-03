@@ -486,7 +486,7 @@ impl GitCrab {
         }
     }
     fn pick(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.busy {
+        if self.state.busy || self.settings_open || window.has_active_dialog(cx) {
             return;
         }
         let rx = cx.prompt_for_paths(PathPromptOptions {
@@ -560,7 +560,8 @@ impl GitCrab {
         self.dispatch(j, window, cx);
     }
     fn can_commit(&self) -> bool {
-        !self.state.busy
+        !self.settings_open
+            && !self.state.busy
             && self
                 .state
                 .draft
@@ -730,7 +731,12 @@ impl GitCrab {
         }
     }
     fn button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-        Button::new(id).label(label).small().ghost().rounded(px(6.))
+        Button::new(id)
+            .label(label)
+            .small()
+            .ghost()
+            .rounded(px(6.))
+            .tab_stop(!self.settings_open)
     }
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let changes = self
@@ -1496,6 +1502,7 @@ impl Render for GitCrab {
             .child(
                 div().w(px(180.)).child(
                     Input::new(&self.search)
+                        .disabled(self.settings_open)
                         .small()
                         .prefix(icon("search").small().text_color(rgb(SUBTLE))),
                 ),

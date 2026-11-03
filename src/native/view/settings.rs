@@ -36,6 +36,7 @@ impl GitCrab {
                         "Density: Comfortable"
                     },
                 )
+                .tab_stop(true)
                 .on_click(cx.listener(|v, _, _, cx| {
                     v.compact = !v.compact;
                     cx.notify();
@@ -50,6 +51,7 @@ impl GitCrab {
                         "Code spacing: Comfortable"
                     },
                 )
+                .tab_stop(true)
                 .on_click(cx.listener(|v, _, _, cx| {
                     v.preferences.compact_diff = !v.preferences.compact_diff;
                     cx.notify();
@@ -57,6 +59,7 @@ impl GitCrab {
             )
             .child(
                 self.button("reset-appearance", "Reset appearance and layout")
+                    .tab_stop(true)
                     .on_click(cx.listener(|v, _, _, cx| {
                         let recent = v.preferences.recent.clone();
                         v.preferences = Preferences::default();
@@ -86,6 +89,7 @@ impl GitCrab {
                         ("appearance", index * 2 + usize::from(direction > 0.)),
                         if direction > 0. { "+" } else { "−" },
                     )
+                    .tab_stop(true)
                     .on_click(cx.listener(move |v, _, _, cx| {
                         match index {
                             0 => {
@@ -128,6 +132,7 @@ impl GitCrab {
                     .gap_2()
                     .child(
                         self.button("settings-close", "Close")
+                            .tab_stop(true)
                             .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
                     )
                     .child(
