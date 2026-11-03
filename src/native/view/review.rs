@@ -165,7 +165,45 @@ impl GitCrab {
             return el.child(div().flex_1().flex().flex_col().items_center().justify_center().gap_3().p_4()
                 .child(icon("changes").text_color(rgb(MUTED)))
                 .child(div().text_size(type_size(cx,16.)).child("Binary file changed"))
-                .child(div().text_color(rgb(MUTED)).child("A text preview is not available. You can stage or unstage the whole file.")))
+                .child(div().text_color(rgb(MUTED)).child(if p.id.is_some() {"Binary content has no text preview."} else {"A text preview is not available. You can stage or unstage the whole file."})))
+                .into_any_element();
+        }
+        if p.lines.is_empty() {
+            return el.child(div().flex_1().flex().flex_col().items_center().justify_center().gap_3().p_4()
+                .child(div().text_size(type_size(cx,16.)).child("No text changes on this side"))
+                .child(div().text_color(rgb(MUTED)).child("Choose the other side or another file. Empty files can be staged as a whole.")))
+                .into_any_element();
+        }
+        if p.hunks.is_empty()
+            && p.lines
+                .iter()
+                .any(|line| line.text.starts_with("rename to "))
+        {
+            let metadata = p
+                .lines
+                .iter()
+                .filter(|line| {
+                    line.text.starts_with("rename from ") || line.text.starts_with("rename to ")
+                })
+                .map(|line| line.text.clone())
+                .collect::<Vec<_>>();
+            return el
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_3()
+                        .p_4()
+                        .child(div().text_size(type_size(cx, 16.)).child("File renamed"))
+                        .children(
+                            metadata
+                                .into_iter()
+                                .map(|line| div().text_color(rgb(MUTED)).child(line)),
+                        ),
+                )
                 .into_any_element();
         }
         if !p.hunks.is_empty() {
@@ -337,6 +375,7 @@ impl GitCrab {
                                     "Stage hunk"
                                 },
                             )
+                            .xsmall()
                             .disabled(self.state.busy)
                             .on_click(cx.listener(
                                 move |v, _, w, cx| {

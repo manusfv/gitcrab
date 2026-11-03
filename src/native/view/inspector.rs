@@ -11,6 +11,7 @@ impl GitCrab {
                 .and_then(|s| s.commits.iter().find(|c| &c.id == id))
             {
                 let timestamp = c.date.clone();
+                let copy_id = c.id.clone();
                 let initials = c
                     .author
                     .split_whitespace()
@@ -87,7 +88,9 @@ impl GitCrab {
                             .text_size(type_size(cx, 12.))
                             .mx_2()
                             .tooltip("Copy full commit SHA")
-                            .on_click(cx.listener(|v, _, w, cx| v.copy(&Copy, w, cx))),
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy_id.clone()))
+                            }),
                     )
                     .child(div().px_3().flex().flex_wrap().gap_1().children(
                         c.parents.iter().enumerate().map(|(i, parent)| {

@@ -137,8 +137,8 @@ impl GitCrab {
                 cx.notify();
             }),
             cx.subscribe_in(&search, window, |v, _, event: &InputEvent, w, cx| {
-                if let InputEvent::PressEnter { secondary } = event {
-                    v.search_step(if *secondary { -1 } else { 1 }, w, cx);
+                if let InputEvent::PressEnter { secondary: false } = event {
+                    v.search_step(1, w, cx);
                 } else if matches!(event, InputEvent::Change) {
                     v.update_search(cx);
                 }
@@ -1521,6 +1521,15 @@ impl Render for GitCrab {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::commit_staged))
+            .on_key_down(cx.listener(|v, event: &KeyDownEvent, w, cx| {
+                if event.keystroke.key == "enter"
+                    && event.keystroke.modifiers.shift
+                    && v.search.read(cx).focus_handle(cx).is_focused(w)
+                {
+                    v.search_step(-1, w, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(|v, _: &Find, w, cx| {
                 if !w.has_active_dialog(cx) && !v.settings_open {
                     v.search.update(cx, |s, cx| s.focus(w, cx));
