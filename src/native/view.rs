@@ -1011,14 +1011,20 @@ impl GitCrab {
                     .text_size(type_size(cx, 12.))
                     .text_color(rgb(SUBTLE))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(div().w(px(110.)).flex_none().child("BRANCH / TAG"))
+                    .child(
+                        div()
+                            .w(px(110.))
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .child("References"),
+                    )
                     .child(
                         div()
                             .w(px((self.state.graph.lanes as f32 * 18. + 24.).max(92.)))
                             .flex_none()
-                            .child("GRAPH"),
+                            .child("Graph"),
                     )
-                    .child(div().flex_1().child("COMMIT MESSAGE"))
+                    .child(div().flex_1().min_w_0().truncate().child("Message"))
                     .child(div().w(px(65.)).flex_none().child("SHA")),
             )
             .child(
@@ -1286,6 +1292,8 @@ impl GitCrab {
                 div()
                     .w(px(65.))
                     .flex_none()
+                    .whitespace_nowrap()
+                    .truncate()
                     .text_size(type_size(cx, 12.))
                     .font_family("monospace")
                     .text_color(rgb(SUBTLE))

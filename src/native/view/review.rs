@@ -258,10 +258,12 @@ impl GitCrab {
     fn diff_row(&self, i: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = self.state.patch.as_ref().unwrap();
         let selected = self.selection.as_ref().is_some_and(|r| r.contains(&i));
+        let advance = self.preferences.code_size * 0.65;
+        let scale = self.preferences.code_size / 12.;
         let width = if self.split {
-            (p.split_columns as f32 * 7.5 + 130.) * 2.
+            (p.split_columns as f32 * advance + 130. * scale) * 2.
         } else {
-            p.columns as f32 * 7.5 + 160.
+            p.columns as f32 * advance + 160. * scale
         };
         let mut el = div()
             .id(("diff-line", i))
@@ -311,7 +313,7 @@ impl GitCrab {
                     }))
                     .child(
                         div()
-                            .w(px(if self.split { 45. } else { 90. }))
+                            .w(px(if self.split { 45. * scale } else { 90. * scale }))
                             .flex_none()
                             .whitespace_nowrap()
                             .text_color(rgb(MUTED))

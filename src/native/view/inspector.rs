@@ -446,15 +446,17 @@ impl GitCrab {
                         }),
                 )
                 .child(
-                    div().px_3().child(
+                    div().w_full().min_w_0().px_3().child(
                         Input::new(&self.draft)
+                            .w_full()
                             .disabled(self.settings_open)
                             .h(px(34.)),
                     ),
                 )
                 .child(
-                    div().px_3().pt_2().child(
+                    div().w_full().min_w_0().px_3().pt_2().child(
                         Input::new(&self.description)
+                            .w_full()
                             .disabled(self.settings_open)
                             .h(px(64.)),
                     ),
