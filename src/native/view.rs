@@ -738,6 +738,33 @@ impl GitCrab {
             .rounded(px(6.))
             .tab_stop(!self.settings_open)
     }
+    fn editor(
+        &self,
+        input: &Entity<InputState>,
+        height: f32,
+        placeholder: &str,
+        cx: &App,
+    ) -> AnyElement {
+        if self.settings_open {
+            let value = input.read(cx).value();
+            div()
+                .w_full()
+                .h(px(height))
+                .px_2()
+                .rounded(px(6.))
+                .bg(rgb(CHROME))
+                .overflow_hidden()
+                .text_color(rgb(MUTED))
+                .child(if value.is_empty() {
+                    placeholder.to_string()
+                } else {
+                    value.to_string()
+                })
+                .into_any_element()
+        } else {
+            Input::new(input).w_full().h(px(height)).into_any_element()
+        }
+    }
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let changes = self
             .state
@@ -985,7 +1012,7 @@ impl GitCrab {
                         .primary()
                         .icon(icon("folder"))
                         .label("Open a repository")
-                        .disabled(self.state.loading())
+                        .disabled(self.state.loading() || self.settings_open)
                         .on_click(cx.listener(|v, _, w, cx| v.pick(&Open, w, cx))),
                 )
                 .child(
@@ -1508,12 +1535,9 @@ impl Render for GitCrab {
         toolbar = toolbar
             .child(div().flex_1())
             .child(
-                div().w(px(180.)).child(
-                    Input::new(&self.search)
-                        .disabled(self.settings_open)
-                        .small()
-                        .prefix(icon("search").small().text_color(rgb(SUBTLE))),
-                ),
+                div()
+                    .w(px(180.))
+                    .child(self.editor(&self.search, 32., "Search history…", cx)),
             )
             .when(!self.search.read(cx).value().is_empty(), |bar| {
                 bar.child(

@@ -445,22 +445,18 @@ impl GitCrab {
                             "Stage changes, then give your commit a clear summary."
                         }),
                 )
-                .child(
-                    div().w_full().min_w_0().px_3().child(
-                        Input::new(&self.draft)
-                            .w_full()
-                            .disabled(self.settings_open)
-                            .h(px(34.)),
-                    ),
-                )
-                .child(
-                    div().w_full().min_w_0().px_3().pt_2().child(
-                        Input::new(&self.description)
-                            .w_full()
-                            .disabled(self.settings_open)
-                            .h(px(64.)),
-                    ),
-                )
+                .child(div().w_full().min_w_0().px_3().child(self.editor(
+                    &self.draft,
+                    34.,
+                    "Commit summary",
+                    cx,
+                )))
+                .child(div().w_full().min_w_0().px_3().pt_2().child(self.editor(
+                    &self.description,
+                    64.,
+                    "Description (optional)",
+                    cx,
+                )))
                 .when(conflict, |el| {
                     el.child(
                         div()
