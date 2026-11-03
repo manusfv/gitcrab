@@ -448,14 +448,14 @@ impl GitCrab {
                 .child(div().w_full().min_w_0().px_3().child(self.editor(
                     &self.draft,
                     34.,
-                    self.preferences.inspector_width - 32.,
+                    self.inspector_editor_width(),
                     "Commit summary",
                     cx,
                 )))
                 .child(div().w_full().min_w_0().px_3().pt_2().child(self.editor(
                     &self.description,
                     64.,
-                    self.preferences.inspector_width - 32.,
+                    self.inspector_editor_width(),
                     "Description (optional)",
                     cx,
                 )))

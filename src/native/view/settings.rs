@@ -67,6 +67,7 @@ impl GitCrab {
                         v.compact = false;
                         v.split = false;
                         v.layout_revision += 1;
+                        v.reset_panels(cx);
                         gpui_component::Theme::global_mut(cx).font_size =
                             px(v.preferences.font_size);
                         cx.notify();
@@ -114,6 +115,7 @@ impl GitCrab {
                         };
                         if index == 1 || index == 2 {
                             v.layout_revision += 1;
+                            v.reset_panels(cx);
                         }
                         cx.notify();
                     })),

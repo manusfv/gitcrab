@@ -90,6 +90,9 @@ pub struct GitCrab {
     saving: bool,
     preference_save: Option<Task<()>>,
     layout_revision: u64,
+    panels: [Entity<gpui_component::resizable::ResizableState>; 2],
+    panel_subscriptions: Vec<Subscription>,
+    actual_inspector_width: [f32; 2],
     watcher: Option<notify::RecommendedWatcher>,
     watch_epoch: u32,
     watch_warning: Option<String>,
@@ -176,6 +179,12 @@ impl GitCrab {
             saving: false,
             preference_save: None,
             layout_revision: 0,
+            panels: [
+                cx.new(|_| Default::default()),
+                cx.new(|_| Default::default()),
+            ],
+            panel_subscriptions: vec![],
+            actual_inspector_width: [0.; 2],
             watcher: None,
             watch_epoch: 0,
             watch_warning: None,
@@ -190,6 +199,7 @@ impl GitCrab {
             #[cfg(feature = "native-evidence")]
             benchmark: (None, vec![]),
         };
+        v.reset_panels(cx);
         v.focus.focus(window);
         if let Some(path) = std::env::args().nth(1) {
             let mut job = v.state.open(path);
@@ -387,6 +397,32 @@ impl GitCrab {
                 });
             }
         }));
+    }
+    fn reset_panels(&mut self, cx: &mut Context<Self>) {
+        self.panels = [
+            cx.new(|_| Default::default()),
+            cx.new(|_| Default::default()),
+        ];
+        self.actual_inspector_width = [self.preferences.inspector_width; 2];
+        self.panel_subscriptions = self
+            .panels
+            .iter()
+            .enumerate()
+            .map(|(index, panel)| {
+                cx.observe(panel, move |v, panel, cx| {
+                    if let Some(width) = panel.read(cx).sizes().get(2).map(|w| f32::from(*w)) {
+                        if width > 0. && (width - v.actual_inspector_width[index]).abs() > 0.5 {
+                            v.actual_inspector_width[index] = width;
+                            cx.notify();
+                        }
+                    }
+                })
+            })
+            .collect();
+    }
+    fn inspector_editor_width(&self) -> f32 {
+        (self.actual_inspector_width[usize::from(self.state.diff_context.is_some())] - 32.)
+            .max(100.)
     }
     fn search_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_open || window.has_active_dialog(cx) {
@@ -1642,6 +1678,7 @@ impl Render for GitCrab {
                         "workspace-{in_diff}-{}",
                         self.layout_revision
                     )))
+                    .with_state(&self.panels[usize::from(in_diff)])
                     .on_resize(cx.listener(
                         move |v,
                               state: &Entity<gpui_component::resizable::ResizableState>,
