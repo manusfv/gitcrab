@@ -43,3 +43,8 @@ lto = "thin"
 # gpui -> zed-async-tar -> xattr 0.2.3 uses a removed libc Linux alias.
 xattr = { path = "vendor/xattr" }
 
+
+[[example]]
+name = "accessibility-probe"
+path = "scripts/accessibility-probe.rs"
+required-features = ["gpui-desktop"]
