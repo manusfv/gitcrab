@@ -47,6 +47,7 @@ pub enum Action {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Operation {
     CreateBranch,
+    CreateBranchAt { start: String },
     Checkout,
     Merge,
     CherryPick,
@@ -271,6 +272,7 @@ impl Session {
             Action::Operation { op, target } => {
                 match op {
                     Operation::CreateBranch => g.create_branch(&target)?,
+                    Operation::CreateBranchAt { start } => g.create_branch_at(&target, &start)?,
                     Operation::Checkout => g.checkout(&target)?,
                     Operation::Merge => g.merge(&target)?,
                     Operation::CherryPick => g.cherry_pick(&target)?,

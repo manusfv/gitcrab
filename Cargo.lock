@@ -2075,8 +2075,10 @@ name = "gitcrab"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel 2.5.0",
  "gpui",
  "gpui-component",
+ "notify",
  "serde",
  "serde_json",
  "tokio",

@@ -9,6 +9,10 @@ pub struct Preferences {
     pub nav_width: f32,
     pub inspector_width: f32,
     pub split: bool,
+    pub code_size: f32,
+    pub compact_diff: bool,
+    pub collapsed: std::collections::BTreeSet<String>,
+    pub recent: Vec<String>,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -18,6 +22,10 @@ impl Default for Preferences {
             nav_width: 210.,
             inspector_width: 330.,
             split: false,
+            code_size: 13.,
+            compact_diff: false,
+            collapsed: Default::default(),
+            recent: vec![],
         }
     }
 }
@@ -56,6 +64,12 @@ impl Preferences {
         } else {
             330.
         };
+        p.code_size = if p.code_size.is_finite() {
+            p.code_size.clamp(11., 20.)
+        } else {
+            13.
+        };
+        p.recent.truncate(10);
         p
     }
     pub fn save(&self) -> Result<(), String> {

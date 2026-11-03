@@ -1,3 +1,6 @@
+mod inspector;
+mod review;
+mod settings;
 use super::preferences::Preferences;
 use super::theme::*;
 use gitcrab_core::{
@@ -15,6 +18,38 @@ use gpui_component::{
 };
 use std::ops::Range;
 
+fn compose_message(summary: &str, body: &str) -> String {
+    if body.is_empty() {
+        summary.to_string()
+    } else {
+        format!("{summary}\n\n{body}")
+    }
+}
+fn split_message(message: &str) -> (&str, &str) {
+    match message.split_once('\n') {
+        Some((summary, body)) => (summary, body.strip_prefix('\n').unwrap_or(body)),
+        None => (message, ""),
+    }
+}
+fn display_date(date: &str) -> String {
+    let month = date
+        .get(5..7)
+        .and_then(|s| s.parse::<usize>().ok())
+        .and_then(|m| {
+            [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ]
+            .get(m.wrapping_sub(1))
+        })
+        .copied();
+    match (month, date.get(8..10), date.get(..4), date.get(11..16)) {
+        (Some(month), Some(day), Some(year), Some(time)) => {
+            format!("{day} {month} {year} · {time}")
+        }
+        _ => date.to_string(),
+    }
+}
+
 actions!(
     gitcrab,
     [
@@ -26,7 +61,10 @@ actions!(
         Copy,
         SelectAll,
         Quit,
-        CommitStaged
+        CommitStaged,
+        Find,
+        SearchNext,
+        SearchPrevious
     ]
 );
 pub struct GitCrab {
@@ -34,6 +72,7 @@ pub struct GitCrab {
     service: Service,
     focus: FocusHandle,
     draft: Entity<InputState>,
+    description: Entity<InputState>,
     search: Entity<InputState>,
     target: Entity<InputState>,
     operation: Option<Operation>,
@@ -49,27 +88,68 @@ pub struct GitCrab {
     preferences: Preferences,
     settings_open: bool,
     saving: bool,
+    preference_save: Option<Task<()>>,
+    layout_revision: u64,
+    watcher: Option<notify::RecommendedWatcher>,
+    watch_epoch: u32,
+    watch_warning: Option<String>,
+    external_dirty: bool,
+    search_matches: Vec<String>,
     #[cfg(feature = "native-evidence")]
     evidence_phase: u8,
+    #[cfg(feature = "native-evidence")]
+    feedback_start: Option<(std::time::Instant, &'static str)>,
+    #[cfg(feature = "native-evidence")]
+    watch_start: Option<std::time::Instant>,
     #[cfg(feature = "native-evidence")]
     benchmark: (Option<std::time::Instant>, Vec<f64>),
 }
 impl GitCrab {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let draft = cx.new(|cx| {
+        let draft = cx.new(|cx| InputState::new(window, cx).placeholder("Commit summary"));
+        let description = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
-                .placeholder("Commit summary…")
+                .placeholder("Description (optional)")
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search history…"));
         let target = cx
             .new(|cx| InputState::new(window, cx).placeholder("Branch, revision or stash message"));
         let subscriptions = vec![
-            cx.subscribe(&draft, |v, input, _: &InputEvent, cx| {
-                v.state.draft = input.read(cx).value().to_string();
+            cx.subscribe(&draft, |v, input, event: &InputEvent, cx| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                v.state.draft = compose_message(
+                    input.read(cx).value().as_ref(),
+                    v.description.read(cx).value().as_ref(),
+                );
                 cx.notify();
             }),
-            cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.subscribe(&description, |v, input, event: &InputEvent, cx| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                v.state.draft = compose_message(
+                    v.draft.read(cx).value().as_ref(),
+                    input.read(cx).value().as_ref(),
+                );
+                cx.notify();
+            }),
+            cx.subscribe_in(&search, window, |v, _, event: &InputEvent, w, cx| {
+                if let InputEvent::PressEnter { secondary } = event {
+                    v.search_step(if *secondary { -1 } else { 1 }, w, cx);
+                } else if matches!(event, InputEvent::Change) {
+                    v.update_search(cx);
+                }
+                cx.notify();
+            }),
+            cx.observe_window_activation(window, |v, w, cx| {
+                if w.is_window_active() && !v.state.busy {
+                    v.external_dirty = false;
+                    v.refresh(&Refresh, w, cx);
+                }
+            }),
         ];
         let preferences = Preferences::load();
         gpui_component::Theme::global_mut(cx).font_size = px(preferences.font_size);
@@ -78,6 +158,7 @@ impl GitCrab {
             service: Service::new(),
             focus: cx.focus_handle(),
             draft,
+            description,
             search,
             target,
             operation: None,
@@ -93,8 +174,19 @@ impl GitCrab {
             preferences,
             settings_open: false,
             saving: false,
+            preference_save: None,
+            layout_revision: 0,
+            watcher: None,
+            watch_epoch: 0,
+            watch_warning: None,
+            external_dirty: false,
+            search_matches: vec![],
             #[cfg(feature = "native-evidence")]
             evidence_phase: 0,
+            #[cfg(feature = "native-evidence")]
+            feedback_start: None,
+            #[cfg(feature = "native-evidence")]
+            watch_start: None,
             #[cfg(feature = "native-evidence")]
             benchmark: (None, vec![]),
         };
@@ -177,9 +269,31 @@ impl GitCrab {
         cx: &mut Context<Self>,
     ) {
         let jobs = self.state.complete(lane, response);
-        if self.state.draft != self.draft.read(cx).value().as_ref() {
-            let text = self.state.draft.clone();
-            self.draft.update(cx, |s, cx| s.set_value(text, window, cx));
+        #[cfg(feature = "native-evidence")]
+        if lane == Lane::Snapshot && !self.state.loading() {
+            if let Some(start) = self.watch_start.take() {
+                super::trace::record("external-event-to-state", start, cx);
+            }
+        }
+        let (summary, body) = split_message(&self.state.draft);
+        let summary = summary.to_string();
+        let body = body.to_string();
+        if summary != self.draft.read(cx).value().as_ref() {
+            self.draft
+                .update(cx, |s, cx| s.set_value(summary, window, cx));
+        }
+        if body != self.description.read(cx).value().as_ref() {
+            self.description
+                .update(cx, |s, cx| s.set_value(body, window, cx));
+        }
+        if lane == Lane::Snapshot && self.state.snapshot.is_some() {
+            self.update_search(cx);
+            self.install_watch(window, cx);
+            if !self.preferences.recent.contains(&self.state.path) {
+                self.preferences.recent.insert(0, self.state.path.clone());
+                self.preferences.recent.truncate(10);
+                self.persist_preferences(window, cx);
+            }
         }
         for job in jobs {
             self.dispatch(Some(job), window, cx);
@@ -187,6 +301,135 @@ impl GitCrab {
         #[cfg(feature = "native-evidence")]
         self.advance_evidence(lane, window, cx);
         cx.notify();
+    }
+    fn install_watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.watch_epoch == self.state.epoch {
+            return;
+        }
+        self.watch_epoch = self.state.epoch;
+        self.watcher = None;
+        self.watch_warning = None;
+        let epoch = self.state.epoch;
+        let root = self.state.path.clone();
+        let task = cx
+            .background_executor()
+            .spawn(async move { super::watch::start(root) });
+        cx.spawn_in(window, async move |view, cx| {
+            let result = task.await;
+            let receiver = view.update_in(cx, |v, _, cx| {
+                if v.state.epoch != epoch { return None; }
+                match result {
+                    Ok((watcher, receiver)) => { v.watcher = Some(watcher); Some(receiver) }
+                    Err(e) => { v.watch_warning = Some(format!("Live refresh unavailable: {e}. Use F5; focus refresh remains available.")); cx.notify(); None }
+                }
+            }).ok().flatten();
+            let Some(receiver) = receiver else { return; };
+            while let Ok((mut error,mut event_time)) = receiver.recv().await {
+                cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
+                while let Ok((next,time)) = receiver.try_recv() { event_time=time;if next.is_some() {error=next;} }
+                let keep = view.update_in(cx, |v, w, cx| {
+                    if v.state.epoch != epoch { return false; }
+                    if let Some(error) = error { v.watch_warning = Some(format!("Live refresh interrupted: {error}. Use F5.")); }
+                    if !v.state.busy && w.is_window_active() {
+                        #[cfg(feature="native-evidence")]
+                        {v.watch_start=Some(event_time);}
+                        #[cfg(not(feature="native-evidence"))]
+                        let _=event_time;
+                        v.refresh(&Refresh, w, cx);
+                    }
+                    else { v.external_dirty = true; }
+                    true
+                }).unwrap_or(false);
+                if !keep { break; }
+            }
+        }).detach();
+    }
+    fn update_search(&mut self, cx: &Context<Self>) {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        self.search_matches = self
+            .state
+            .snapshot
+            .as_ref()
+            .map(|s| {
+                s.commits
+                    .iter()
+                    .filter(|c| {
+                        !query.is_empty()
+                            && format!("{} {} {} {}", c.subject, c.author, c.id, c.refs.join(" "))
+                                .to_lowercase()
+                                .contains(&query)
+                    })
+                    .map(|c| c.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    fn persist_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preferences.compact = self.compact;
+        self.preferences.split = self.split;
+        let timer = cx
+            .background_executor()
+            .timer(std::time::Duration::from_millis(200));
+        self.preference_save = Some(cx.spawn_in(window, async move |view, cx| {
+            timer.await;
+            let Ok(preferences) = view.update_in(cx, |v, _, _| v.preferences.clone()) else {
+                return;
+            };
+            let result = cx
+                .background_executor()
+                .spawn(async move { preferences.save() })
+                .await;
+            if let Err(error) = result {
+                let _ = view.update_in(cx, |v, _, cx| {
+                    v.state.error = true;
+                    v.state.notice = format!("Could not save appearance: {error}");
+                    cx.notify();
+                });
+            }
+        }));
+    }
+    fn search_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let current = self
+            .state
+            .selected
+            .as_ref()
+            .and_then(|id| self.search_matches.iter().position(|m| m == id));
+        let index = current
+            .map(|i| (i as isize + delta).rem_euclid(self.search_matches.len() as isize) as usize)
+            .unwrap_or(0);
+        self.select(Some(self.search_matches[index].clone()), window, cx);
+    }
+    fn review_placeholder(&self, cx: &mut Context<Self>) -> AnyElement {
+        let loading = self.state.diff_loading();
+        let staged = self.state.diff_context.as_ref().is_some_and(|c| c.2);
+        panel()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_4()
+            .child(icon(if loading { "refresh" } else { "check" }).text_color(rgb(ACCENT)))
+            .child(div().text_size(type_size(cx, 16.)).child(if loading {
+                "Loading changes…"
+            } else if self.state.error {
+                "Changes could not be loaded"
+            } else if staged {
+                "No staged changes to review"
+            } else {
+                "Working changes reviewed"
+            }))
+            .child(div().text_color(rgb(MUTED)).child(if loading {
+                "Your selection is being updated."
+            } else {
+                "Choose another file, review staged changes, or create your commit."
+            }))
+            .child(
+                self.button("review-history", "Return to history")
+                    .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
+            )
+            .into_any_element()
     }
     #[cfg(feature = "native-evidence")]
     fn advance_evidence(&mut self, lane: Lane, window: &mut Window, cx: &mut Context<Self>) {
@@ -269,8 +512,26 @@ impl GitCrab {
         self.dispatch(j, window, cx);
     }
     fn select(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "native-evidence")]
+        {
+            self.feedback_start = Some((std::time::Instant::now(), "selection-to-next-frame"));
+        }
         self.selection = None;
         self.focus.focus(window);
+        if let Some(snapshot) = &self.state.snapshot {
+            if let Some(index) = id
+                .as_ref()
+                .and_then(|id| snapshot.commits.iter().position(|c| &c.id == id))
+            {
+                self.history_scroll
+                    .scroll_to_item(index + 1, ScrollStrategy::Center);
+            } else if id.is_none() {
+                self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
+            } else {
+                self.state.notice =
+                    "This commit is outside loaded history. Load more commits to reveal it.".into();
+            }
+        }
         let j = self.state.select(id);
         self.dispatch(j, window, cx);
     }
@@ -282,13 +543,23 @@ impl GitCrab {
         self.dispatch(j, window, cx);
     }
     fn mutate(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "native-evidence")]
+        {
+            self.feedback_start =
+                Some((std::time::Instant::now(), "mutation-feedback-to-next-frame"));
+        }
         let j = self.state.mutate(action);
         self.selection = None;
         self.dispatch(j, window, cx);
     }
     fn can_commit(&self) -> bool {
         !self.state.busy
-            && !self.state.draft.trim().is_empty()
+            && self
+                .state
+                .draft
+                .lines()
+                .next()
+                .is_some_and(|s| !s.trim().is_empty())
             && self.state.snapshot.as_ref().is_some_and(|s| {
                 s.status.iter().any(|f| f.index != ' ' && f.index != '?')
                     && !s.status.iter().any(|f| {
@@ -333,7 +604,7 @@ impl GitCrab {
         let repo = self.state.path.clone();
         let head = self.state.snapshot.as_ref().unwrap().head.clone();
         let label = match op {
-            Operation::CreateBranch => "Create branch",
+            Operation::CreateBranch | Operation::CreateBranchAt { .. } => "Create branch",
             Operation::Checkout => "Checkout",
             Operation::Merge => "Merge",
             Operation::CherryPick => "Cherry-pick",
@@ -341,19 +612,20 @@ impl GitCrab {
             Operation::Stash => "Stash",
             Operation::PopStash => "Pop stash",
         };
-        window.open_dialog(cx,move|dialog,_,_|{
+        window.open_dialog(cx,move|dialog,_,cx|{
             let view=view.clone();let cancel=cancel.clone();let target=target.clone();let op=op.clone();
             dialog.title(label).confirm().button_props(gpui_component::dialog::DialogButtonProps::default().ok_text(label))
                 .child(div().flex().flex_col().gap_3()
                     .child(div().p_3().rounded(px(6.)).bg(rgb(CANVAS)).border_1().border_color(rgb(BORDER))
-                        .child(div().text_size(px(10.)).text_color(rgb(SUBTLE)).child("REPOSITORY"))
-                        .child(div().mt_1().text_size(px(12.)).child(repo.clone()))
+                        .child(div().text_size(type_size(cx, 12.)).text_color(rgb(SUBTLE)).child("REPOSITORY"))
+                        .child(div().mt_1().text_size(type_size(cx, 12.)).child(repo.clone()))
                         .child(div().mt_2().child(badge(format!("Current branch · {head}"), ACCENT))))
                     .child(div().font_weight(FontWeight::MEDIUM).child(match op {
-                        Operation::CreateBranch => "New branch name", Operation::Stash => "Stash message (optional)",
+                        Operation::CreateBranch | Operation::CreateBranchAt { .. } => "New branch name", Operation::Stash => "Stash message (optional)",
                         Operation::PopStash => "Latest stash", _ => "Target branch or commit" }))
                     .when(!matches!(op, Operation::PopStash), |e| e.child(Input::new(&target)))
-                    .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child("Review this operation before continuing. Conflicts will appear in Working changes.")))
+                    .when_some(match &op { Operation::CreateBranchAt {start}=>Some(start.clone()), _=>None }, |e,start| e.child(format!("Starting at {}",start)))
+                    .child(div().text_size(type_size(cx, 12.)).text_color(rgb(MUTED)).child("Review this operation before continuing. Conflicts will appear in Working changes.")))
                 .on_ok(move|_,w,cx|view.update(cx,|v,cx|{
                     if v.state.epoch!=epoch {v.state.error=true;v.state.notice="Repository changed. Review this operation again.".into();v.operation=None;cx.notify();return true;}
                     if v.state.busy{return false;}
@@ -378,6 +650,10 @@ impl GitCrab {
             return;
         }
         self.operation = None;
+        if !self.search.read(cx).value().is_empty() {
+            self.search.update(cx, |s, cx| s.set_value("", window, cx));
+            self.search_matches.clear();
+        }
         self.state.close_diff();
         self.focus.focus(window);
         cx.notify();
@@ -497,7 +773,7 @@ impl GitCrab {
                     .child(
                         div()
                             .pr_2()
-                            .text_size(px(10.))
+                            .text_size(type_size(cx, 12.))
                             .text_color(rgb(SUBTLE))
                             .child(
                                 self.state
@@ -510,7 +786,47 @@ impl GitCrab {
                     ),
             );
         if let Some(s) = &self.state.snapshot {
+            let mut groups = std::collections::BTreeSet::new();
             for (i, b) in s.branches.iter().enumerate() {
+                let parts = b.split('/').collect::<Vec<_>>();
+                let mut hidden = false;
+                for depth in 1..parts.len() {
+                    let prefix = parts[..depth].join("/");
+                    let key = format!("{}|{}", self.state.path, prefix);
+                    let collapsed = self.preferences.collapsed.contains(&key);
+                    if groups.insert(prefix.clone()) {
+                        let label =
+                            format!("{} {}", if collapsed { "▸" } else { "▾" }, parts[depth - 1]);
+                        nav = nav.child(
+                            div().pl(px((depth - 1) as f32 * 12.)).child(
+                                self.button(
+                                    SharedString::from(format!("branch-group-{prefix}")),
+                                    label,
+                                )
+                                .w_full()
+                                .justify_start()
+                                .h(px(28.))
+                                .text_color(rgb(MUTED))
+                                .on_click(cx.listener(
+                                    move |v, _, w, cx| {
+                                        if !v.preferences.collapsed.remove(&key) {
+                                            v.preferences.collapsed.insert(key.clone());
+                                        }
+                                        v.persist_preferences(w, cx);
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                        );
+                    }
+                    if collapsed {
+                        hidden = true;
+                        break;
+                    }
+                }
+                if hidden {
+                    continue;
+                }
                 let id = s
                     .commits
                     .iter()
@@ -518,23 +834,26 @@ impl GitCrab {
                     .map(|c| c.id.clone());
                 let branch = b.clone();
                 nav = nav.child(
-                    self.button(("branch", i), b.clone())
+                    self.button(("branch", i), parts.last().unwrap().to_string())
                         .icon(icon("branch"))
                         .w_full()
                         .justify_start()
                         .h(px(30.))
+                        .ml(px((parts.len()-1) as f32 * 12.))
                         .text_color(rgb(MUTED))
                         .when(b == &s.head, |b| {
                             b.bg(rgb(RAISED))
                                 .text_color(rgb(TEXT))
                                 .font_weight(FontWeight::MEDIUM)
                         })
+                        .when(id.is_some() && id == self.state.selected, |b| b.bg(rgb(SELECTED)).text_color(rgb(TEXT)))
                         .tooltip(format!("{} · Double-click to checkout", b))
                         .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| {
                             if e.click_count() == 2 {
                                 v.review(Operation::Checkout, branch.clone(), w, cx);
                             } else {
-                                v.select(id.clone(), w, cx);
+                                if let Some(id)=id.clone() { v.select(Some(id), w, cx); }
+                                else { v.state.notice="Branch tip is outside loaded history. Use Load more commits to reveal it.".into();cx.notify(); }
                             }
                         })),
                 );
@@ -634,7 +953,7 @@ impl GitCrab {
                 .child(
                     div()
                         .text_color(rgb(MUTED))
-                        .text_size(px(12.))
+                        .text_size(type_size(cx, 12.))
                         .text_center()
                         .child("Browse history, review changes, and create your next commit."),
                 )
@@ -648,7 +967,7 @@ impl GitCrab {
                 )
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(type_size(cx, 12.))
                         .text_color(rgb(SUBTLE))
                         .child("Ctrl/Cmd+O  ·  Existing local Git repositories"),
                 )
@@ -659,31 +978,6 @@ impl GitCrab {
         panel()
             .child(
                 div()
-                    .h(px(44.))
-                    .px_3()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(icon("history").small().text_color(rgb(MUTED)))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Commit graph"),
-                    )
-                    .child(badge(count.to_string(), MUTED))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(rgb(SUBTLE))
-                            .child("↑ ↓ Navigate"),
-                    ),
-            )
-            .child(
-                div()
                     .h(px(26.))
                     .flex_none()
                     .flex()
@@ -691,7 +985,7 @@ impl GitCrab {
                     .px_2()
                     .gap_2()
                     .bg(rgb(CHROME))
-                    .text_size(px(9.))
+                    .text_size(type_size(cx, 12.))
                     .text_color(rgb(SUBTLE))
                     .font_weight(FontWeight::MEDIUM)
                     .child(div().w(px(110.)).flex_none().child("BRANCH / TAG"))
@@ -736,7 +1030,7 @@ impl GitCrab {
             .into_any_element()
     }
     fn history_row(&self, index: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let height = if self.compact { 26. } else { 32. };
+        let height = if self.compact { 26. } else { 30. };
         if index == 0 {
             let graph_width = (self.state.graph.lanes as f32 * 18. + 24.).max(92.);
             let has_head = self
@@ -764,7 +1058,7 @@ impl GitCrab {
                     div()
                         .w(px(110.))
                         .flex_none()
-                        .text_size(px(11.))
+                        .text_size(type_size(cx, 12.))
                         .child(badge("WIP", ACCENT)),
                 )
                 .child(
@@ -858,6 +1152,7 @@ impl GitCrab {
             .to_string();
         let color = row.color;
         let merge = c.parents.len() > 1;
+        let has_refs = !c.refs.is_empty();
         let mut el = div()
             .id(("commit", i))
             .w_full()
@@ -878,7 +1173,7 @@ impl GitCrab {
                     .w(px(110.))
                     .flex_none()
                     .truncate()
-                    .text_size(px(11.))
+                    .text_size(type_size(cx, 12.))
                     .text_color(rgb(PALETTE[color % 8]))
                     .when(!refs.is_empty(), |e| {
                         e.child(badge(
@@ -899,6 +1194,15 @@ impl GitCrab {
                         let origin = bounds.origin;
                         let x = |lane: usize| origin.x + px(12. + lane as f32 * 18.);
                         let y = origin.y + px(height / 2.);
+                        if has_refs {
+                            w.paint_quad(fill(
+                                Bounds::new(
+                                    point(origin.x - px(8.), y - px(0.75)),
+                                    size(px(20. + row.lane as f32 * 18.), px(1.5)),
+                                ),
+                                rgb(PALETTE[row.color % 8]),
+                            ));
+                        }
                         for (edge, above) in row
                             .edges
                             .iter()
@@ -959,7 +1263,7 @@ impl GitCrab {
                 div()
                     .w(px(65.))
                     .flex_none()
-                    .text_size(px(11.))
+                    .text_size(type_size(cx, 12.))
                     .font_family("monospace")
                     .text_color(rgb(SUBTLE))
                     .child(c.id[..8.min(c.id.len())].to_string()),
@@ -970,6 +1274,32 @@ impl GitCrab {
         }
         let view = cx.entity();
         el.context_menu(move |mut menu, _, _| {
+            let sha = target.clone();
+            menu = menu
+                .item(
+                    PopupMenuItem::new("Copy commit SHA").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(sha.clone()))
+                    }),
+                )
+                .separator();
+            let create_view = view.clone();
+            let start = target.clone();
+            menu = menu
+                .item(
+                    PopupMenuItem::new("Create branch here…").on_click(move |_, w, cx| {
+                        create_view.update(cx, |v, cx| {
+                            v.review(
+                                Operation::CreateBranchAt {
+                                    start: start.clone(),
+                                },
+                                String::new(),
+                                w,
+                                cx,
+                            )
+                        })
+                    }),
+                )
+                .separator();
             for (op, label) in [
                 (Operation::Checkout, "Checkout…"),
                 (Operation::Merge, "Merge…"),
@@ -978,903 +1308,28 @@ impl GitCrab {
             ] {
                 let view = view.clone();
                 let target = target.clone();
-                menu = menu.item(PopupMenuItem::new(label).on_click(move |_, w, cx| {
-                    view.update(cx, |v, cx| v.review(op.clone(), target.clone(), w, cx))
-                }));
+                menu = menu.item(
+                    PopupMenuItem::new(format!(
+                        "{} {}",
+                        label.trim_end_matches('…'),
+                        target.chars().take(8).collect::<String>()
+                    ))
+                    .on_click(move |_, w, cx| {
+                        view.update(cx, |v, cx| v.review(op.clone(), target.clone(), w, cx))
+                    }),
+                );
             }
             menu
         })
         .into_any_element()
     }
-    fn inspector(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut el = panel();
-        if let Some(id) = &self.state.selected {
-            if let Some(c) = self
-                .state
-                .snapshot
-                .as_ref()
-                .and_then(|s| s.commits.iter().find(|c| &c.id == id))
-            {
-                el = el
-                    .child(
-                        div()
-                            .h(px(44.))
-                            .px_3()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .border_b_1()
-                            .border_color(rgb(BORDER))
-                            .child(icon("changes").small().text_color(rgb(MUTED)))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Commit details"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .px_3()
-                            .pt_3()
-                            .pb_2()
-                            .text_size(px(15.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(c.subject.clone()),
-                    )
-                    .child(
-                        div()
-                            .px_3()
-                            .pb_2()
-                            .text_size(px(12.))
-                            .text_color(rgb(MUTED))
-                            .child(c.author.clone())
-                            .child(c.date.clone()),
-                    )
-                    .child(
-                        self.button("copy-id", c.id.clone())
-                            .icon(icon("copy"))
-                            .font_family("monospace")
-                            .text_size(px(10.))
-                            .mx_2()
-                            .tooltip("Copy full commit SHA")
-                            .on_click(cx.listener(|v, _, w, cx| v.copy(&Copy, w, cx))),
-                    )
-                    .child(div().px_3().text_size(px(11.)).child(format!(
-                            "Parents: {}",
-                            c.parents
-                                .iter()
-                                .map(|p| &p[..8])
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )))
-                    .child(
-                        div()
-                            .px_3()
-                            .text_size(px(11.))
-                            .text_color(rgb(ACCENT))
-                            .child(c.refs.join(" · ")),
-                    )
-                    .child(heading("FIRST-PARENT CHANGED FILES"));
-                let weak = cx.weak_entity();
-                el = el.child(
-                    uniform_list(
-                        "committed-files",
-                        self.state.files.len(),
-                        move |range, _, cx| {
-                            weak.update(cx, |v, cx| {
-                                range
-                                    .map(|i| {
-                                        let path = v.state.files[i].clone();
-                                        div().h(px(30.)).child(
-                                            v.button(("changed", i), path.clone()).on_click(
-                                                cx.listener(move |v, _, w, cx| {
-                                                    v.file(path.clone(), false, w, cx)
-                                                }),
-                                            ),
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
-                        },
-                    )
-                    .flex_1()
-                    .min_h_0(),
-                );
-                for (i, (op, label)) in [
-                    (Operation::Checkout, "Checkout…"),
-                    (Operation::CherryPick, "Cherry-pick…"),
-                    (Operation::Revert, "Revert…"),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let id = id.clone();
-                    el = el.child(
-                        self.button(("commit-op", i), label)
-                            .disabled(self.state.busy)
-                            .on_click(cx.listener(move |v, _, w, cx| {
-                                v.review(op.clone(), id.clone(), w, cx)
-                            })),
-                    );
-                }
-            }
-        } else {
-            el = el.child(
-                div()
-                    .h(px(44.))
-                    .px_3()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(icon("changes").small().text_color(rgb(ACCENT)))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Working changes"),
-                    )
-                    .child(div().flex_1())
-                    .child(badge(
-                        self.state
-                            .snapshot
-                            .as_ref()
-                            .map(|s| s.status.len())
-                            .unwrap_or(0)
-                            .to_string(),
-                        ACCENT,
-                    )),
-            );
-            for staged in [false, true] {
-                let file_count = self
-                    .state
-                    .snapshot
-                    .as_ref()
-                    .map(|s| {
-                        s.status
-                            .iter()
-                            .filter(|f| {
-                                if staged {
-                                    f.index != ' ' && f.index != '?'
-                                } else {
-                                    f.worktree != ' ' || f.index == '?'
-                                }
-                            })
-                            .count()
-                    })
-                    .unwrap_or(0);
-                el = el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .px_2()
-                        .child(heading(format!(
-                            "{}  ·  {}",
-                            if staged { "STAGED" } else { "UNSTAGED" },
-                            file_count
-                        )))
-                        .child(
-                            self.button(
-                                if staged { "unstage-all" } else { "stage-all" },
-                                if staged { "Unstage all" } else { "Stage all" },
-                            )
-                            .tooltip(if staged {
-                                "Return all staged changes to the working tree"
-                            } else {
-                                "Stage all working changes for the next commit"
-                            })
-                            .disabled(self.state.busy || file_count == 0)
-                            .on_click(cx.listener(
-                                move |v, _, w, cx| {
-                                    v.mutate(
-                                        Action::Stage {
-                                            path: ".".into(),
-                                            unstage: staged,
-                                        },
-                                        w,
-                                        cx,
-                                    )
-                                },
-                            )),
-                        ),
-                );
-                let files = self
-                    .state
-                    .snapshot
-                    .as_ref()
-                    .map(|s| {
-                        s.status
-                            .iter()
-                            .filter(|f| {
-                                if staged {
-                                    f.index != ' ' && f.index != '?'
-                                } else {
-                                    f.worktree != ' ' || f.index == '?'
-                                }
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let weak = cx.weak_entity();
-                let n = files.len();
-                if n == 0 {
-                    el = el.child(
-                        div()
-                            .mx_3()
-                            .mb_2()
-                            .p_3()
-                            .rounded(px(6.))
-                            .bg(rgb(CHROME))
-                            .text_color(rgb(SUBTLE))
-                            .text_size(px(11.))
-                            .child(if staged {
-                                "Stage files or individual hunks to build your commit."
-                            } else {
-                                "Your working tree is clean."
-                            }),
-                    );
-                    continue;
-                }
-                el = el.child(
-                    uniform_list(
-                        if staged {
-                            "staged-files"
-                        } else {
-                            "unstaged-files"
-                        },
-                        n,
-                        move |range, _, cx| {
-                            weak.update(cx, |v, cx| {
-                                range
-                                    .map(|i| {
-                                        let f = &files[i];
-                                        let path = f.path.clone();
-                                        let stage_path = path.clone();
-                                        let status = if f.index == '?' {
-                                            '?'
-                                        } else if staged {
-                                            f.index
-                                        } else {
-                                            f.worktree
-                                        };
-                                        let tint = match status {
-                                            'A' | '?' => GREEN,
-                                            'D' | 'U' => RED,
-                                            'R' => 0xe5c07b,
-                                            _ => ACCENT,
-                                        };
-                                        let active = v.state.patch.as_ref().is_some_and(|p| {
-                                            p.path == f.path && p.staged == staged
-                                        });
-                                        div()
-                                            .w_full()
-                                            .h(px(30.))
-                                            .flex()
-                                            .items_center()
-                                            .px_2()
-                                            .gap_1()
-                                            .when(active, |e| e.bg(rgb(SELECTED)))
-                                            .hover(|e| e.bg(rgb(HOVER)))
-                                            .child(badge(status.to_string(), tint))
-                                            .child(
-                                                div().flex_1().min_w_0().child(
-                                                    v.button(
-                                                        (
-                                                            if staged {
-                                                                "index"
-                                                            } else {
-                                                                "worktree"
-                                                            },
-                                                            i,
-                                                        ),
-                                                        path.clone(),
-                                                    )
-                                                    .w_full()
-                                                    .justify_start()
-                                                    .tooltip(path.clone())
-                                                    .on_click(cx.listener(move |v, _, w, cx| {
-                                                        v.file(path.clone(), staged, w, cx)
-                                                    })),
-                                                ),
-                                            )
-                                            .child(
-                                                v.button(
-                                                    (if staged { "minus" } else { "plus" }, i),
-                                                    if staged { "−" } else { "+" },
-                                                )
-                                                .tooltip(if staged {
-                                                    "Unstage file"
-                                                } else {
-                                                    "Stage file"
-                                                })
-                                                .disabled(v.state.busy)
-                                                .on_click(cx.listener(move |v, _, w, cx| {
-                                                    v.mutate(
-                                                        Action::Stage {
-                                                            path: stage_path.clone(),
-                                                            unstage: staged,
-                                                        },
-                                                        w,
-                                                        cx,
-                                                    )
-                                                })),
-                                            )
-                                    })
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
-                        },
-                    )
-                    .h(px((n as f32 * 30.).clamp(30., 150.)))
-                    .flex_none()
-                    .min_h_0(),
-                );
-            }
-            let staged = self
-                .state
-                .snapshot
-                .as_ref()
-                .is_some_and(|s| s.status.iter().any(|f| f.index != ' ' && f.index != '?'));
-            let conflict = self.state.snapshot.as_ref().is_some_and(|s| {
-                s.status.iter().any(|f| {
-                    f.index == 'U'
-                        || f.worktree == 'U'
-                        || matches!((f.index, f.worktree), ('A', 'A') | ('D', 'D'))
-                })
-            });
-            el = el
-                .child(div().flex_1())
-                .child(div().mx_3().mt_2().border_t_1().border_color(rgb(BORDER)))
-                .child(
-                    div()
-                        .px_3()
-                        .pt_3()
-                        .pb_2()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Create a commit"),
-                        )
-                        .child(badge(
-                            if self.can_commit() {
-                                "Ready to commit"
-                            } else if staged {
-                                "Add a summary"
-                            } else {
-                                "Nothing staged"
-                            },
-                            if self.can_commit() { GREEN } else { SUBTLE },
-                        )),
-                )
-                .child(
-                    div()
-                        .px_3()
-                        .pb_2()
-                        .text_size(px(11.))
-                        .text_color(rgb(MUTED))
-                        .child(if staged {
-                            "Only staged changes will be included."
-                        } else {
-                            "Stage changes, then give your commit a clear summary."
-                        }),
-                )
-                .child(div().px_3().child(Input::new(&self.draft).h(px(80.))))
-                .when(conflict, |el| {
-                    el.child(
-                        div()
-                            .p_3()
-                            .text_color(rgb(RED))
-                            .child("Resolve conflicts with Git, then refresh."),
-                    )
-                })
-                .child(
-                    Button::new("commit")
-                        .label("Commit staged changes")
-                        .icon(icon("check"))
-                        .primary()
-                        .m_3()
-                        .tooltip("Commit staged changes · Ctrl/Cmd+Enter")
-                        .disabled(!self.can_commit())
-                        .on_click(cx.listener(|v, _, w, cx| v.commit_staged(&CommitStaged, w, cx))),
-                );
-        }
-        el.into_any_element()
-    }
-    fn diff(&self, cx: &mut Context<Self>) -> AnyElement {
-        let p = self.state.patch.as_ref().unwrap();
-        let staged = p.staged;
-        let n = if self.split {
-            p.split.len()
-        } else {
-            p.lines.len()
-        };
-        let weak = cx.weak_entity();
-        let mut el = panel()
-            .child(
-                div()
-                    .h(px(42.))
-                    .flex()
-                    .items_center()
-                    .px_2()
-                    .gap_2()
-                    .child(
-                        self.button("back", "‹ History")
-                            .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(p.path.clone()),
-                    )
-                    .child(
-                        self.button(
-                            "dim-whitespace",
-                            if self.dim_whitespace {
-                                "Normal whitespace"
-                            } else {
-                                "Dim whitespace"
-                            },
-                        )
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.dim_whitespace = !v.dim_whitespace;
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .p(px(2.))
-                            .rounded(px(6.))
-                            .bg(rgb(CHROME))
-                            .child(
-                                self.button("unified-mode", "Unified")
-                                    .when(!self.split, |b| b.bg(rgb(RAISED)).text_color(rgb(TEXT)))
-                                    .on_click(cx.listener(|v, _, _, cx| {
-                                        v.split = false;
-                                        v.selection = None;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                self.button("split-mode", "Split")
-                                    .when(self.split, |b| b.bg(rgb(RAISED)).text_color(rgb(TEXT)))
-                                    .on_click(cx.listener(|v, _, _, cx| {
-                                        v.split = true;
-                                        v.selection = None;
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .h(px(34.))
-                    .flex()
-                    .items_center()
-                    .px_2()
-                    .gap_2()
-                    .bg(rgb(CHROME))
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(badge(
-                        if p.id.is_some() {
-                            "COMMIT"
-                        } else if staged {
-                            "INDEX"
-                        } else {
-                            "WORKTREE"
-                        },
-                        if staged { GREEN } else { ACCENT },
-                    ))
-                    .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(
-                        if p.id.is_some() {
-                            "First-parent comparison"
-                        } else if staged {
-                            "Compared to HEAD"
-                        } else {
-                            "Compared to index"
-                        },
-                    ))
-                    .child(div().flex_1())
-                    .when(p.id.is_none(), |el| {
-                        el.child(
-                            self.button(
-                                "source",
-                                if staged {
-                                    "View unstaged"
-                                } else {
-                                    "View staged"
-                                },
-                            )
-                            .on_click(cx.listener(
-                                move |v, _, w, cx| {
-                                    if let Some(p) = &v.state.patch {
-                                        v.file(p.path.clone(), !staged, w, cx);
-                                    }
-                                },
-                            )),
-                        )
-                        .child(
-                            self.button(
-                                "stage-file",
-                                if staged { "Unstage file" } else { "Stage file" },
-                            )
-                            .outline()
-                            .icon(icon("check"))
-                            .disabled(self.state.busy)
-                            .on_click(cx.listener(|v, _, w, cx| {
-                                if let Some(p) = &v.state.patch {
-                                    v.mutate(
-                                        Action::Stage {
-                                            path: p.path.clone(),
-                                            unstage: p.staged,
-                                        },
-                                        w,
-                                        cx,
-                                    );
-                                }
-                            })),
-                        )
-                    }),
-            );
-        let path = p.path.clone();
-        if !p.hunks.is_empty() {
-            let active = self.active_hunk.min(p.hunks.len() - 1);
-            let token = p.token;
-            let unstage = p.staged;
-            let mut bar = div()
-                .h(px(32.))
-                .flex()
-                .items_center()
-                .px_2()
-                .gap_2()
-                .border_b_1()
-                .border_color(rgb(BORDER));
-            for (index, delta, label) in [(0, -1isize, "↑"), (1, 1isize, "↓")] {
-                bar = bar.child(
-                    self.button(("hunk-nav", index as usize), label)
-                        .disabled(if delta < 0 {
-                            active == 0
-                        } else {
-                            active + 1 == p.hunks.len()
-                        })
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            if let Some(p) = &v.state.patch {
-                                v.active_hunk = (v.active_hunk as isize + delta)
-                                    .clamp(0, p.hunks.len().saturating_sub(1) as isize)
-                                    as usize;
-                                let rows = if v.split {
-                                    &p.split_hunk_rows
-                                } else {
-                                    &p.hunk_rows
-                                };
-                                if let Some(row) = rows.get(v.active_hunk) {
-                                    v.diff_scroll.scroll_to_item(*row, ScrollStrategy::Top);
-                                }
-                                cx.notify();
-                            }
-                        })),
-                );
-            }
-            el = el.child(
-                bar.child(
-                    self.button(
-                        "active-hunk",
-                        format!(
-                            "{} hunk {} / {}",
-                            if staged { "Unstage" } else { "Stage" },
-                            active + 1,
-                            p.hunks.len()
-                        ),
-                    )
-                    .disabled(self.state.busy)
-                    .on_click(cx.listener(move |v, _, w, cx| {
-                        v.mutate(
-                            Action::Hunk {
-                                token,
-                                index: active,
-                                unstage,
-                            },
-                            w,
-                            cx,
-                        )
-                    })),
-                ),
-            );
-        }
-        el=el.child(uniform_list(SharedString::from(format!("diff-{path}-{}",self.split)),n,move|range,_,cx|weak.update(cx,|v,cx|range.map(|i|v.diff_row(i,cx)).collect::<Vec<_>>()).unwrap_or_default()).with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained).track_scroll(self.diff_scroll.clone()).flex_1().min_h_0())
-            .child(div().h(px(26.)).px_3().text_size(px(11.)).text_color(rgb(MUTED)).child("Click / Shift-click selects lines · Ctrl/Cmd+A selects all · Ctrl/Cmd+C copies"));
-        el.into_any_element()
-    }
-    fn diff_row(&self, i: usize, cx: &mut Context<Self>) -> AnyElement {
-        let p = self.state.patch.as_ref().unwrap();
-        let selected = self.selection.as_ref().is_some_and(|r| r.contains(&i));
-        let width = if self.split {
-            (p.split_columns as f32 * 7.5 + 130.) * 2.
-        } else {
-            p.columns as f32 * 7.5 + 160.
-        };
-        let mut el = div()
-            .id(("diff-line", i))
-            .w_full()
-            .min_w(px(width.max(if self.split { 950. } else { 600. })))
-            .h(px(26.))
-            .flex()
-            .items_center()
-            .font_family(if cfg!(windows) {
-                "Consolas"
-            } else {
-                "DejaVu Sans Mono"
-            })
-            .text_size(px(12.))
-            .overflow_hidden();
-        let cells = if self.split {
-            let (a, b) = &p.split[i];
-            vec![a.as_ref(), b.as_ref()]
-        } else {
-            vec![Some(&p.lines[i])]
-        };
-        for (side, line) in cells.into_iter().enumerate() {
-            let mut cell = div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2();
-            if let Some(l) = line {
-                cell = cell
-                    .bg(rgb(if selected {
-                        SELECTED
-                    } else {
-                        match l.kind {
-                            '+' => 0x2d3a30,
-                            '-' => 0x3e2c32,
-                            '@' => 0x303747,
-                            _ => PANEL,
-                        }
-                    }))
-                    .child(
-                        div()
-                            .w(px(if self.split { 45. } else { 90. }))
-                            .flex_none()
-                            .whitespace_nowrap()
-                            .text_color(rgb(MUTED))
-                            .child(if self.split {
-                                (if side == 0 { l.old } else { l.new })
-                                    .map(|n| format!("{n:>4}"))
-                                    .unwrap_or_default()
-                            } else {
-                                format!(
-                                    "{:>4} {:>4}",
-                                    l.old.map(|n| n.to_string()).unwrap_or_default(),
-                                    l.new.map(|n| n.to_string()).unwrap_or_default()
-                                )
-                            }),
-                    )
-                    .child({
-                        let mut end = l.text.len().min(8192);
-                        while !l.text.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        let text = SharedString::from(l.text[..end].to_string());
-                        let highlights = l.highlights.iter().filter(|s| s.end <= end).map(|s| {
-                            (
-                                s.start..s.end,
-                                HighlightStyle {
-                                    color: Some(
-                                        rgb(match s.kind {
-                                            'c' => MUTED,
-                                            's' => GREEN,
-                                            'k' => 0xc678dd,
-                                            'n' => 0xd19a66,
-                                            _ => TEXT,
-                                        })
-                                        .into(),
-                                    ),
-                                    ..Default::default()
-                                },
-                            )
-                        });
-                        div()
-                            .whitespace_nowrap()
-                            .when(self.dim_whitespace, |el| el.opacity(0.8))
-                            .flex_none()
-                            .child(StyledText::new(text).with_highlights(highlights))
-                    });
-                if l.kind == '@'
-                    && l.text.starts_with("@@ ")
-                    && p.id.is_none()
-                    && (!self.split || side == 0)
-                {
-                    let index = p.hunks.iter().position(|h| h == &l.text);
-                    let token = p.token;
-                    let unstage = p.staged;
-                    if let Some(index) = index {
-                        cell = cell.child(
-                            self.button(
-                                ("hunk", i),
-                                if unstage {
-                                    "Unstage hunk"
-                                } else {
-                                    "Stage hunk"
-                                },
-                            )
-                            .disabled(self.state.busy)
-                            .on_click(cx.listener(
-                                move |v, _, w, cx| {
-                                    v.mutate(
-                                        Action::Hunk {
-                                            token,
-                                            index,
-                                            unstage,
-                                        },
-                                        w,
-                                        cx,
-                                    )
-                                },
-                            )),
-                        );
-                    }
-                }
-            }
-            el = el.child(cell);
-        }
-        el.on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |v, e: &MouseDownEvent, w, cx| {
-                v.focus.focus(w);
-                if !e.modifiers.shift {
-                    v.anchor = i;
-                }
-                v.selection = Some(v.anchor.min(i)..v.anchor.max(i) + 1);
-                cx.notify();
-            }),
-        )
-        .on_mouse_move(cx.listener(move |v, e: &MouseMoveEvent, _, cx| {
-            if e.dragging() && v.selection.is_some() {
-                v.selection = Some(v.anchor.min(i)..v.anchor.max(i) + 1);
-                cx.notify();
-            }
-        }))
-        .into_any_element()
-    }
-    fn settings_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = div()
-            .w(px(430.))
-            .rounded(px(10.))
-            .bg(rgb(PANEL))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .p_5()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(div().text_lg().child("Appearance"))
-            .child("Atom One Dark · native system fonts")
-            .child(
-                self.button(
-                    "settings-density",
-                    if self.compact {
-                        "Density: Compact"
-                    } else {
-                        "Density: Comfortable"
-                    },
-                )
-                .on_click(cx.listener(|v, _, _, cx| {
-                    v.compact = !v.compact;
-                    cx.notify();
-                })),
-            );
-        for (index, label, value) in [
-            (0, "Text size", self.preferences.font_size),
-            (1, "Navigation width", self.preferences.nav_width),
-            (2, "Inspector width", self.preferences.inspector_width),
-        ] {
-            let mut row = div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(format!("{label}: {value:.0}"));
-            for direction in [-1., 1.] {
-                row = row.child(
-                    self.button(
-                        ("appearance", index * 2 + usize::from(direction > 0.)),
-                        if direction > 0. { "+" } else { "−" },
-                    )
-                    .on_click(cx.listener(move |v, _, _, cx| {
-                        match index {
-                            0 => {
-                                v.preferences.font_size =
-                                    (v.preferences.font_size + direction).clamp(11., 18.);
-                                gpui_component::Theme::global_mut(cx).font_size =
-                                    px(v.preferences.font_size);
-                            }
-                            1 => {
-                                v.preferences.nav_width =
-                                    (v.preferences.nav_width + direction * 10.).clamp(150., 330.)
-                            }
-                            _ => {
-                                v.preferences.inspector_width = (v.preferences.inspector_width
-                                    + direction * 10.)
-                                    .clamp(260., 560.)
-                            }
-                        };
-                        cx.notify();
-                    })),
-                );
-            }
-            content = content.child(row);
-        }
-        content = content
-            .child(
-                "Panel widths can also be dragged. These controls provide keyboard alternatives.",
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        self.button("settings-close", "Close")
-                            .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
-                    )
-                    .child(
-                        Button::new("save-appearance")
-                            .label("Save appearance")
-                            .primary()
-                            .disabled(self.saving)
-                            .on_click(cx.listener(|v, _, w, cx| {
-                                v.preferences.compact = v.compact;
-                                v.preferences.split = v.split;
-                                let p = v.preferences.clone();
-                                v.saving = true;
-                                let task = cx.background_executor().spawn(async move { p.save() });
-                                cx.spawn_in(w, async move |view, cx| {
-                                    let result = task.await;
-                                    let _ = view.update_in(cx, |v, _, cx| {
-                                        v.saving = false;
-                                        match result {
-                                            Ok(()) => {
-                                                v.state.notice = "Appearance saved".into();
-                                                v.settings_open = false;
-                                            }
-                                            Err(e) => {
-                                                v.state.error = true;
-                                                v.state.notice = e;
-                                            }
-                                        }
-                                        cx.notify();
-                                    });
-                                })
-                                .detach();
-                            })),
-                    ),
-            );
-        div()
-            .absolute()
-            .inset_0()
-            .bg(rgba(0x00000099))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(content)
-            .into_any_element()
-    }
 }
 impl Render for GitCrab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "native-evidence")]
+        if let Some((start, kind)) = self.feedback_start.take() {
+            window.on_next_frame(move |_, cx| super::trace::record(kind, start, cx));
+        }
         let dialogs = gpui_component::Root::render_dialog_layer(window, cx);
         #[cfg(feature = "native-evidence")]
         if self.evidence_phase == 3 {
@@ -1929,7 +1384,7 @@ impl Render for GitCrab {
             .filter(|s| !s.is_empty())
             .unwrap_or("Repository")
             .to_string();
-        let in_diff = self.state.patch.is_some();
+        let in_diff = self.state.diff_context.is_some();
         let sidebar = if in_diff {
             div()
                 .flex()
@@ -1951,6 +1406,8 @@ impl Render for GitCrab {
         let inspector = self.inspector(cx);
         let center = if self.state.patch.is_some() {
             self.diff(cx)
+        } else if in_diff {
+            self.review_placeholder(cx)
         } else {
             self.history(cx)
         };
@@ -1960,8 +1417,10 @@ impl Render for GitCrab {
             .as_ref()
             .map(|s| s.head.clone())
             .unwrap_or_default();
+        let recent = self.preferences.recent.clone();
+        let menu_view = cx.entity();
         let mut toolbar = div()
-            .h(px(56.))
+            .h(px(42.))
             .flex_none()
             .flex()
             .items_center()
@@ -1970,34 +1429,19 @@ impl Render for GitCrab {
             .border_b_1()
             .border_color(rgb(BORDER))
             .child(
-                div()
-                    .w(px(180.))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(rgb(SUBTLE))
-                            .child("CURRENT REPOSITORY"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .truncate()
-                                    .child(title.clone()),
-                            )
-                            .when(!branch.is_empty(), |e| {
-                                e.child(badge(branch.clone(), ACCENT))
-                            }),
-                    ),
+                div().w(px(210.)).flex_none().flex().items_center().gap_1()
+                    .child(self.button("repository-selector", title.clone()).icon(icon("folder"))
+                        .flex_1().min_w_0().justify_start().tooltip("Open repository · Ctrl/Cmd+O. Right-click for recent repositories.")
+                        .disabled(self.state.busy).on_click(cx.listener(|v,_,w,cx|v.pick(&Open,w,cx))))
+                    .context_menu(move |mut menu,_,_| {
+                        for path in recent.iter() {
+                            let path=path.clone(); let view=menu_view.clone();
+                            menu=menu.item(PopupMenuItem::new(path.clone()).on_click(move|_,w,cx|view.update(cx,|v,cx|{
+                                let job=v.state.open(path.clone());v.dispatch(job,w,cx);
+                            })));
+                        }
+                        menu
+                    }),
             )
             .child(
                 self.button("refresh", "Refresh")
@@ -2008,6 +1452,8 @@ impl Render for GitCrab {
                     .on_click(cx.listener(|v, _, w, cx| v.refresh(&Refresh, w, cx))),
             )
             .child(separator());
+        let narrow_toolbar =
+            f32::from(window.viewport_size().width) < 1150. || self.preferences.font_size > 15.;
         for (i, (op, label, glyph)) in [
             (Operation::CreateBranch, "Branch", "branch"),
             (Operation::Checkout, "Checkout", "history"),
@@ -2018,7 +1464,7 @@ impl Render for GitCrab {
         .enumerate()
         {
             toolbar = toolbar.child(
-                self.button(("toolbar", i), label)
+                self.button(("toolbar", i), if narrow_toolbar { "" } else { label })
                     .icon(icon(glyph))
                     .h(px(32.))
                     .tooltip(format!("{label} · Review before applying"))
@@ -2028,13 +1474,35 @@ impl Render for GitCrab {
                     ),
             );
         }
-        toolbar = toolbar.child(div().flex_1()).child(
-            div().w(px(210.)).child(
-                Input::new(&self.search)
-                    .small()
-                    .prefix(icon("search").small().text_color(rgb(SUBTLE))),
-            ),
-        );
+        toolbar = toolbar
+            .child(div().flex_1())
+            .child(
+                div().w(px(180.)).child(
+                    Input::new(&self.search)
+                        .small()
+                        .prefix(icon("search").small().text_color(rgb(SUBTLE))),
+                ),
+            )
+            .when(!self.search.read(cx).value().is_empty(), |bar| {
+                bar.child(
+                    div()
+                        .text_size(type_size(cx, 12.))
+                        .text_color(rgb(MUTED))
+                        .child(format!("{} matches", self.search_matches.len())),
+                )
+                .child(
+                    self.button("search-prev", "↑")
+                        .tooltip("Previous match · Shift+Enter")
+                        .disabled(self.search_matches.is_empty())
+                        .on_click(cx.listener(|v, _, w, cx| v.search_step(-1, w, cx))),
+                )
+                .child(
+                    self.button("search-next", "↓")
+                        .tooltip("Next match · Enter. Searches loaded history.")
+                        .disabled(self.search_matches.is_empty())
+                        .on_click(cx.listener(|v, _, w, cx| v.search_step(1, w, cx))),
+                )
+            });
         div()
             .relative()
             .size_full()
@@ -2053,57 +1521,13 @@ impl Render for GitCrab {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::commit_staged))
-            .child(
-                div()
-                    .h(px(42.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px_4()
-                    .gap_2()
-                    .bg(rgb(CHROME))
-                    .child(
-                        div()
-                            .w(px(180.))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(
-                                img(ImageSource::Resource(Resource::Embedded(
-                                    "gitcrab.png".into(),
-                                )))
-                                .size(px(22.)),
-                            )
-                            .child("GitCrab"),
-                    )
-                    .child(
-                        div()
-                            .h(px(29.))
-                            .px_3()
-                            .rounded(px(7.))
-                            .border_1()
-                            .border_color(rgb(BORDER))
-                            .bg(rgb(PANEL))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(icon("folder").small().text_color(rgb(ACCENT)))
-                            .child(title),
-                    )
-                    .child(
-                        self.button("tab-open", "+")
-                            .tooltip("Open another repository · Ctrl/Cmd+O")
-                            .on_click(cx.listener(|v, _, w, cx| v.pick(&Open, w, cx))),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_color(rgb(SUBTLE))
-                            .text_size(px(10.))
-                            .child("LOCAL WORKSPACE"),
-                    ),
-            )
+            .on_action(cx.listener(|v, _: &Find, w, cx| {
+                if !w.has_active_dialog(cx) && !v.settings_open {
+                    v.search.update(cx, |s, cx| s.focus(w, cx));
+                }
+            }))
+            .on_action(cx.listener(|v, _: &SearchNext, w, cx| v.search_step(1, w, cx)))
+            .on_action(cx.listener(|v, _: &SearchPrevious, w, cx| v.search_step(-1, w, cx)))
             .child(toolbar)
             .when(self.state.error, |el| {
                 el.child(
@@ -2134,19 +1558,23 @@ impl Render for GitCrab {
                                     }),
                                 )),
                         )
-                        .child(div().text_size(px(11.)).child(self.state.notice.clone())),
+                        .child(
+                            div()
+                                .text_size(type_size(cx, 12.))
+                                .child(self.state.notice.clone()),
+                        ),
                 )
             })
             .child(
                 div().flex_1().min_h_0().p_2().child(
                     h_resizable(SharedString::from(format!(
-                        "workspace-{in_diff}-{}-{}",
-                        self.preferences.nav_width, self.preferences.inspector_width
+                        "workspace-{in_diff}-{}",
+                        self.layout_revision
                     )))
                     .on_resize(cx.listener(
                         move |v,
                               state: &Entity<gpui_component::resizable::ResizableState>,
-                              _,
+                              w,
                               cx| {
                             let sizes = state.read(cx).sizes();
                             if sizes.len() == 3 {
@@ -2156,6 +1584,7 @@ impl Render for GitCrab {
                                 v.preferences.inspector_width =
                                     f32::from(sizes[2]).clamp(260., 560.);
                             }
+                            v.persist_preferences(w, cx);
                             cx.notify();
                         },
                     ))
@@ -2184,14 +1613,14 @@ impl Render for GitCrab {
             )
             .child(
                 div()
-                    .h(px(28.))
+                    .h(px(24.))
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_between()
                     .px_3()
                     .gap_2()
-                    .text_size(px(11.))
+                    .text_size(type_size(cx, 12.))
                     .text_color(rgb(MUTED))
                     .child(div().size(px(5.)).rounded_full().bg(rgb(
                         if self.state.busy || self.state.loading() {
@@ -2218,7 +1647,14 @@ impl Render for GitCrab {
                             } else {
                                 branch
                             }),
-                    ),
+                    )
+                    .when_some(self.watch_warning.clone(), |bar, warning| {
+                        bar.child(
+                            self.button("watch-warning", "Live refresh unavailable")
+                                .text_color(rgb(0xe5c07b))
+                                .tooltip(warning),
+                        )
+                    }),
             )
             .when(self.settings_open, |el| el.child(self.settings_dialog(cx)))
             .children(dialogs)

@@ -1,7 +1,10 @@
 mod assets;
 mod preferences;
 mod theme;
+#[cfg(feature = "native-evidence")]
+mod trace;
 mod view;
+mod watch;
 use gpui::{prelude::*, *};
 use gpui_component::{Root, Theme, ThemeMode};
 fn main() {
@@ -28,6 +31,9 @@ fn main() {
             KeyBinding::new(&format!("{primary}-o"), view::Open, None),
             KeyBinding::new(&format!("{primary}-q"), view::Quit, None),
             KeyBinding::new(&format!("{primary}-enter"), view::CommitStaged, None),
+            KeyBinding::new(&format!("{primary}-f"), view::Find, None),
+            KeyBinding::new("f3", view::SearchNext, None),
+            KeyBinding::new("shift-f3", view::SearchPrevious, None),
             KeyBinding::new("f5", view::Refresh, None),
             KeyBinding::new("escape", view::Back, Some("GitCrab")),
             KeyBinding::new("up", view::Previous, Some("GitCrab")),

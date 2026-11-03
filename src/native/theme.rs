@@ -7,13 +7,19 @@ pub const PANEL: u32 = 0x21252b;
 pub const BORDER: u32 = 0x36393f;
 pub const HOVER: u32 = 0x2a2f37;
 pub const RAISED: u32 = 0x292e36;
-pub const SUBTLE: u32 = 0x737c8c;
+pub const SUBTLE: u32 = 0x9aa3b2;
 pub const TEXT: u32 = 0xeeeeef;
 pub const MUTED: u32 = 0x9ca0a4;
 pub const ACCENT: u32 = 0x61afef;
-pub const SELECTED: u32 = 0x27394b;
+pub const SELECTED: u32 = 0x303b49;
 pub const GREEN: u32 = 0x98c379;
 pub const RED: u32 = 0xe06c75;
+pub const DIFF_ADDED: u32 = 0x293a30;
+pub const DIFF_REMOVED: u32 = 0x402c34;
+pub const DIFF_HUNK: u32 = 0x293440;
+pub fn type_size(cx: &App, base: f32) -> Pixels {
+    px(f32::from(Theme::global(cx).font_size) * base / 13.)
+}
 pub const PALETTE: [u32; 8] = [
     0x56b6c2, ACCENT, 0xc678dd, RED, 0xe5c07b, GREEN, 0xd19a66, 0xbe82d9,
 ];
@@ -61,14 +67,14 @@ pub fn panel() -> Div {
 }
 pub fn heading(s: impl Into<SharedString>) -> Div {
     div()
-        .h(px(32.))
+        .h(px(30.))
         .flex_none()
         .px_3()
         .flex()
         .items_center()
         .text_color(rgb(SUBTLE))
-        .text_size(px(10.))
-        .font_weight(FontWeight::SEMIBOLD)
+        .text_size(rems(0.85))
+        .font_weight(FontWeight::MEDIUM)
         .child(s.into())
 }
 
@@ -84,7 +90,7 @@ pub fn badge(label: impl Into<SharedString>, color: u32) -> Div {
         .rounded(px(4.))
         .bg(rgba((color << 8) | 0x18))
         .text_color(rgb(color))
-        .text_size(px(10.))
+        .text_size(rems(0.85))
         .font_weight(FontWeight::MEDIUM)
         .child(label.into())
 }

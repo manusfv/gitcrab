@@ -368,6 +368,12 @@ impl Git {
         self.run(&["check-ref-format", "--branch", name])?;
         self.run(&["branch", "--", name]).map(|_| ())
     }
+    pub fn create_branch_at(&self, name: &str, start: &str) -> GitResult<()> {
+        validate_revision(name)?;
+        validate_revision(start)?;
+        self.run(&["check-ref-format", "--branch", name])?;
+        self.run(&["branch", "--", name, start]).map(|_| ())
+    }
     pub fn checkout(&self, branch: &str) -> GitResult<()> {
         validate_revision(branch)?;
         let local_ref = format!("refs/heads/{branch}");
@@ -527,6 +533,26 @@ mod tests {
             // This directory was exclusively created by Fixture::new above.
             let _ = std::fs::remove_dir_all(&self.git.path);
         }
+    }
+    #[test]
+    fn real_git_create_branch_at_keeps_head_and_index() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("file", "one");
+        git.stage("file").unwrap();
+        git.commit("first").unwrap();
+        let first = git.run(&["rev-parse", "HEAD"]).unwrap();
+        fixture.write("file", "two");
+        git.stage("file").unwrap();
+        git.commit("second").unwrap();
+        let head = git.run(&["rev-parse", "HEAD"]).unwrap();
+        let tree = git.run(&["write-tree"]).unwrap();
+        git.create_branch_at("feature/日本語", first.trim())
+            .unwrap();
+        assert_eq!(git.run(&["rev-parse", "feature/日本語"]).unwrap(), first);
+        assert_eq!(git.run(&["rev-parse", "HEAD"]).unwrap(), head);
+        assert_eq!(git.run(&["write-tree"]).unwrap(), tree);
+        assert!(git.create_branch_at("--bad", first.trim()).is_err());
     }
     #[test]
     fn real_git_unicode_paths_and_branch_names() {
