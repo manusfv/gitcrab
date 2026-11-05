@@ -1311,7 +1311,22 @@ impl GitCrab {
             .map(|s| s.status.len())
             .unwrap_or(0);
         let query = self.reference_search.read(cx).value().to_lowercase();
-        let mut nav = div()
+        let nav = div();
+        #[cfg(feature = "native-evidence")]
+        let nav = nav.on_children_prepainted(|bounds, _, _| {
+            if let Some(path) = std::env::var_os("GITCRAB_SIDEBAR_LAYOUT_PROBE") {
+                if let [filter, working, local, ..] = bounds.as_slice() {
+                    let data = serde_json::json!({
+                        "above": f32::from(working.top() - filter.bottom()),
+                        "below": f32::from(local.top() - working.bottom()),
+                        "row_height": f32::from(working.size.height),
+                        "units": "logical pixels"
+                    });
+                    let _ = std::fs::write(path, serde_json::to_vec(&data).unwrap());
+                }
+            }
+        });
+        let mut nav = nav
             .id("navigation")
             .flex_1()
             .min_h_0()
@@ -1356,7 +1371,6 @@ impl GitCrab {
             let local_collapsed = self.preferences.collapsed.contains(&local_key);
             nav = nav.child(
                 self.button("local-branches", "Local")
-                    .mt_2()
                     .w_full()
                     .h(px(28.))
                     .px_2()
@@ -1756,11 +1770,10 @@ impl Render for GitCrab {
         if let Some((start, kind)) = self.feedback_start.take() {
             window.on_next_frame(move |_, cx| super::trace::record(kind, start, cx));
         }
-        let dialogs = gpui_component::Root::render_dialog_layer(window, cx);
         #[cfg(feature = "native-evidence")]
         if self.evidence_phase == 3 {
             self.evidence_phase = 4;
-            let data = serde_json::json!({"loaded":self.state.graph.rows.len(),"view":std::env::var("GITCRAB_CAPTURE_VIEW").unwrap_or_else(|_|"history".into()),"width":f32::from(window.viewport_size().width),"height":f32::from(window.viewport_size().height),"scale":window.scale_factor(),"worker_ms":self.state.worker_ms,"diff_rows":self.state.patch.as_ref().map(|p|p.lines.len()),"dialog_layer":dialogs.is_some(),"renderer":"GPUI 0.2.2 native","present_time_measured":false});
+            let data = serde_json::json!({"loaded":self.state.graph.rows.len(),"view":std::env::var("GITCRAB_CAPTURE_VIEW").unwrap_or_else(|_|"history".into()),"width":f32::from(window.viewport_size().width),"height":f32::from(window.viewport_size().height),"scale":window.scale_factor(),"worker_ms":self.state.worker_ms,"diff_rows":self.state.patch.as_ref().map(|p|p.lines.len()),"dialog_layer":window.has_active_dialog(cx),"renderer":"GPUI 0.2.2 native","present_time_measured":false});
             let path = std::env::var("GITCRAB_NATIVE_READY").unwrap();
             window.on_next_frame(move |_, _| {
                 let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
@@ -1812,9 +1825,6 @@ impl Render for GitCrab {
                 .relative()
                 .size_full()
                 .child(self.new_tab(cx))
-                .children(
-                    dialogs.map(|d| deferred(d).with_priority(geometry::LAYER_MODAL as usize)),
-                )
                 .into_any_element();
         }
         let title = self
@@ -2169,31 +2179,6 @@ impl Render for GitCrab {
                         ),
                 )
             })
-            .child(
-                section_bar()
-                    .h(type_size(cx, 28.))
-                    .child(format!("{} · {}", title, branch))
-                    .child(div().flex_1())
-                    .child(
-                        self.state
-                            .snapshot
-                            .as_ref()
-                            .filter(|s| !s.operations.is_empty())
-                            .map(|s| {
-                                format!(
-                                    "Active {} · finish or abort in terminal",
-                                    s.operations.join(", ")
-                                )
-                            })
-                            .unwrap_or_else(|| {
-                                self.state
-                                    .snapshot
-                                    .as_ref()
-                                    .map(|s| s.upstream_context.clone())
-                                    .unwrap_or_else(|| "Upstream unknown".into())
-                            }),
-                    ),
-            )
             .when(self.state.error, |el| {
                 let details = self.state.notice.clone();
                 el.child(
@@ -2265,15 +2250,6 @@ impl Render for GitCrab {
                     .gap_2()
                     .text_size(type_size(cx, 12.))
                     .text_color(rgb(semantic(Role::TextMuted)))
-                    .child(div().size(px(5.)).rounded_full().bg(rgb(
-                        if self.state.busy || self.state.loading() {
-                            semantic(Role::ActionPrimary)
-                        } else if self.state.error {
-                            semantic(Role::StatusWarningFg)
-                        } else {
-                            semantic(Role::StatusSuccessFg)
-                        },
-                    )))
                     .child(div().flex_1().truncate().child(if self.state.busy {
                         "Running Git operation…".into()
                     } else if self.state.loading() {
@@ -2290,18 +2266,7 @@ impl Render for GitCrab {
                             self.state.notice.clone()
                         }
                     }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(icon("branch").small())
-                            .child(if branch.is_empty() {
-                                "No repository".into()
-                            } else {
-                                branch
-                            }),
-                    )
+                    .child(concat!("v", env!("CARGO_PKG_VERSION")))
                     .when(!self.activity.is_empty(), |bar| {
                         bar.child(
                             self.button(
@@ -2319,7 +2284,6 @@ impl Render for GitCrab {
                         )
                     }),
             )
-            .children(dialogs.map(|d| deferred(d).with_priority(geometry::LAYER_MODAL as usize)))
             .into_any_element()
     }
 }

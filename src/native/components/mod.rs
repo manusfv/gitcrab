@@ -29,7 +29,7 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
             geometry::SIZE_HUNK_ACTION_PADDING_X,
             geometry::SIZE_HUNK_ACTION_FONT_SIZE,
         ),
-        TabClose => (geometry::SIZE_REPOSITORY_TAB_CLOSE_TARGET, 0., 12.),
+        TabClose => (geometry::SIZE_REPOSITORY_TAB_CLOSE_TARGET, 8., 16.),
         FileAction => (geometry::SIZE_FILE_ACTION_TARGET, 0., 11.),
     };
     button
@@ -116,30 +116,41 @@ pub fn selector(
         .ghost()
         .tab_stop(true)
         .h(rems(42. / 13.))
-        .w(px(164.))
+        .w(rems(176. / 13.))
         .min_w_0()
-        .px_2()
-        .child(icon(glyph).size(px(16.)))
+        .px(rems(10. / 13.))
         .child(
             div()
-                .flex_1()
+                // Button wraps children in an intrinsic-width label. Give this
+                // row a definite width so the text and caret can spread out.
+                .w(rems(154. / 13.))
                 .min_w_0()
                 .flex()
-                .flex_col()
-                .items_start()
+                .items_center()
+                .justify_between()
+                .gap(rems(16. / 13.))
+                .child(icon(glyph).size(px(16.)).flex_none())
                 .child(
                     div()
-                        .text_size(rems(11. / 13.))
-                        .text_color(rgb(semantic(Role::TextMuted)))
-                        .child(kicker.to_owned()),
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .child(
+                            div()
+                                .text_size(rems(11. / 13.))
+                                .text_color(rgb(semantic(Role::TextMuted)))
+                                .child(kicker.to_owned()),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_size(rems(13. / 13.))
+                                .child(value.into()),
+                        ),
                 )
-                .child(
-                    div()
-                        .max_w(px(115.))
-                        .truncate()
-                        .text_size(rems(13. / 13.))
-                        .child(value.into()),
-                ),
+                .child(icon("down").size(px(12.)).flex_none()),
         )
-        .child(icon("down").size(px(12.)))
 }

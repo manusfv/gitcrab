@@ -437,6 +437,7 @@ impl GitCrab {
         };
         let mut el = div()
             .id(("diff-line", i))
+            .cursor_text()
             .w_full()
             .min_w(px(width.max(if self.split { 950. } else { 600. })))
             .h(px(if self.preferences.compact_diff {
