@@ -38,6 +38,12 @@ pub enum Action {
     },
     Commit {
         message: String,
+        #[serde(default)]
+        reviewed: Option<crate::git::WriteIdentity>,
+    },
+    DiscardHunk {
+        token: u32,
+        index: usize,
     },
     Operation {
         op: Operation,
@@ -194,7 +200,7 @@ impl Service {
 struct Session {
     repo: Option<Git>,
     epoch: u32,
-    patch: Option<(u32, bool, Vec<Hunk>)>,
+    patch: Option<(u32, bool, Vec<Hunk>, String, String)>,
 }
 impl Session {
     fn execute(&mut self, request: Request) -> Response {
@@ -208,6 +214,7 @@ impl Session {
             action,
             Action::Stage { .. }
                 | Action::Hunk { .. }
+                | Action::DiscardHunk { .. }
                 | Action::Commit { .. }
                 | Action::Operation { .. }
         );
@@ -273,7 +280,7 @@ impl Session {
                     vec![]
                 };
                 let titles = hunks.iter().map(|h| h.title.clone()).collect();
-                self.patch = Some((sequence, staged, hunks));
+                self.patch = Some((sequence, staged, hunks, path.clone(), patch.clone()));
                 let mut lines = diff::parse(&patch);
                 if let Some(first) = lines.iter().position(|l| l.text.starts_with("@@ ")) {
                     lines.drain(..first);
@@ -307,12 +314,15 @@ impl Session {
                 index,
                 unstage,
             } => {
-                let (current, staged, hunks) = self
+                let (current, staged, hunks, path, source) = self
                     .patch
                     .as_ref()
                     .ok_or("Reopen the diff before staging this hunk")?;
                 if *current != token || *staged != unstage {
                     return Err("Diff changed. Reopen the file and retry.".into());
+                }
+                if g.diff(None, path, *staged)? != *source {
+                    return Err("Diff changed since review. Reopen the file and retry.".into());
                 }
                 g.apply_hunk(hunks.get(index).ok_or("Hunk no longer exists")?, unstage)?;
                 Reply::Done {
@@ -320,10 +330,34 @@ impl Session {
                     committed_draft: None,
                 }
             }
-            Action::Commit { message } => {
-                g.commit(&message)?;
+            Action::DiscardHunk { token, index } => {
+                let (current, staged, hunks, path, source) = self
+                    .patch
+                    .as_ref()
+                    .ok_or("Reopen the diff before discarding")?;
+                if *current != token || *staged {
+                    return Err("Discard requires a current working-copy diff".into());
+                }
+                if g.diff(None, path, false)? != *source {
+                    return Err("Working file changed since review. Reopen the diff.".into());
+                }
+                g.discard_hunk(path, hunks.get(index).ok_or("Hunk no longer exists")?)?;
                 Reply::Done {
-                    message: "Commit created".into(),
+                    message: format!(
+                        "Discarded working-copy hunk in {path}; index and HEAD verified unchanged"
+                    ),
+                    committed_draft: None,
+                }
+            }
+            Action::Commit { message, reviewed } => {
+                let sha = g.commit_reviewed(
+                    &message,
+                    reviewed
+                        .as_ref()
+                        .ok_or("Refresh and review before committing")?,
+                )?;
+                Reply::Done {
+                    message: format!("Verified commit {sha} in {}", g.path.display()),
                     committed_draft: Some(message),
                 }
             }
@@ -414,6 +448,7 @@ mod tests {
         let git = Git { path: path.clone() };
         git.run(&["init", "--quiet", "--initial-branch=main"])
             .unwrap();
+        git.run(&["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(path.join("new ü file.txt"), "new content\n").unwrap();
         let mut session = Session::default();
         session
@@ -480,11 +515,88 @@ mod tests {
             std::fs::read_to_string(path.join("new ü file.txt")).unwrap(),
             "new content\n"
         );
+        session
+            .run(
+                1,
+                6,
+                Action::Diff {
+                    id: None,
+                    path: "new ü file.txt".into(),
+                    staged: true,
+                },
+            )
+            .unwrap();
+        assert!(session
+            .execute(Request {
+                epoch: 1,
+                sequence: 7,
+                action: Action::DiscardHunk { token: 6, index: 0 }
+            })
+            .result
+            .is_err());
+        std::fs::write(path.join("new ü file.txt"), "unstaged content\n").unwrap();
+        session
+            .run(
+                1,
+                8,
+                Action::Diff {
+                    id: None,
+                    path: "new ü file.txt".into(),
+                    staged: false,
+                },
+            )
+            .unwrap();
+        std::fs::write(path.join("new ü file.txt"), "external edit\n").unwrap();
+        let identity = git.write_identity().unwrap();
+        assert!(
+            session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 9,
+                    action: Action::DiscardHunk { token: 8, index: 0 }
+                })
+                .result
+                .unwrap_err()
+                .refresh
+        );
+        assert_eq!(git.write_identity().unwrap(), identity);
+        assert_eq!(
+            std::fs::read(path.join("new ü file.txt")).unwrap(),
+            b"external edit\n"
+        );
+        session
+            .run(
+                1,
+                10,
+                Action::Diff {
+                    id: None,
+                    path: "new ü file.txt".into(),
+                    staged: false,
+                },
+            )
+            .unwrap();
+        session
+            .execute(Request {
+                epoch: 1,
+                sequence: 11,
+                action: Action::DiscardHunk {
+                    token: 10,
+                    index: 0,
+                },
+            })
+            .result
+            .unwrap();
+        assert_eq!(
+            std::fs::read(path.join("new ü file.txt")).unwrap(),
+            b"new content\n"
+        );
+        assert_eq!(git.write_identity().unwrap(), identity);
         let failed = session.execute(Request {
             epoch: 1,
             sequence: 6,
             action: Action::Commit {
                 message: String::new(),
+                reviewed: None,
             },
         });
         assert!(failed.result.unwrap_err().refresh);
@@ -511,6 +623,7 @@ mod tests {
             sequence: 1,
             action: Action::Commit {
                 message: "must never run".into(),
+                reviewed: None,
             },
         });
         assert!(!response.result.unwrap_err().refresh);

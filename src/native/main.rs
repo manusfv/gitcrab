@@ -1,4 +1,5 @@
 mod assets;
+mod components;
 mod preferences;
 mod theme;
 #[cfg(feature = "native-evidence")]
@@ -12,7 +13,7 @@ fn main() {
     Application::new().with_assets(assets::Assets).run(|cx| {
         gpui_component::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
-        theme::install(cx);
+        theme::initialize(cx);
         cx.on_action(|_: &view::Quit, cx| cx.quit());
         cx.set_menus(vec![Menu {
             name: "GitCrab".into(),

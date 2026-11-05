@@ -6,12 +6,14 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Preferences {
     pub compact: bool,
+    pub theme: gitcrab_core::appearance::ThemePreference,
     pub font_size: f32,
     pub nav_width: f32,
     pub inspector_width: f32,
     pub split: bool,
     pub code_size: f32,
     pub compact_diff: bool,
+    pub always_show_file_actions: bool,
     pub collapsed: std::collections::BTreeSet<String>,
     pub recent: Vec<String>,
 }
@@ -19,12 +21,14 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             compact: false,
+            theme: Default::default(),
             font_size: 13.,
             nav_width: 210.,
             inspector_width: 360.,
             split: false,
             code_size: 13.,
             compact_diff: false,
+            always_show_file_actions: false,
             collapsed: Default::default(),
             recent: vec![],
         }
@@ -68,12 +72,14 @@ impl Preferences {
         }
         merge!(
             compact,
+            theme,
             font_size,
             nav_width,
             inspector_width,
             split,
             code_size,
-            compact_diff
+            compact_diff,
+            always_show_file_actions
         );
         for key in previous.collapsed.difference(&self.collapsed) {
             shared.collapsed.remove(key);
@@ -111,6 +117,15 @@ impl Preferences {
             .filter(|path| !path.is_empty())
     }
 
+    pub fn forget_last_repository(repository: &str) -> std::io::Result<()> {
+        if let Some(path) =
+            Self::session_path().filter(|_| Self::last_repository().as_deref() == Some(repository))
+        {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
     pub fn remember_repository(repository: &str) -> Result<(), String> {
         let path = Self::session_path().ok_or("No configuration directory is available")?;
         let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -132,7 +147,7 @@ impl Preferences {
             .and_then(|b| serde_json::from_slice::<Self>(&b).ok())
             .unwrap_or_default();
         p.font_size = if p.font_size.is_finite() {
-            p.font_size.clamp(11., 18.)
+            p.font_size.clamp(11., 26.)
         } else {
             13.
         };
@@ -147,7 +162,7 @@ impl Preferences {
             360.
         };
         p.code_size = if p.code_size.is_finite() {
-            p.code_size.clamp(11., 20.)
+            p.code_size.clamp(11., 26.)
         } else {
             13.
         };
@@ -162,5 +177,24 @@ impl Preferences {
             serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[::core::prelude::v1::test]
+    fn old_preferences_keep_values_and_gain_the_default_palette() {
+        let p: Preferences = serde_json::from_str(
+            r#"{"compact":true,"font_size":15,"recent":["example"],"split":true}"#,
+        )
+        .unwrap();
+        assert!(p.compact && p.split);
+        assert_eq!(p.font_size, 15.);
+        assert_eq!(p.recent, ["example"]);
+        assert_eq!(p.theme, gitcrab_core::appearance::ThemePreference::Dark);
+        let p: Preferences = serde_json::from_str(r#"{"theme":"missing","code_size":17}"#).unwrap();
+        assert_eq!(p.code_size, 17.);
+        assert_eq!(p.theme.resolve(false), "dark");
     }
 }

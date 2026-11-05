@@ -38,14 +38,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config clang libclang-dev libasound2-dev libudev-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libxcb-xkb-dev libx11-xcb-dev libvulkan-dev mesa-vulkan-drivers xvfb dbus-x11 scrot openbox
+      - run: node scripts/generate-tokens.mjs --check
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --no-default-features --lib
-      - run: cargo build --locked --release --bin gitcrab-gpui
+      - run: cargo build --locked --release --bin gitcrab
       - name: Package production binary
         shell: pwsh
         run: ./scripts/package-gpui.ps1 -Name '${{ matrix.package }}'
       - name: Build isolated renderer evidence executable
-        run: cargo build --locked --release --features native-evidence --bin gitcrab-gpui
+        run: cargo build --locked --release --features native-evidence --bin gitcrab
       - name: Exercise Linux X11 renderer
         if: runner.os == 'Linux'
         env:
@@ -53,12 +54,12 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR=$(mktemp -d)
           chmod 700 "$XDG_RUNTIME_DIR"
-          xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash -c 'openbox & pwsh -File scripts/smoke-gpui.ps1 -Executable "$PWD/target/release/gitcrab-gpui"'
+          xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- bash -c 'openbox & pwsh -File scripts/smoke-gpui.ps1 -Executable "$PWD/target/release/gitcrab"'
       - name: Exercise native renderer
         if: runner.os != 'Linux'
         shell: pwsh
         run: |
-          $exe = if ($IsWindows) { 'target/release/gitcrab-gpui.exe' } else { 'target/release/gitcrab-gpui' }
+          $exe = if ($IsWindows) { 'target/release/gitcrab.exe' } else { 'target/release/gitcrab' }
           ./scripts/smoke-gpui.ps1 -Executable (Join-Path $PWD $exe)
       - uses: actions/upload-artifact@v7.0.2
         if: always()

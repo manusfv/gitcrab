@@ -50,6 +50,22 @@ impl AssetSource for Assets {
             "icons/remote.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../icons/native/remote.svg"
             ))),
+            "icons/fetch.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/native/fetch.svg"
+            ))),
+            "icons/pull.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/pull.svg"))),
+            "icons/push.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/push.svg"))),
+            "icons/pop.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/pop.svg"))),
+            "icons/terminal.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/native/terminal.svg"
+            ))),
+            "icons/more.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/more.svg"))),
+            "icons/branch-plus.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/native/branch-plus.svg"
+            ))),
+            "icons/folder-git-2.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/native/folder-git-2.svg"
+            ))),
             _ => None,
         })
     }

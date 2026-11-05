@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "An independent Git desktop client with a lane-based history graph"
 license = "MIT"
-default-run = "gitcrab-gpui"
+default-run = "gitcrab"
 
 [lib]
 name = "gitcrab_core"
@@ -18,7 +18,7 @@ default = ["gpui-desktop"]
 gpui-desktop = ["dep:gpui", "dep:gpui-component", "dep:anyhow", "dep:serde_json", "dep:notify", "dep:async-channel"]
 native-evidence = ["gpui-desktop", "dep:serde_json"]
 [[bin]]
-name = "gitcrab-gpui"
+name = "gitcrab"
 path = "src/native/main.rs"
 required-features = ["gpui-desktop"]
 

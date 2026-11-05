@@ -1,7 +1,7 @@
 param([string]$Executable, [string]$OutputRoot)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
-if(!$Executable){$Executable=Join-Path $root $(if($IsWindows){'target/debug/gitcrab-gpui.exe'}else{'target/debug/gitcrab-gpui'})}
+if(!$Executable){$Executable=Join-Path $root $(if($IsWindows){'target/debug/gitcrab.exe'}else{'target/debug/gitcrab'})}
 if(!$OutputRoot){$OutputRoot=Join-Path $root 'dist/gpui-smoke'}
 if(Test-Path -LiteralPath $OutputRoot){throw 'Smoke destination exists; choose a new output root'}
 New-Item -ItemType Directory -Force $OutputRoot | Out-Null

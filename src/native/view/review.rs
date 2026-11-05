@@ -6,11 +6,11 @@ fn syntax_style(kind: char) -> HighlightStyle {
     HighlightStyle {
         color: Some(
             rgb(match kind {
-                'c' => MUTED,
-                's' => SYNTAX_STRING,
-                'k' => SYNTAX_KEYWORD,
-                'n' => SYNTAX_NUMBER,
-                _ => TEXT,
+                'c' => semantic(Role::TextMuted),
+                's' => semantic(Role::SyntaxString),
+                'k' => semantic(Role::SyntaxKeyword),
+                'n' => semantic(Role::SyntaxNumber),
+                _ => semantic(Role::TextDefault),
             })
             .into(),
         ),
@@ -51,7 +51,7 @@ fn diff_highlights(
         if character.is_whitespace() {
             style.underline = Some(UnderlineStyle {
                 thickness: px(1.),
-                color: Some(rgb(MUTED).into()),
+                color: Some(rgb(semantic(Role::TextMuted)).into()),
                 wavy: false,
             });
         }
@@ -105,7 +105,7 @@ impl GitCrab {
         };
         let weak = cx.weak_entity();
         let mut el = panel()
-            .bg(rgb(CANVAS))
+            .bg(rgb(semantic(Role::SurfaceCanvas)))
             .child(
                 section_bar()
                     .child(
@@ -177,13 +177,13 @@ impl GitCrab {
                                 "Commit {}",
                                 p.id.as_ref().unwrap().chars().take(8).collect::<String>()
                             ),
-                            ACCENT,
+                            semantic(Role::ActionPrimary),
                         ))
                     })
                     .child(
                         div()
                             .text_size(type_size(cx, 12.))
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(semantic(Role::TextMuted)))
                             .child(if p.id.is_some() {
                                 "First-parent comparison"
                             } else if staged {
@@ -195,9 +195,14 @@ impl GitCrab {
                     .child(div().flex_1())
                     .when(p.id.is_none(), |el| {
                         el.child(
-                            self.action_button(
-                                "stage-file",
-                                if staged { "Unstage file" } else { "Stage file" },
+                            components::semantic_action(
+                                self.button(
+                                    "stage-file",
+                                    if staged { "Unstage file" } else { "Stage file" },
+                                ),
+                                ControlSize::Compact,
+                                staged,
+                                cx,
                             )
                             .outline()
                             .icon(icon("check"))
@@ -230,15 +235,15 @@ impl GitCrab {
             .any(|line| line.text.starts_with("Binary files "))
         {
             return el.child(div().flex_1().flex().flex_col().items_center().justify_center().gap_3().p_4()
-                .child(icon("changes").text_color(rgb(MUTED)))
+                .child(icon("changes").text_color(rgb(semantic(Role::TextMuted))))
                 .child(div().text_size(type_size(cx,16.)).child("Binary file changed"))
-                .child(div().text_color(rgb(MUTED)).child(if p.id.is_some() {"Binary content has no text preview."} else {"A text preview is not available. You can stage or unstage the whole file."})))
+                .child(div().text_color(rgb(semantic(Role::TextMuted))).child(if p.id.is_some() {"Binary content has no text preview."} else {"A text preview is not available. You can stage or unstage the whole file."})))
                 .into_any_element();
         }
         if p.lines.is_empty() {
             return el.child(div().flex_1().flex().flex_col().items_center().justify_center().gap_3().p_4()
                 .child(div().text_size(type_size(cx,16.)).child("No text changes on this side"))
-                .child(div().text_color(rgb(MUTED)).child("Choose the other side or another file. Empty files can be staged as a whole.")))
+                .child(div().text_color(rgb(semantic(Role::TextMuted))).child("Choose the other side or another file. Empty files can be staged as a whole.")))
                 .into_any_element();
         }
         if p.hunks.is_empty()
@@ -269,11 +274,9 @@ impl GitCrab {
                                 .text_size(type_size(cx, 16.))
                                 .child("File renamed · contents unchanged"),
                         )
-                        .children(
-                            metadata
-                                .into_iter()
-                                .map(|line| div().text_color(rgb(MUTED)).child(line)),
-                        ),
+                        .children(metadata.into_iter().map(|line| {
+                            div().text_color(rgb(semantic(Role::TextMuted))).child(line)
+                        })),
                 )
                 .into_any_element();
         }
@@ -286,7 +289,7 @@ impl GitCrab {
                 .px_2()
                 .gap_2()
                 .border_b_1()
-                .border_color(rgb(BORDER));
+                .border_color(rgb(semantic(Role::BorderDivider)));
             for (index, delta, label) in [(0, -1isize, "up"), (1, 1isize, "down")] {
                 bar = bar.child(
                     self.icon_button(
@@ -325,7 +328,7 @@ impl GitCrab {
                 bar.child(
                     div()
                         .text_size(type_size(cx, 12.))
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(semantic(Role::TextMuted)))
                         .child(format!("Hunk {} of {}", active + 1, p.hunks.len())),
                 ),
             );
@@ -337,6 +340,57 @@ impl GitCrab {
                 .child(self.action_button("show-whitespace", "Show whitespace").outline().selected(self.show_whitespace).on_click(cx.listener(|v,_,_,cx| {v.show_whitespace=!v.show_whitespace;cx.notify();})))
                 .child(self.action_button("selection-help", "Help").on_click(|_,w,cx| { w.open_dialog(cx,|d,_,_| d.title("Diff help").alert().child("Split: Before / After or Alt+Left / Alt+Right reveals either pane. The horizontal wheel scrolls. Click / Shift-click selects lines. Ctrl/Cmd+A selects all; Ctrl/Cmd+C copies original source.")); })));
         el.into_any_element()
+    }
+    fn review_discard(
+        &mut self,
+        token: u32,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(p) = self
+            .state
+            .patch
+            .as_ref()
+            .filter(|p| p.id.is_none() && !p.staged && p.token == token)
+        else {
+            return;
+        };
+        if self.state.busy {
+            return;
+        }
+        let path = p.path.clone();
+        let epoch = self.state.epoch;
+        let repo = self.state.path.clone();
+        let weak = cx.weak_entity();
+        let cancel_focus = cx.focus_handle();
+        let initial_focus = cancel_focus.clone();
+        window.open_dialog(cx,move |dialog,_,_| {
+            let weak=weak.clone();
+            let cancel_focus=cancel_focus.clone();
+            dialog.title("Discard working-copy hunk?").confirm().p_4()
+                .child(div().flex().flex_col().gap_2().child(repo.clone()).child(path.clone())
+                    .child("Permanently remove only the reviewed hunk from the working copy. Staged content stays in the index. Unsupported encodings or change types will be rejected.")
+                    .child("Enter cancels. Choose Discard hunk explicitly to remove these changes."))
+                .on_ok(|_,_,_| true)
+                .footer(move |_,cancel,w,cx| {
+                    let cancel=div().track_focus(&cancel_focus).rounded(px(4.))
+                        .focus(|s|s.border_2().border_color(rgb(semantic(Role::InteractionFocus))))
+                        .child(cancel(w,cx)).into_any_element();
+                    let weak=weak.clone();
+                    let discard=components::semantic_action(
+                        Button::new("confirm-discard-hunk").label("Discard hunk").tab_stop(true),
+                        ControlSize::Regular,true,cx)
+                        .on_click(move |_,w,cx| {
+                            let _=weak.update(cx,|v,cx| {
+                                if v.state.epoch==epoch && !v.state.busy {v.mutate(Action::DiscardHunk{token,index},w,cx);}
+                            });
+                            w.close_dialog(cx);
+                        }).into_any_element();
+                    vec![cancel,discard]
+                })
+        });
+        window.on_next_frame(move |w, _| initial_focus.focus(w));
     }
     pub(super) fn keyboard_pan_diff(
         &self,
@@ -414,13 +468,13 @@ impl GitCrab {
             if let Some(l) = line {
                 cell = cell
                     .bg(rgb(if selected {
-                        SELECTED
+                        semantic(Role::InteractionSelected)
                     } else {
                         match l.kind {
-                            '+' => DIFF_ADDED,
-                            '-' => DIFF_REMOVED,
-                            '@' => DIFF_HUNK,
-                            _ => CANVAS,
+                            '+' => semantic(Role::DiffAddedBg),
+                            '-' => semantic(Role::DiffRemovedBg),
+                            '@' => semantic(Role::DiffHunkBg),
+                            _ => semantic(Role::SurfaceCanvas),
                         }
                     }))
                     .child(
@@ -428,7 +482,7 @@ impl GitCrab {
                             .w(px(if self.split { 45. * scale } else { 90. * scale }))
                             .flex_none()
                             .whitespace_nowrap()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(semantic(Role::TextMuted)))
                             .child(if self.split {
                                 (if side == 0 { l.old } else { l.new })
                                     .map(|n| format!("{n:>4}"))
@@ -446,9 +500,9 @@ impl GitCrab {
                             .w(px(9. * scale))
                             .flex_none()
                             .text_color(rgb(match l.kind {
-                                '+' => POSITIVE,
-                                '-' => DANGER,
-                                _ => MUTED,
+                                '+' => semantic(Role::StatusSuccessFg),
+                                '-' => semantic(Role::StatusErrorFg),
+                                _ => semantic(Role::TextMuted),
                             }))
                             .child(match l.kind {
                                 '+' => "+",
@@ -479,23 +533,36 @@ impl GitCrab {
                     let token = p.token;
                     let unstage = p.staged;
                     if let Some(index) = index {
+                        if !unstage {
+                            cell = cell.child(
+                                components::semantic_action(
+                                    self.button(("discard-hunk", i), "Discard hunk"),
+                                    ControlSize::DenseHunk,
+                                    true,
+                                    cx,
+                                )
+                                .mr(px(8.))
+                                .disabled(self.state.busy)
+                                .tooltip("Review discarding only this working-copy hunk")
+                                .on_click(cx.listener(
+                                    move |v, _, w, cx| v.review_discard(token, index, w, cx),
+                                )),
+                            );
+                        }
                         cell = cell.child(
-                            self.action_button(
-                                ("hunk", i),
-                                if unstage {
-                                    "Unstage hunk"
-                                } else {
-                                    "Stage hunk"
-                                },
+                            components::semantic_action(
+                                self.button(
+                                    ("hunk", i),
+                                    if unstage {
+                                        "Unstage hunk"
+                                    } else {
+                                        "Stage hunk"
+                                    },
+                                ),
+                                ControlSize::DenseHunk,
+                                unstage,
+                                cx,
                             )
-                            .outline()
-                            .h(px((if self.preferences.compact_diff {
-                                18.0_f32
-                            } else {
-                                20.0_f32
-                            })
-                            .max(self.preferences.code_size + 5.)))
-                            .text_size(px(12.))
                             .disabled(self.state.busy)
                             .on_click(cx.listener(
                                 move |v, _, w, cx| {

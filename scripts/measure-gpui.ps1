@@ -1,4 +1,4 @@
-param([string]$Executable='target/release/gitcrab-gpui.exe',[string]$Destination='evidence/gpui/performance.json',[string]$ExecutableSource='')
+param([string]$Executable='target/release/gitcrab.exe',[string]$Destination='evidence/gpui/performance.json',[string]$ExecutableSource='')
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 if(!$ExecutableSource){$ExecutableSource=(& git -C $root rev-parse HEAD)}

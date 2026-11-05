@@ -9,7 +9,7 @@ New-Item -ItemType Directory $stage | Out-Null
 if($IsMacOS){
   $app=Join-Path $stage 'GitCrab.app/Contents'
   New-Item -ItemType Directory -Force "$app/MacOS" | Out-Null
-  Copy-Item "$root/target/release/gitcrab-gpui" "$app/MacOS/gitcrab"
+  Copy-Item "$root/target/release/gitcrab" "$app/MacOS/gitcrab"
   @'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -20,8 +20,8 @@ if($IsMacOS){
   if($LASTEXITCODE -ne 0){throw 'Ad-hoc codesign failed'}
   & codesign --verify --deep --strict (Join-Path $stage 'GitCrab.app')
   if($LASTEXITCODE -ne 0){throw 'Signature verification failed'}
-}elseif($IsWindows){Copy-Item "$root/target/release/gitcrab-gpui.exe" "$stage/gitcrab.exe"}
-else{Copy-Item "$root/target/release/gitcrab-gpui" "$stage/gitcrab"; & chmod +x "$stage/gitcrab"}
+}elseif($IsWindows){Copy-Item "$root/target/release/gitcrab.exe" "$stage/gitcrab.exe"}
+else{Copy-Item "$root/target/release/gitcrab" "$stage/gitcrab"; & chmod +x "$stage/gitcrab"}
 Copy-Item "$root/LICENSE" $stage
 Copy-Item "$root/THIRD_PARTY.md" $stage
 & "$PSScriptRoot/dependency-notices.ps1" -Destination (Join-Path $stage 'DEPENDENCY-LICENSES.txt')

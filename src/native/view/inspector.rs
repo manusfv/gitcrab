@@ -1,12 +1,12 @@
 use super::*;
 
 fn inspector_bar() -> Div {
-    section_bar().h(px(32.)).px(px(INSPECTOR_INSET))
+    section_bar().h(rems(32. / 13.)).px(px(INSPECTOR_INSET))
 }
 
 impl GitCrab {
     pub(super) fn inspector(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut el = panel();
+        let mut el = panel().id("inspector-scroll").overflow_y_scroll();
         if self.state.snapshot.is_none() {
             return el.into_any_element();
         }
@@ -29,7 +29,11 @@ impl GitCrab {
                 el = el
                     .child(
                         inspector_bar()
-                            .child(icon("changes").small().text_color(rgb(MUTED)))
+                            .child(
+                                icon("changes")
+                                    .small()
+                                    .text_color(rgb(semantic(Role::TextMuted))),
+                            )
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -64,14 +68,28 @@ impl GitCrab {
                                     .child(
                                         div()
                                             .size(px(26.))
+                                            .relative()
                                             .flex_none()
                                             .rounded_full()
-                                            .bg(rgb(RAISED))
+                                            .bg(rgb(semantic(Role::SurfaceOverlay)))
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .text_color(rgb(ACCENT))
-                                            .child(initials),
+                                            .text_color(rgb(semantic(Role::ActionPrimary)))
+                                            .child(initials)
+                                            .when_some(
+                                                self.author_images.get(&c.author).cloned(),
+                                                |avatar, path| {
+                                                    avatar.child(
+                                                        img(path)
+                                                            .absolute()
+                                                            .inset_0()
+                                                            .size_full()
+                                                            .rounded_full()
+                                                            .object_fit(ObjectFit::Cover),
+                                                    )
+                                                },
+                                            ),
                                     )
                                     .child(
                                         div()
@@ -83,7 +101,7 @@ impl GitCrab {
                                             .child(
                                                 div()
                                                     .text_size(type_size(cx, 12.))
-                                                    .text_color(rgb(MUTED))
+                                                    .text_color(rgb(semantic(Role::TextMuted)))
                                                     .child(display_date(&c.date)),
                                             ),
                                     )
@@ -150,7 +168,7 @@ impl GitCrab {
                                                 .px_1()
                                                 .rounded(px(CONTROL_RADIUS))
                                                 .text_size(type_size(cx, 12.))
-                                                .text_color(rgb(TEXT))
+                                                .text_color(rgb(semantic(Role::TextDefault)))
                                                 .when_some(lane_color, |badge, color| {
                                                     badge.bg(branch_tint(color, REF_TINT))
                                                 })
@@ -179,7 +197,7 @@ impl GitCrab {
                                             .as_ref()
                                             .map(|old| format!("{old} → {path}"))
                                             .unwrap_or_else(|| path.clone());
-                                        div().h(px(FILE_ROW_HEIGHT)).child(
+                                        div().h(type_size(cx, FILE_ROW_HEIGHT)).child(
                                             v.button(("changed", i), label.clone())
                                                 .w_full()
                                                 .px(px(INSPECTOR_INSET))
@@ -208,7 +226,7 @@ impl GitCrab {
                         .px(px(INSPECTOR_INSET))
                         .py(px(6.))
                         .border_t_1()
-                        .border_color(rgb(BORDER))
+                        .border_color(rgb(semantic(Role::BorderDivider)))
                         .children(
                             [
                                 (Operation::Checkout, "Checkout…"),
@@ -232,7 +250,11 @@ impl GitCrab {
         } else {
             el = el.child(
                 inspector_bar()
-                    .child(icon("changes").small().text_color(rgb(ACCENT)))
+                    .child(
+                        icon("changes")
+                            .small()
+                            .text_color(rgb(semantic(Role::ActionPrimary))),
+                    )
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
@@ -260,21 +282,22 @@ impl GitCrab {
                     .unwrap_or(0);
                 el = el.child(
                     inspector_bar()
-                        .bg(rgb(PANEL))
+                        .bg(rgb(semantic(Role::SurfacePanel)))
                         .border_b_0()
                         .justify_between()
                         .child(div().font_weight(FontWeight::MEDIUM).child(format!(
                             "{} ({file_count})",
-                            if staged {
-                                "Staged Files"
-                            } else {
-                                "Unstaged Files"
-                            }
+                            if staged { "Staged" } else { "Unstaged" }
                         )))
                         .child(
-                            self.action_button(
-                                if staged { "unstage-all" } else { "stage-all" },
-                                if staged { "Unstage all" } else { "Stage all" },
+                            components::semantic_action(
+                                self.button(
+                                    if staged { "unstage-all" } else { "stage-all" },
+                                    if staged { "Unstage all" } else { "Stage all" },
+                                ),
+                                ControlSize::DenseBulk,
+                                staged,
+                                cx,
                             )
                             .tooltip(if staged {
                                 "Return all staged changes to the working tree"
@@ -322,7 +345,7 @@ impl GitCrab {
                             .flex_none()
                             .px(px(INSPECTOR_INSET))
                             .py_1()
-                            .text_color(rgb(SUBTLE))
+                            .text_color(rgb(semantic(Role::TextSecondary)))
                             .text_size(type_size(cx, 12.))
                             .child(if staged {
                                 "No staged changes."
@@ -340,10 +363,21 @@ impl GitCrab {
                             "unstaged-files"
                         },
                         n,
-                        move |range, _, cx| {
+                        move |range, window, cx| {
                             weak.update(cx, |v, cx| {
                                 range
                                     .map(|i| {
+                                        let row_focus = window
+                                            .use_keyed_state(
+                                                SharedString::from(format!(
+                                                    "file-action-focus-{}-{}",
+                                                    staged, files[i].path
+                                                )),
+                                                cx,
+                                                |_, cx| cx.focus_handle(),
+                                            )
+                                            .read(cx)
+                                            .clone();
                                         let f = &files[i];
                                         let path = f.path.clone();
                                         let stage_path = path.clone();
@@ -359,15 +393,23 @@ impl GitCrab {
                                             p.path == f.path && p.staged == staged
                                         });
                                         div()
+                                            .group("file-row")
+                                            .track_focus(&row_focus)
                                             .w_full()
-                                            .h(px(FILE_ROW_HEIGHT))
+                                            .h(type_size(cx, FILE_ROW_HEIGHT))
                                             .flex()
                                             .items_center()
                                             .px(px(INSPECTOR_INSET))
                                             .gap_1()
-                                            .when(active, |e| e.bg(rgb(SELECTED)))
+                                            .when(active, |e| {
+                                                e.bg(rgb(semantic(Role::InteractionSelected)))
+                                            })
                                             .hover(|e| {
-                                                e.bg(rgb(if active { SELECTED } else { HOVER }))
+                                                e.bg(rgb(if active {
+                                                    semantic(Role::InteractionSelected)
+                                                } else {
+                                                    semantic(Role::InteractionHover)
+                                                }))
                                             })
                                             .child(badge(status.to_string(), tint))
                                             .child(
@@ -392,7 +434,7 @@ impl GitCrab {
                                                     })),
                                                 ),
                                             )
-                                            .child(
+                                            .child(components::file_action(
                                                 v.icon_button(
                                                     (if staged { "minus" } else { "plus" }, i),
                                                     if staged { "minus" } else { "plus" },
@@ -401,6 +443,12 @@ impl GitCrab {
                                                         if staged { "Unstage" } else { "Stage" },
                                                         f.path
                                                     ),
+                                                )
+                                                .w(px(18.))
+                                                .h(px(18.))
+                                                .icon(
+                                                    icon(if staged { "minus" } else { "plus" })
+                                                        .size(px(13.)),
                                                 )
                                                 .disabled(v.state.busy)
                                                 .on_click(cx.listener(move |v, _, w, cx| {
@@ -413,16 +461,24 @@ impl GitCrab {
                                                         cx,
                                                     )
                                                 })),
-                                            )
+                                                &row_focus,
+                                                v.preferences.always_show_file_actions,
+                                                window,
+                                                cx,
+                                            ))
                                     })
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default()
                         },
                     )
-                    .h(px(
-                        (n as f32 * FILE_ROW_HEIGHT).clamp(FILE_ROW_HEIGHT, FILE_ROW_HEIGHT * 4.)
-                    )),
+                    .flex_none()
+                    .h(px((n as f32
+                        * f32::from(type_size(cx, FILE_ROW_HEIGHT)))
+                    .clamp(
+                        f32::from(type_size(cx, FILE_ROW_HEIGHT)),
+                        f32::from(type_size(cx, FILE_ROW_HEIGHT)) * 4.,
+                    ))),
                 );
             }
             let staged_count = self
@@ -442,16 +498,14 @@ impl GitCrab {
                 .snapshot
                 .as_ref()
                 .is_some_and(|s| s.status.iter().any(|f| f.index != ' ' && f.index != '?'));
-            let conflict = self.state.snapshot.as_ref().is_some_and(|s| {
-                s.status.iter().any(|f| {
-                    f.index == 'U'
-                        || f.worktree == 'U'
-                        || matches!((f.index, f.worktree), ('A', 'A') | ('D', 'D'))
-                })
-            });
+            let conflict = self
+                .state
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.commit_blocked());
             el = el
                 .child(div().flex_1().min_h_0())
-                .child(div().border_t_1().border_color(rgb(BORDER)))
+                .child(div().border_t_1().border_color(rgb(semantic(Role::BorderDivider))))
                 .child(
                     inspector_bar()
                         .justify_between()
@@ -459,7 +513,7 @@ impl GitCrab {
                         .when(summary_length >= 50, |e| {
                             e.child(badge(
                                 format!("{} / 72", summary_length),
-                                if summary_length > 72 { WARNING } else { MUTED },
+                                if summary_length > 72 { semantic(Role::StatusWarningFg) } else { semantic(Role::TextMuted) },
                             ))
                         }),
                 )
@@ -471,9 +525,9 @@ impl GitCrab {
                                 .px(px(INSPECTOR_INSET))
                                 .py_1()
                                 .text_size(type_size(cx, 12.))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(semantic(Role::TextMuted)))
                                 .child(if conflict {
-                                    "Resolve conflicts with Git, then refresh."
+                                    "Finish or abort the active Git operation in a terminal, then refresh."
                                 } else if staged {
                                     "Enter a summary to commit staged changes."
                                 } else {
@@ -491,37 +545,39 @@ impl GitCrab {
                         .flex_col()
                         .rounded(px(CONTROL_RADIUS))
                         .border_1()
-                        .border_color(rgb(BORDER))
-                        .bg(rgb(CHROME))
+                        .border_color(rgb(semantic(Role::BorderDivider)))
+                        .bg(rgb(semantic(Role::SurfaceChrome)))
                         .child(if self.settings_open {
                             self.editor(
                                 &self.draft,
-                                30.,
+                                geometry::SIZE_COMMIT_EDITOR_SUMMARY,
                                 self.inspector_editor_width(),
                                 "Commit summary",
                                 cx,
                             )
                         } else {
                             Input::new(&self.draft)
+                                .px(px(geometry::SIZE_COMMIT_EDITOR_INSET_X))
                                 .bordered(false)
                                 .w_full()
-                                .h(px(30.))
+                                .h(rems(geometry::SIZE_COMMIT_EDITOR_SUMMARY / 13.))
                                 .into_any_element()
                         })
-                        .child(div().border_t_1().border_color(rgb(BORDER)))
+                        .child(div().border_t_1().border_color(rgb(semantic(Role::BorderDivider))))
                         .child(if self.settings_open {
                             self.editor(
                                 &self.description,
-                                76.,
+                                geometry::SIZE_COMMIT_EDITOR_BODY_MIN,
                                 self.inspector_editor_width(),
                                 "Description (optional)",
                                 cx,
                             )
                         } else {
                             Input::new(&self.description)
+                                .px(px(geometry::SIZE_COMMIT_EDITOR_INSET_X))
                                 .bordered(false)
                                 .w_full()
-                                .h(px(76.))
+                                .h(rems(geometry::SIZE_COMMIT_EDITOR_BODY_MIN / 13.))
                                 .into_any_element()
                         }),
                 )
@@ -535,6 +591,7 @@ impl GitCrab {
                         !self.can_commit(),
                     )
                     .icon(icon("check"))
+                    .flex_none()
                     .mx(px(INSPECTOR_INSET))
                     .my(px(6.))
                     .tooltip("Commit staged changes · Ctrl/Cmd+Enter")

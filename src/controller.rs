@@ -42,6 +42,8 @@ pub struct Controller {
     /// Selected review context survives asynchronous reads and refreshes.
     pub diff_context: Option<(Option<String>, String, bool)>,
     pub draft: String,
+    pub draft_revision: u64,
+    submitted_revision: Option<u64>,
     pub busy: bool,
     pub notice: String,
     pub error: bool,
@@ -65,6 +67,8 @@ impl Default for Controller {
             patch: None,
             diff_context: None,
             draft: String::new(),
+            draft_revision: 0,
+            submitted_revision: None,
             busy: false,
             notice: "Open a local repository to begin".into(),
             error: false,
@@ -77,9 +81,16 @@ impl Default for Controller {
     }
 }
 impl Controller {
+    pub fn set_draft(&mut self, value: String) {
+        if self.draft != value {
+            self.draft = value;
+            self.draft_revision += 1;
+        }
+    }
+
     fn draft_key(path: &str) -> String {
-        // Windows pickers use backslashes; Git reports forward-slash roots.
-        // Keep literal backslashes distinct on Unix filesystems.
+        let canonical = crate::platform::worktree_identity(std::path::Path::new(path));
+        let path = canonical.to_string_lossy();
         #[cfg(windows)]
         let path = path.replace('\\', "/");
         path.trim_end_matches('/').to_string()
@@ -207,6 +218,8 @@ impl Controller {
         if self.busy || self.snapshot.is_none() {
             return None;
         }
+        self.submitted_revision =
+            matches!(action, Action::Commit { .. }).then_some(self.draft_revision);
         self.busy = true;
         self.error = false;
         self.notice = "Running Git operation…".into();
@@ -351,8 +364,11 @@ impl Controller {
                     committed_draft,
                 }) => {
                     self.notice = message;
-                    if committed_draft.as_ref() == Some(&self.draft) {
+                    if committed_draft.as_ref() == Some(&self.draft)
+                        && self.submitted_revision == Some(self.draft_revision)
+                    {
                         self.draft.clear();
+                        self.draft_revision += 1;
                     }
                 }
                 Err(e) => {
@@ -561,6 +577,34 @@ mod tests {
         assert!(matches!(&jobs[0].1.action, Action::Open { path, .. } if path == "c"));
     }
     #[test]
+    fn commit_completion_keeps_a_newer_revision_even_when_text_matches() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: Some(Default::default()),
+            ..Default::default()
+        };
+        c.set_draft("submitted".into());
+        let (_, r) = c
+            .mutate(Action::Commit {
+                message: c.draft.clone(),
+                reviewed: None,
+            })
+            .unwrap();
+        c.set_draft("new edit".into());
+        c.set_draft("submitted".into());
+        c.complete(
+            Lane::Mutation,
+            reply(
+                &r,
+                Ok(Reply::Done {
+                    message: "verified".into(),
+                    committed_draft: Some("submitted".into()),
+                }),
+            ),
+        );
+        assert_eq!(c.draft, "submitted");
+    }
+    #[test]
     fn mutation_preserves_new_draft_and_refreshes_failure() {
         let mut c = Controller::default();
         c.epoch = 1;
@@ -569,6 +613,7 @@ mod tests {
         let (_, a) = c
             .mutate(Action::Commit {
                 message: "old".into(),
+                reviewed: None,
             })
             .unwrap();
         assert!(c

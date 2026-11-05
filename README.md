@@ -10,11 +10,11 @@ The native workspace polish adds consistent iconography, clearer Git context and
 Install stable Rust, Git and the native prerequisites:
 
 ```sh
-cargo run --locked --release --bin gitcrab-gpui -- /path/to/repository
+cargo run --locked --release --bin gitcrab -- /path/to/repository
 cargo test --locked --no-default-features --lib
 ```
 
-On Windows, quote paths containing spaces. The executable is `target/release/gitcrab-gpui.exe`; Linux/macOS omit `.exe`. Start without a repository to use the native folder picker. This workspace's provisioned GNU installation can be used through `scripts/cargo-gpui-local.ps1`; Windows release builds also require the SDK shader compiler via `GPUI_FXC_PATH`.
+On Windows, quote paths containing spaces. The executable is `target/release/gitcrab.exe`; Linux/macOS omit `.exe`. Start without a repository to use the native folder picker. This workspace's provisioned GNU installation can be used through `scripts/cargo-gpui-local.ps1`; Windows release builds also require the SDK shader compiler via `GPUI_FXC_PATH`.
 
 ## Workflows
 
@@ -24,16 +24,16 @@ On Windows, quote paths containing spaces. The executable is `target/release/git
 - Review create-branch, checkout, merge, cherry-pick, revert, stash and pop operations with repository/HEAD/target context. Git errors and conflicts remain visible; state refreshes on success and failure.
 - Use Cmd+O on macOS or Ctrl+O elsewhere, F5 to refresh, Cmd/Ctrl+Enter to commit staged changes, and context menus for commit operations. Resize panels and use Appearance for density, text size and keyboard width controls. Explicitly save preferences to the platform configuration directory.
 
-No destructive discard/reset UI or remote writes are exposed. Conflict resolution/continue/abort, line staging, rebase/reset UI, hosting integrations and full the reference app parity remain future work. See the capability matrix.
+Reviewed hunk discard supports ordinary LF UTF-8 working-copy modifications and rejects unsupported transformations. Remote writes, conflict resolution/continue/abort, line staging, rebase/reset UI, hosting integrations and full the reference app parity remain future work.
 
 ## Validation and development packages
 
 ```sh
 cargo fmt --all -- --check
 cargo test --locked --no-default-features --lib
-cargo build --locked --release --bin gitcrab-gpui
+cargo build --locked --release --bin gitcrab
 # Separate evidence executable, never the packaged production binary:
-cargo build --locked --features native-evidence --bin gitcrab-gpui
+cargo build --locked --features native-evidence --bin gitcrab
 pwsh -File scripts/smoke-gpui.ps1
 ```
 

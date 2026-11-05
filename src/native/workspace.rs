@@ -1,3 +1,4 @@
+use super::components::{self, ControlSize};
 use super::{
     preferences::Preferences,
     theme::*,
@@ -91,6 +92,15 @@ impl Workspace {
     }
 
     fn open_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        let identity = canonical_worktree(&path);
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| canonical_worktree(tab.read(cx).repository_path()) == identity)
+        {
+            self.activate(index, window, cx);
+            return;
+        }
         if self.tabs[self.active].read(cx).has_repository() {
             self.add(Some(path), window, cx);
         } else {
@@ -146,7 +156,7 @@ impl Render for Workspace {
         for (index, entity) in self.tabs.iter().enumerate() {
             let tab = entity.read(cx);
             let path = tab.repository_path();
-            let label = std::path::Path::new(path)
+            let mut label = std::path::Path::new(path)
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| {
@@ -156,6 +166,26 @@ impl Render for Workspace {
                         path.into()
                     }
                 });
+            if !path.is_empty()
+                && self
+                    .tabs
+                    .iter()
+                    .filter(|other| {
+                        std::path::Path::new(other.read(cx).repository_path()).file_name()
+                            == std::path::Path::new(path).file_name()
+                    })
+                    .count()
+                    > 1
+            {
+                let parent = std::path::Path::new(path)
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                label = format!("{label} · {parent}");
+            }
+            if tab.unread_result() {
+                label = format!("● {label}");
+            }
             let selected = index == self.active;
             let tooltip = if path.is_empty() {
                 label.clone()
@@ -169,8 +199,12 @@ impl Render for Workspace {
                     .items_center()
                     .rounded(px(4.))
                     .border_b_1()
-                    .border_color(rgb(if selected { ACCENT } else { CHROME }))
-                    .when(selected, |el| el.bg(rgb(RAISED)))
+                    .border_color(rgb(if selected {
+                        semantic(Role::ActionPrimary)
+                    } else {
+                        semantic(Role::SurfaceChrome)
+                    }))
+                    .when(selected, |el| el.bg(rgb(semantic(Role::SurfaceOverlay))))
                     .child(
                         Button::new(("select-repository-tab", entity.entity_id()))
                             .ghost()
@@ -186,14 +220,16 @@ impl Render for Workspace {
                             })),
                     )
                     .child(
-                        Button::new(("close-repository-tab", entity.entity_id()))
-                            .label("×")
-                            .ghost()
-                            .small()
-                            .tab_stop(true)
-                            .disabled(blocked || tab.mutating())
-                            .tooltip(format!("Close {label} tab"))
-                            .on_click(cx.listener(move |v, _, w, cx| v.close(index, w, cx))),
+                        components::sized(
+                            Button::new(("close-repository-tab", entity.entity_id())).label("×"),
+                            ControlSize::TabClose,
+                        )
+                        .ghost()
+                        .small()
+                        .tab_stop(true)
+                        .disabled(blocked || tab.mutating())
+                        .tooltip(format!("Close {label} tab"))
+                        .on_click(cx.listener(move |v, _, w, cx| v.close(index, w, cx))),
                     ),
             );
         }
@@ -223,10 +259,10 @@ impl Render for Workspace {
                     .items_center()
                     .gap_1()
                     .px_2()
-                    .h(px(32.))
-                    .bg(rgb(CHROME))
+                    .h(px(geometry::SIZE_SHELL_TAB_STRIP))
+                    .bg(rgb(semantic(Role::SurfaceChrome)))
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(semantic(Role::BorderDivider)))
                     .child(strip)
                     .child(
                         Button::new("new-repository-tab")
@@ -243,7 +279,12 @@ impl Render for Workspace {
                     ),
             )
             .when_some(self.picker_error.clone(), |el, error| {
-                el.child(div().px_3().text_color(rgb(DANGER)).child(error))
+                el.child(
+                    div()
+                        .px_3()
+                        .text_color(rgb(semantic(Role::StatusErrorFg)))
+                        .child(error),
+                )
             })
             .child(
                 div()
@@ -253,4 +294,8 @@ impl Render for Workspace {
                     .child(active),
             )
     }
+}
+
+fn canonical_worktree(path: &str) -> std::path::PathBuf {
+    gitcrab_core::platform::worktree_identity(std::path::Path::new(path))
 }

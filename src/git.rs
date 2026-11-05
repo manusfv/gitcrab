@@ -28,6 +28,12 @@ pub struct FileChange {
     pub worktree: char,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct WriteIdentity {
+    pub head: String,
+    pub symbolic_head: String,
+    pub index: Vec<u8>,
+}
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct RepoSnapshot {
     pub commits: Vec<Commit>,
@@ -36,13 +42,59 @@ pub struct RepoSnapshot {
     pub remote_refs: Vec<String>,
     #[serde(default)]
     pub stash_count: usize,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub head: String,
     /// Full HEAD identity, including when outside the loaded history page.
     pub head_id: String,
     pub status: Vec<FileChange>,
+    #[serde(default)]
+    pub operations: Vec<String>,
+    #[serde(default)]
+    pub reviewed: Option<WriteIdentity>,
+    #[serde(default)]
+    pub upstream_context: String,
 }
 
 impl RepoSnapshot {
+    /// Porcelain XY entries share a destination path, including renames.
+    pub fn unique_changes(&self) -> std::collections::BTreeSet<&str> {
+        self.status.iter().map(|f| f.path.as_str()).collect()
+    }
+    pub fn change_counts(&self) -> [usize; 4] {
+        let mut paths: std::collections::BTreeMap<&str, Vec<char>> = Default::default();
+        for f in &self.status {
+            paths
+                .entry(&f.path)
+                .or_default()
+                .extend([f.index, f.worktree]);
+        }
+        let mut counts = [0; 4];
+        for status in paths.values() {
+            let category = if status.contains(&'R') || status.contains(&'C') {
+                3
+            } else if status.contains(&'U') {
+                0
+            } else if status.contains(&'?') || status.contains(&'A') {
+                1
+            } else if status.contains(&'D') {
+                2
+            } else {
+                0
+            };
+            counts[category] += 1;
+        }
+        counts
+    }
+    pub fn commit_blocked(&self) -> bool {
+        !self.operations.is_empty()
+            || self.status.iter().any(|f| {
+                f.index == 'U'
+                    || f.worktree == 'U'
+                    || matches!((f.index, f.worktree), ('A', 'A') | ('D', 'D'))
+            })
+    }
+
     pub fn head_label(&self) -> String {
         if self.head_id.is_empty() {
             format!("{} · unborn branch", self.head)
@@ -112,19 +164,37 @@ impl Git {
     }
 
     pub fn snapshot(&self, limit: usize) -> GitResult<RepoSnapshot> {
-        let head = self
-            .run(&["symbolic-ref", "--short", "HEAD"])
-            .or_else(|_| self.run(&["rev-parse", "--short", "HEAD"]))?
-            .trim()
-            .to_string();
+        let reviewed = self.write_identity()?;
+        let head = if let Some(branch) = reviewed.symbolic_head.strip_prefix("refs/heads/") {
+            branch.to_string()
+        } else {
+            self.run(&["rev-parse", "--short", "HEAD"])?
+                .trim()
+                .to_string()
+        };
         let refs = self.run(&[
             "for-each-ref",
-            "--format=%(objectname)%00%(refname:short)%00%(*objectname)",
+            "--format=%(objectname)%00%(refname:short)%00%(*objectname)%00%(refname)",
         ])?;
         let mut labels: HashMap<String, Vec<String>> = HashMap::new();
+        let mut branches = Vec::new();
+        let mut remote_refs = Vec::new();
+        let mut tags = Vec::new();
         for line in refs.lines() {
             let fields: Vec<_> = line.split('\0').collect();
-            if fields.len() == 3 {
+            if fields.len() == 4 {
+                let list = if fields[3].starts_with("refs/heads/") {
+                    Some(&mut branches)
+                } else if fields[3].starts_with("refs/remotes/") {
+                    Some(&mut remote_refs)
+                } else if fields[3].starts_with("refs/tags/") {
+                    Some(&mut tags)
+                } else {
+                    None
+                };
+                if let Some(list) = list {
+                    list.push(fields[1].to_string());
+                }
                 let target = if fields[2].is_empty() {
                     fields[0]
                 } else {
@@ -136,7 +206,11 @@ impl Git {
                     .push(fields[1].into());
             }
         }
-        let head_exists = self.run(&["rev-parse", "--verify", "HEAD"]);
+        let head_exists: GitResult<String> = if reviewed.head.is_empty() {
+            Err("Unborn HEAD".into())
+        } else {
+            Ok(reviewed.head.clone())
+        };
         if let Ok(oid) = &head_exists {
             labels
                 .entry(oid.trim().into())
@@ -180,11 +254,6 @@ impl Git {
                 refs: labels.remove(f[0]).unwrap_or_default(),
             })
             .collect();
-        let branches = self
-            .run(&["for-each-ref", "--format=%(refname:short)", "refs/heads"])?
-            .lines()
-            .map(String::from)
-            .collect();
         let status = parse_status(&self.bytes(&[
             "status",
             "--porcelain=v1",
@@ -195,6 +264,9 @@ impl Git {
             .as_ref()
             .map(|oid| oid.trim().to_string())
             .unwrap_or_default();
+        if self.write_identity()? != reviewed {
+            return Err("Repository changed during refresh. Refresh again before writing.".into());
+        }
         Ok(RepoSnapshot {
             commits,
             branches,
@@ -202,17 +274,77 @@ impl Git {
                 .run(&["stash", "list", "--format=%gd"])?
                 .lines()
                 .count(),
-            remote_refs: self
-                .run(&["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?
-                .lines()
-                .map(String::from)
-                .collect(),
+            remote_refs,
+            tags,
             head,
             head_id,
             status,
+            operations: self.operation_markers()?,
+            upstream_context: self.upstream_context(&reviewed)?,
+            reviewed: Some(reviewed),
         })
     }
 
+    /// Git resolves linked-worktree marker paths; unresolved counts are independent.
+    pub fn operation_markers(&self) -> GitResult<Vec<String>> {
+        let markers = [
+            ("MERGE_HEAD", "merge"),
+            ("CHERRY_PICK_HEAD", "cherry-pick"),
+            ("REVERT_HEAD", "revert"),
+            ("rebase-merge", "rebase"),
+            ("rebase-apply", "rebase"),
+            ("sequencer", "sequencer"),
+        ];
+        let mut args = vec!["rev-parse", "--path-format=absolute"];
+        for (marker, _) in markers {
+            args.extend(["--git-path", marker]);
+        }
+        let paths = self.run(&args)?;
+        let mut active = paths
+            .lines()
+            .zip(markers)
+            .filter(|(p, _)| PathBuf::from(p).exists())
+            .map(|(_, (_, name))| name.to_string())
+            .collect::<Vec<_>>();
+        active.sort();
+        active.dedup();
+        Ok(active)
+    }
+    pub fn upstream_context(&self, identity: &WriteIdentity) -> GitResult<String> {
+        if identity.symbolic_head.is_empty() {
+            return Ok("Detached HEAD · no upstream".into());
+        }
+        let upstream = self.run(&[
+            "for-each-ref",
+            "--format=%(upstream:short)",
+            &identity.symbolic_head,
+        ])?;
+        let upstream = upstream.trim();
+        if upstream.is_empty() {
+            return Ok("No upstream configured".into());
+        }
+        match self.run(&[
+            "rev-list",
+            "--left-right",
+            "--count",
+            "HEAD...@{upstream}",
+            "--",
+        ]) {
+            Ok(counts) => {
+                let counts = counts.split_whitespace().collect::<Vec<_>>();
+                if counts.len() != 2 {
+                    return Err("Invalid upstream comparison".into());
+                }
+                Ok(format!(
+                    "{} ahead · {} behind · {upstream} · network freshness unknown",
+                    counts[0], counts[1]
+                ))
+            }
+            Err(_) => Ok(format!(
+                "Upstream {upstream} unavailable · network freshness unknown"
+            )),
+        }
+    }
     pub fn changed_files(&self, commit: &str) -> GitResult<Vec<FileChange>> {
         validate_revision(commit)?;
         let parent = format!("{commit}^1");
@@ -443,6 +575,146 @@ impl Git {
         }
     }
 
+    /// Validate both Git's patch and the exact worktree preimage; verify actual bytes.
+    /// External processes can still race between preflight and Git's write.
+    pub fn discard_hunk(&self, path: &str, hunk: &Hunk) -> GitResult<()> {
+        if path.is_empty()
+            || path == "."
+            || PathBuf::from(path).is_absolute()
+            || path.split(['/', '\\']).any(|s| s == "..")
+        {
+            return Err("Invalid discard path".into());
+        }
+        if self
+            .run(&["config", "--get", "core.autocrlf"])
+            .is_ok_and(|s| s.trim().eq_ignore_ascii_case("true"))
+        {
+            return Err(
+                "Discard with automatic CRLF conversion is not qualified. Use Git for this file."
+                    .into(),
+            );
+        }
+        let attrs = self.run(&[
+            "check-attr",
+            "-z",
+            "filter",
+            "working-tree-encoding",
+            "eol",
+            "--",
+            path,
+        ])?;
+        for fields in attrs.split('\0').collect::<Vec<_>>().chunks_exact(3) {
+            if fields[2] != "unspecified"
+                && fields[2] != "unset"
+                && !(fields[1] == "eol" && fields[2] == "lf")
+            {
+                return Err("Discard with content filters or non-LF encoding is not qualified. Use Git for this file.".into());
+            }
+        }
+        let file = self.path.join(path);
+        if std::fs::symlink_metadata(&file)
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("Discard of symlinks is not supported".into());
+        }
+        let before = std::fs::read(&file).map_err(|e| e.to_string())?;
+        let expected = crate::hunk_edit::reversed_worktree(hunk, &before)?;
+        let index = self.run(&["ls-files", "--stage", "-z"])?;
+        let head = self
+            .run(&["rev-parse", "--verify", "HEAD"])
+            .unwrap_or_default();
+        if std::fs::read(&file).map_err(|e| e.to_string())? != before {
+            return Err("Working file changed before discard".into());
+        }
+        let mut child = self
+            .command(&["apply", "--reverse", "--whitespace=nowarn"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        child
+            .stdin
+            .take()
+            .ok_or("Could not open Git input")?
+            .write_all(hunk.patch.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let result = child.wait_with_output().map_err(|e| e.to_string())?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).trim().into());
+        }
+        if std::fs::read(&file).map_err(|e| e.to_string())? != expected
+            || self.run(&["ls-files", "--stage", "-z"])? != index
+            || self
+                .run(&["rev-parse", "--verify", "HEAD"])
+                .unwrap_or_default()
+                != head
+        {
+            return Err("Discard outcome uncertain: Git state differs from the reviewed effect. Refresh and inspect before retrying.".into());
+        }
+        Ok(())
+    }
+    pub fn write_identity(&self) -> GitResult<WriteIdentity> {
+        // Three bounded read tasks join inside the serialized service worker.
+        // No mutation can enter this session while the identity is collected.
+        std::thread::scope(|scope| {
+            let head = scope.spawn(|| {
+                self.run(&["rev-parse", "--verify", "HEAD"])
+                    .unwrap_or_default()
+            });
+            let symbolic = scope.spawn(|| {
+                self.run(&["symbolic-ref", "--quiet", "HEAD"])
+                    .unwrap_or_default()
+            });
+            let index = self.bytes(&["ls-files", "--stage", "-z"])?;
+            Ok(WriteIdentity {
+                head: head.join().map_err(|_| "HEAD read failed")?.trim().into(),
+                symbolic_head: symbolic
+                    .join()
+                    .map_err(|_| "Symbolic HEAD read failed")?
+                    .trim()
+                    .into(),
+                index,
+            })
+        })
+    }
+    pub fn commit_reviewed(&self, message: &str, reviewed: &WriteIdentity) -> GitResult<String> {
+        if message.lines().next().is_none_or(|s| s.trim().is_empty()) {
+            return Err("Enter a commit summary".into());
+        }
+        if !self.operation_markers()?.is_empty() {
+            return Err("An active Git operation blocks ordinary commit. Complete or abort it in a terminal, then refresh.".into());
+        }
+        if self.write_identity()? != *reviewed {
+            return Err("HEAD or index changed since review. Refresh and review staged changes; your message is saved.".into());
+        }
+        if self
+            .run(&["diff", "--cached", "--name-only", "-z"])?
+            .is_empty()
+        {
+            return Err("No staged changes to commit".into());
+        }
+        let tree = self.run(&["write-tree"])?;
+        if self.write_identity()? != *reviewed {
+            return Err("Index changed before commit. Refresh and review again.".into());
+        }
+        self.commit(message)?;
+        let sha = self.run(&["rev-parse", "--verify", "HEAD"])?;
+        let state = self.run(&["show", "-s", "--format=%P%x00%T", "HEAD"])?;
+        let (parents, actual_tree) = state
+            .trim()
+            .split_once('\0')
+            .ok_or("Commit outcome uncertain. Refresh and inspect HEAD.")?;
+        if parents != reviewed.head
+            || actual_tree != tree.trim()
+            || self.write_identity()?.symbolic_head != reviewed.symbolic_head
+        {
+            return Err("Commit outcome uncertain: resulting parent/tree differs from the reviewed commit. Refresh and inspect HEAD before retrying. Your message is saved.".into());
+        }
+        Ok(sha.trim().into())
+    }
     pub fn commit(&self, message: &str) -> GitResult<()> {
         if message.trim().is_empty() {
             return Err("Enter a commit message".into());
@@ -619,6 +891,131 @@ mod tests {
             // This directory was exclusively created by Fixture::new above.
             let _ = std::fs::remove_dir_all(&self.git.path);
         }
+    }
+    #[test]
+    fn reviewed_commit_rejects_index_head_hooks_and_active_markers() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("one.txt", "one\n");
+        git.stage("one.txt").unwrap();
+        let unborn = git.write_identity().unwrap();
+        let sha = git.commit_reviewed("first", &unborn).unwrap();
+        assert_eq!(sha, git.run(&["rev-parse", "HEAD"]).unwrap().trim());
+        fixture.write("one.txt", "two\n");
+        git.stage("one.txt").unwrap();
+        let reviewed = git.write_identity().unwrap();
+        fixture.write("extra.txt", "extra\n");
+        git.stage("extra.txt").unwrap();
+        assert!(git
+            .commit_reviewed("stale index", &reviewed)
+            .unwrap_err()
+            .contains("changed"));
+        let reviewed = git.write_identity().unwrap();
+        git.run(&["commit", "--allow-empty", "-m", "external"])
+            .unwrap();
+        assert!(git.commit_reviewed("stale HEAD", &reviewed).is_err());
+        fixture.write("one.txt", "three\n");
+        git.stage("one.txt").unwrap();
+        let reviewed = git.write_identity().unwrap();
+        fixture.write(
+            "empty-hooks/pre-commit",
+            "#!/bin/sh\necho controlled-hook-failure >&2\nexit 1\n",
+        );
+        let failed = git.commit_reviewed("hook fails", &reviewed).unwrap_err();
+        assert!(failed.contains("controlled-hook-failure"));
+        assert_eq!(git.write_identity().unwrap(), reviewed);
+        fixture.write("empty-hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+        let marker = git.run(&["rev-parse", "--git-path", "MERGE_HEAD"]).unwrap();
+        std::fs::write(git.path.join(marker.trim()), format!("{}\n", reviewed.head)).unwrap();
+        let snapshot = git.snapshot(100).unwrap();
+        assert!(snapshot.commit_blocked());
+        assert!(!snapshot.status.iter().any(|f| f.index == 'U'));
+        assert!(git
+            .commit_reviewed("ordinary commit", &reviewed)
+            .unwrap_err()
+            .contains("active Git operation"));
+    }
+    #[test]
+    fn discard_only_reviewed_hunk_preserves_index_head_and_other_hunk() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        let original = (0..40).map(|i| format!("line {i}\n")).collect::<String>();
+        fixture.write("日本語.txt", &original);
+        git.stage(".").unwrap();
+        git.commit("base").unwrap();
+        let staged = original.replace("line 1\n", "staged one\n");
+        fixture.write("日本語.txt", &staged);
+        git.stage(".").unwrap();
+        let working = staged
+            .replace("line 10\n", "work ten\n")
+            .replace("line 30\n", "work thirty\n");
+        fixture.write("日本語.txt", &working);
+        let identity = git.write_identity().unwrap();
+        let hunks = git.hunks("日本語.txt", false).unwrap();
+        assert_eq!(hunks.len(), 2);
+        git.discard_hunk("日本語.txt", &hunks[0]).unwrap();
+        assert_eq!(git.write_identity().unwrap(), identity);
+        let expected = staged.replace("line 30\n", "work thirty\n");
+        assert_eq!(
+            std::fs::read(git.path.join("日本語.txt")).unwrap(),
+            expected.as_bytes()
+        );
+        assert!(git.discard_hunk("日本語.txt", &hunks[0]).is_err());
+        fixture.write("new.txt", "untracked\n");
+        let added = git.hunks("new.txt", false).unwrap();
+        assert!(git.discard_hunk("new.txt", &added[0]).is_err());
+    }
+    #[test]
+    fn unique_path_counts_and_linked_worktree_markers_stay_local() {
+        let snapshot = RepoSnapshot {
+            status: vec![
+                FileChange {
+                    path: "new".into(),
+                    index: 'R',
+                    worktree: 'M',
+                    original_path: Some("old".into()),
+                },
+                FileChange {
+                    path: "new".into(),
+                    index: 'M',
+                    worktree: 'M',
+                    original_path: None,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(snapshot.unique_changes().len(), 1);
+        assert_eq!(snapshot.change_counts(), [0, 0, 0, 1]);
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("a", "a");
+        git.stage(".").unwrap();
+        git.commit("root").unwrap();
+        let linked_path = git.path.join("linked");
+        git.run(&[
+            "worktree",
+            "add",
+            "-b",
+            "linked",
+            linked_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let linked = Git::open(&linked_path).unwrap();
+        let marker = linked
+            .run(&["rev-parse", "--git-path", "CHERRY_PICK_HEAD"])
+            .unwrap();
+        let marker = PathBuf::from(marker.trim());
+        std::fs::write(
+            if marker.is_absolute() {
+                marker
+            } else {
+                linked.path.join(marker)
+            },
+            git.run(&["rev-parse", "HEAD"]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(linked.operation_markers().unwrap(), ["cherry-pick"]);
+        assert!(git.operation_markers().unwrap().is_empty());
     }
     #[test]
     fn rename_comparisons_keep_paths_and_blobs_in_the_correct_namespace() {

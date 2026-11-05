@@ -1,6 +1,7 @@
 mod inspector;
 mod review;
 mod settings;
+use super::components::{self, ControlSize};
 use super::preferences::Preferences;
 use super::theme::*;
 use gitcrab_core::{
@@ -50,9 +51,8 @@ fn display_date(date: &str) -> String {
     }
 }
 
-const GRAPH_LANE_PITCH: f32 = 26.;
+const GRAPH_LANE_PITCH: f32 = geometry::SIZE_GRAPH_LANE_PITCH;
 const GRAPH_LANE_INSET: f32 = 14.;
-const AUTHOR_IMAGE_SIZE: f32 = 20.;
 
 fn local_author_images() -> std::collections::HashMap<String, std::path::PathBuf> {
     let Some(directory) = std::env::var_os("GITCRAB_AVATAR_DIR") else {
@@ -72,37 +72,6 @@ fn local_author_images() -> std::collections::HashMap<String, std::path::PathBuf
             Some((path.file_stem()?.to_str()?.to_owned(), path))
         })
         .collect()
-}
-
-fn author_avatar_colors(author: &str) -> (u32, u32) {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-
-    const BACKGROUNDS: [u32; 24] = [
-        0x9c3448, 0xdc7a89, 0x96432d, 0xf08e64, 0x835119, 0xe7a447, 0x6b561b, 0xd4bd53, 0x4c612c,
-        0xa4c36c, 0x316347, 0x73c597, 0x226466, 0x5fc3bf, 0x265d80, 0x74b7de, 0x3d528d, 0x8da5ec,
-        0x5d458d, 0xb19ae2, 0x743d79, 0xcf92d3, 0x873b61, 0xe38db7,
-    ];
-    let mut hash = DefaultHasher::new();
-    author.hash(&mut hash);
-    let background = BACKGROUNDS[(hash.finish() % BACKGROUNDS.len() as u64) as usize];
-
-    let linear = |shift: u32| {
-        let channel = f64::from((background >> shift) & 0xff) / 255.0;
-        if channel <= 0.04045 {
-            channel / 12.92
-        } else {
-            ((channel + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let luminance = 0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0);
-    let black_contrast = (luminance + 0.05) / 0.05;
-    let white_contrast = 1.05 / (luminance + 0.05);
-    let foreground = if black_contrast >= white_contrast {
-        0x000000
-    } else {
-        0xffffff
-    };
-    (background, foreground)
 }
 
 fn graph_width(lanes: usize) -> f32 {
@@ -151,14 +120,28 @@ struct OperationFeedback {
     error: Option<String>,
     busy: bool,
 }
+#[derive(Clone)]
+struct OperationRecord {
+    id: String,
+    summary: String,
+    failed: bool,
+}
+
+struct OpenFailure {
+    path: String,
+    details: String,
+}
+
 pub struct GitCrab {
     state: Controller,
     active: bool,
     service: Service,
     focus: FocusHandle,
     draft: Entity<InputState>,
+    wip_summary: Entity<InputState>,
     description: Entity<InputState>,
     search: Entity<InputState>,
+    reference_search: Entity<InputState>,
     target: Entity<InputState>,
     operation: Option<Operation>,
     operation_feedback: Entity<OperationFeedback>,
@@ -174,6 +157,10 @@ pub struct GitCrab {
     preferences: Preferences,
     settings_open: bool,
     last_repository: Option<String>,
+    open_failure: Option<OpenFailure>,
+    activity: std::collections::VecDeque<OperationRecord>,
+    unread_result: bool,
+    constrained_inspector: bool,
     preference_save: Option<Task<()>>,
     saved_preferences: Preferences,
     layout_revision: u64,
@@ -203,16 +190,20 @@ impl GitCrab {
         cx: &mut Context<Self>,
     ) -> Self {
         let draft = cx.new(|cx| InputState::new(window, cx).placeholder("Commit summary"));
+        let wip_summary = cx.new(|cx| InputState::new(window, cx).placeholder("// WIP"));
         let description = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
                 .placeholder("Description (optional)")
         });
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search history…"));
+        let reference_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter references…"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search loaded history…"));
         let target = cx
             .new(|cx| InputState::new(window, cx).placeholder("Branch, revision or stash message"));
         let operation_feedback = cx.new(|_| OperationFeedback::default());
         let subscriptions = vec![
+            cx.subscribe(&reference_search, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe(&target, |v, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     v.operation_feedback.update(cx, |state, cx| {
@@ -222,24 +213,43 @@ impl GitCrab {
                     cx.notify();
                 }
             }),
-            cx.subscribe(&draft, |v, input, event: &InputEvent, cx| {
-                if !matches!(event, InputEvent::Change) {
+            cx.observe_in(&draft, window, |v, input, w, cx| {
+                if !input.read(cx).focus_handle(cx).is_focused(w) {
                     return;
                 }
-                v.state.draft = compose_message(
-                    input.read(cx).value().as_ref(),
+                let summary = input.read(cx).value().to_string();
+                v.state.set_draft(compose_message(
+                    &summary,
                     v.description.read(cx).value().as_ref(),
-                );
+                ));
+                if v.wip_summary.read(cx).value().as_ref() != summary {
+                    v.wip_summary
+                        .update(cx, |s, cx| s.set_value(summary, w, cx));
+                }
                 cx.notify();
             }),
-            cx.subscribe(&description, |v, input, event: &InputEvent, cx| {
-                if !matches!(event, InputEvent::Change) {
+            cx.observe_in(&wip_summary, window, |v, input, w, cx| {
+                if !input.read(cx).focus_handle(cx).is_focused(w) {
                     return;
                 }
-                v.state.draft = compose_message(
+                let summary = input.read(cx).value().to_string();
+                v.state.set_draft(compose_message(
+                    &summary,
+                    v.description.read(cx).value().as_ref(),
+                ));
+                if v.draft.read(cx).value().as_ref() != summary {
+                    v.draft.update(cx, |s, cx| s.set_value(summary, w, cx));
+                }
+                cx.notify();
+            }),
+            cx.observe_in(&description, window, |v, input, w, cx| {
+                if !input.read(cx).focus_handle(cx).is_focused(w) {
+                    return;
+                }
+                v.state.set_draft(compose_message(
                     v.draft.read(cx).value().as_ref(),
                     input.read(cx).value().as_ref(),
-                );
+                ));
                 cx.notify();
             }),
             cx.subscribe_in(&search, window, |v, _, event: &InputEvent, w, cx| {
@@ -265,8 +275,10 @@ impl GitCrab {
             service: Service::new(),
             focus: cx.focus_handle(),
             draft,
+            wip_summary,
             description,
             search,
+            reference_search,
             target,
             operation: None,
             operation_feedback,
@@ -283,6 +295,10 @@ impl GitCrab {
             preferences,
             settings_open: false,
             last_repository: Preferences::last_repository(),
+            open_failure: None,
+            activity: Default::default(),
+            unread_result: false,
+            constrained_inspector: false,
             preference_save: None,
             layout_revision: 0,
             panels: [
@@ -389,6 +405,44 @@ impl GitCrab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // gpui-component does not emit Change for provisional IME text. Capture
+        // the focused native buffer before reconciling an asynchronous result.
+        if [&self.wip_summary, &self.draft, &self.description]
+            .into_iter()
+            .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            let summary = if self
+                .wip_summary
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            {
+                self.wip_summary.read(cx).value()
+            } else {
+                self.draft.read(cx).value()
+            };
+            self.state.set_draft(compose_message(
+                summary.as_ref(),
+                self.description.read(cx).value().as_ref(),
+            ));
+        }
+        if lane == Lane::Mutation && response.epoch == self.state.epoch {
+            let (summary, failed) = match &response.result {
+                Ok(gitcrab_core::service::Reply::Done { message, .. }) => (message.clone(), false),
+                Err(failure) => (failure.message.clone(), true),
+                _ => ("Operation result requires inspection".into(), true),
+            };
+            self.activity.push_front(OperationRecord {
+                id: format!(
+                    "{} · {}:{}",
+                    self.state.path, response.epoch, response.sequence
+                ),
+                summary,
+                failed,
+            });
+            self.activity.truncate(50);
+            self.unread_result = !self.active;
+        }
         if lane == Lane::Mutation && self.operation.is_some() {
             match &response.result {
                 Ok(_) => {
@@ -398,7 +452,9 @@ impl GitCrab {
                 }
                 Err(failure) => {
                     self.set_operation_feedback(Some(failure.message.clone()), false, cx);
-                    self.target.update(cx, |s, cx| s.focus(window, cx));
+                    if self.active {
+                        self.target.update(cx, |s, cx| s.focus(window, cx));
+                    }
                 }
             }
         }
@@ -413,14 +469,22 @@ impl GitCrab {
                     }
                 }
             } else if self.state.error {
-                self.state.notice = if std::path::Path::new(&self.state.path).is_dir() {
-                    format!("Could not open {}. {}", self.state.path, self.state.notice)
+                let path = std::mem::take(&mut self.state.path);
+                match Preferences::forget_last_repository(&path) {
+                    Ok(()) if self.last_repository.as_deref() == Some(path.as_str()) => {
+                        self.last_repository = None;
+                    }
+                    Err(error) => eprintln!("Could not clear the last repository: {error}"),
+                    _ => {}
+                }
+                let details = if std::path::Path::new(&path).is_dir() {
+                    std::mem::take(&mut self.state.notice)
                 } else {
-                    format!(
-                        "The repository folder is unavailable at {}. Open a repository to continue.",
-                        self.state.path
-                    )
+                    self.state.notice.clear();
+                    "The folder is unavailable. Browse to its current location or choose another repository.".into()
                 };
+                self.state.error = false;
+                self.open_failure = Some(OpenFailure { path, details });
             }
         }
         #[cfg(feature = "native-evidence")]
@@ -432,13 +496,16 @@ impl GitCrab {
         let (summary, body) = split_message(&self.state.draft);
         let summary = summary.to_string();
         let body = body.to_string();
-        if summary != self.draft.read(cx).value().as_ref() {
-            self.draft
-                .update(cx, |s, cx| s.set_value(summary, window, cx));
-        }
-        if body != self.description.read(cx).value().as_ref() {
-            self.description
-                .update(cx, |s, cx| s.set_value(body, window, cx));
+        for (input, value) in [
+            (&self.wip_summary, summary.clone()),
+            (&self.draft, summary),
+            (&self.description, body),
+        ] {
+            input.update(cx, |s, cx| {
+                if s.marked_text_range(window, cx).is_none() && s.value().as_ref() != value {
+                    s.set_value(value, window, cx);
+                }
+            });
         }
         if lane == Lane::Snapshot && self.state.snapshot.is_some() {
             self.update_search(cx);
@@ -600,7 +667,10 @@ impl GitCrab {
             .justify_center()
             .gap_3()
             .p_4()
-            .child(icon(if loading { "refresh" } else { "check" }).text_color(rgb(ACCENT)))
+            .child(
+                icon(if loading { "refresh" } else { "check" })
+                    .text_color(rgb(semantic(Role::ActionPrimary))),
+            )
             .child(div().text_size(type_size(cx, 16.)).child(if loading {
                 "Loading changes…"
             } else if self.state.error {
@@ -610,11 +680,15 @@ impl GitCrab {
             } else {
                 "Working changes reviewed"
             }))
-            .child(div().text_color(rgb(MUTED)).child(if loading {
-                "Your selection is being updated."
-            } else {
-                "Choose another file, review staged changes, or create your commit."
-            }))
+            .child(
+                div()
+                    .text_color(rgb(semantic(Role::TextMuted)))
+                    .child(if loading {
+                        "Your selection is being updated."
+                    } else {
+                        "Choose another file, review staged changes, or create your commit."
+                    }),
+            )
             .child(
                 self.action_button("review-history", "Return to history")
                     .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
@@ -680,12 +754,18 @@ impl GitCrab {
         self.settings_open
     }
 
+    pub fn unread_result(&self) -> bool {
+        self.unread_result
+    }
+
     pub fn mutating(&self) -> bool {
         self.state.busy
     }
 
     pub fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.active = true;
+        self.unread_result = false;
+        self.preferences.theme = Preferences::current(cx).theme;
         self.focus.focus(window);
         gpui_component::Theme::global_mut(cx).font_size = px(self.preferences.font_size);
         if self.external_dirty && !self.state.busy {
@@ -699,6 +779,7 @@ impl GitCrab {
     }
 
     pub fn open_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_failure = None;
         let job = self.state.open(path);
         self.dispatch(job, window, cx);
         cx.notify();
@@ -732,6 +813,7 @@ impl GitCrab {
         self.dispatch(j, window, cx);
     }
     fn file(&mut self, path: String, staged: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.constrained_inspector = false;
         self.selection = None;
         self.active_hunk = 0;
         self.diff_scroll = UniformListScrollHandle::new();
@@ -748,6 +830,49 @@ impl GitCrab {
         self.selection = None;
         self.dispatch(j, window, cx);
     }
+    fn show_references(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |d, _, cx| {
+            let content = weak.update(cx, |v, cx| v.sidebar(cx)).ok();
+            d.title("References")
+                .alert()
+                .p_4()
+                .child(div().h(px(400.)).children(content))
+        });
+    }
+    fn show_activity(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let records = self.activity.clone();
+        let repo = self.state.path.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            dialog
+                .title("Activity · this worktree")
+                .alert()
+                .p_4()
+                .child(repo.clone())
+                .child(
+                    div()
+                        .id("activity-records")
+                        .max_h(px(320.))
+                        .overflow_y_scroll()
+                        .children(records.iter().map(|r| {
+                            div()
+                                .py_2()
+                                .border_b_1()
+                                .border_color(rgb(semantic(Role::BorderDivider)))
+                                .child(
+                                    div()
+                                        .text_color(rgb(semantic(if r.failed {
+                                            Role::StatusErrorFg
+                                        } else {
+                                            Role::StatusSuccessFg
+                                        })))
+                                        .child(r.summary.clone()),
+                                )
+                                .child(div().text_size(type_size(cx, 11.)).child(r.id.clone()))
+                        })),
+                )
+        });
+    }
     fn can_commit(&self) -> bool {
         !self.settings_open
             && !self.state.busy
@@ -758,22 +883,25 @@ impl GitCrab {
                 .next()
                 .is_some_and(|s| !s.trim().is_empty())
             && self.state.snapshot.as_ref().is_some_and(|s| {
-                s.status.iter().any(|f| f.index != ' ' && f.index != '?')
-                    && !s.status.iter().any(|f| {
-                        f.index == 'U'
-                            || f.worktree == 'U'
-                            || matches!((f.index, f.worktree), ('A', 'A') | ('D', 'D'))
-                    })
+                s.status.iter().any(|f| f.index != ' ' && f.index != '?') && !s.commit_blocked()
             })
     }
     fn commit_staged(&mut self, _: &CommitStaged, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_open || window.has_active_dialog(cx) {
             return;
         }
-        if self.can_commit() {
+        let composing = [&self.draft, &self.wip_summary, &self.description]
+            .into_iter()
+            .any(|input| input.update(cx, |s, cx| s.marked_text_range(window, cx).is_some()));
+        if self.can_commit() && !composing {
             self.mutate(
                 Action::Commit {
                     message: self.state.draft.clone(),
+                    reviewed: self
+                        .state
+                        .snapshot
+                        .as_ref()
+                        .and_then(|s| s.reviewed.clone()),
                 },
                 window,
                 cx,
@@ -862,13 +990,13 @@ impl GitCrab {
                             div()
                                 .p_3()
                                 .rounded(px(6.))
-                                .bg(rgb(CANVAS))
+                                .bg(rgb(semantic(Role::SurfaceCanvas)))
                                 .border_1()
-                                .border_color(rgb(BORDER))
+                                .border_color(rgb(semantic(Role::BorderDivider)))
                                 .child(
                                     div()
                                         .text_size(type_size(cx, 12.))
-                                        .text_color(rgb(SUBTLE))
+                                        .text_color(rgb(semantic(Role::TextSecondary)))
                                         .child("REPOSITORY"),
                                 )
                                 .child(
@@ -877,11 +1005,10 @@ impl GitCrab {
                                         .text_size(type_size(cx, 12.))
                                         .child(repo.clone()),
                                 )
-                                .child(
-                                    div()
-                                        .mt_2()
-                                        .child(badge(format!("Current branch · {head}"), ACCENT)),
-                                ),
+                                .child(div().mt_2().child(badge(
+                                    format!("Current branch · {head}"),
+                                    semantic(Role::ActionPrimary),
+                                ))),
                         )
                         .child(div().font_weight(FontWeight::MEDIUM).child(match op {
                             Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
@@ -904,11 +1031,15 @@ impl GitCrab {
                         .child(
                             div()
                                 .text_size(type_size(cx, 12.))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(semantic(Role::TextMuted)))
                                 .child(op.help()),
                         )
                         .when_some(issue, |e, issue| {
-                            e.child(div().text_color(rgb(DANGER)).child(issue))
+                            e.child(
+                                div()
+                                    .text_color(rgb(semantic(Role::StatusErrorFg)))
+                                    .child(issue),
+                            )
                         }),
                 )
                 .on_ok(move |_, w, cx| {
@@ -1065,13 +1196,7 @@ impl GitCrab {
         }
     }
     fn button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-        Button::new(id)
-            .label(label)
-            .small()
-            .ghost()
-            .h(px(CONTROL_HEIGHT))
-            .text_size(rems(12. / 13.))
-            .rounded(px(CONTROL_RADIUS))
+        components::sized(Button::new(id).label(label).ghost(), ControlSize::Compact)
             .tab_stop(!self.settings_open)
     }
     // Actions and icon-only targets are separate from quiet row navigation.
@@ -1091,7 +1216,11 @@ impl GitCrab {
             .primary()
             .disabled(disabled)
             .when(!disabled, |button| {
-                button.child(div().text_color(rgb(CHROME)).child(label))
+                button.child(
+                    div()
+                        .text_color(rgb(semantic(Role::SurfaceChrome)))
+                        .child(label),
+                )
             })
     }
 
@@ -1104,7 +1233,9 @@ impl GitCrab {
         self.button(id, label)
             .selected(selected)
             .when(selected, |button| {
-                button.bg(rgb(SELECTED)).text_color(rgb(TEXT))
+                button
+                    .bg(rgb(semantic(Role::InteractionSelected)))
+                    .text_color(rgb(semantic(Role::TextDefault)))
             })
     }
 
@@ -1135,9 +1266,9 @@ impl GitCrab {
                 .h(px(height))
                 .px_2()
                 .rounded(px(6.))
-                .bg(rgb(CHROME))
+                .bg(rgb(semantic(Role::SurfaceChrome)))
                 .overflow_hidden()
-                .text_color(rgb(MUTED))
+                .text_color(rgb(semantic(Role::TextMuted)))
                 .child(if value.is_empty() {
                     placeholder.to_string()
                 } else {
@@ -1157,16 +1288,14 @@ impl GitCrab {
                 .size_full()
                 .flex()
                 .flex_col()
-                .bg(rgb(SIDEBAR))
+                .bg(rgb(semantic(Role::SurfaceNav)))
                 .child(div().flex_1())
                 .child(
                     self.button("startup-appearance", "Appearance")
                         .icon(icon("settings"))
                         .h(px(32.))
                         .on_click(cx.listener(|v, _, w, cx| {
-                            v.settings_open = true;
-                            v.focus.focus(w);
-                            cx.notify();
+                            v.open_settings(w, cx);
                         })),
                 )
                 .into_any_element();
@@ -1177,6 +1306,7 @@ impl GitCrab {
             .as_ref()
             .map(|s| s.status.len())
             .unwrap_or(0);
+        let query = self.reference_search.read(cx).value().to_lowercase();
         let mut nav = div()
             .id("navigation")
             .flex_1()
@@ -1186,7 +1316,11 @@ impl GitCrab {
             .p_2()
             .gap_1()
             .overflow_y_scroll()
-            .child(heading("REPOSITORY"))
+            .child(
+                Input::new(&self.reference_search)
+                    .h(px(28.))
+                    .disabled(self.settings_open),
+            )
             .child(
                 div()
                     .flex()
@@ -1199,20 +1333,25 @@ impl GitCrab {
                             .justify_start()
                             .h(px(32.))
                             .when(self.state.selected.is_none(), |b| {
-                                b.bg(rgb(SELECTED)).text_color(rgb(ACCENT))
+                                b.bg(rgb(semantic(Role::InteractionSelected)))
+                                    .text_color(rgb(semantic(Role::ActionPrimary)))
                             })
                             .on_click(cx.listener(|v, _, w, cx| v.select(None, w, cx))),
                     )
                     .child(badge(
                         changes.to_string(),
-                        if changes > 0 { ACCENT } else { MUTED },
+                        if changes > 0 {
+                            semantic(Role::ActionPrimary)
+                        } else {
+                            semantic(Role::TextMuted)
+                        },
                     )),
             );
         if let Some(s) = &self.state.snapshot {
             let local_key = format!("{}|", self.state.path);
             let local_collapsed = self.preferences.collapsed.contains(&local_key);
             nav = nav.child(
-                self.button("local-branches", "LOCAL")
+                self.button("local-branches", "Local")
                     .mt_2()
                     .w_full()
                     .h(px(28.))
@@ -1220,15 +1359,15 @@ impl GitCrab {
                     .justify_start()
                     .icon(icon(if local_collapsed { "right" } else { "down" }))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(TEXT))
+                    .text_color(rgb(semantic(Role::TextDefault)))
                     .child(div().flex_1())
                     .child(
                         div()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(semantic(Role::TextMuted)))
                             .child(s.branches.len().to_string()),
                     )
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(semantic(Role::BorderDivider)))
                     .tooltip(if local_collapsed {
                         "Expand local branches"
                     } else {
@@ -1244,7 +1383,12 @@ impl GitCrab {
             );
             let mut tree = div().flex().flex_col().min_w_0();
             let mut groups = std::collections::BTreeSet::new();
-            for (i, b) in s.branches.iter().enumerate().filter(|_| !local_collapsed) {
+            for (i, b) in s
+                .branches
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| !local_collapsed && b.to_lowercase().contains(&query))
+            {
                 let parts = b.split('/').collect::<Vec<_>>();
                 let mut hidden = false;
                 for depth in 1..parts.len() {
@@ -1267,7 +1411,7 @@ impl GitCrab {
                                 .w_full()
                                 .justify_start()
                                 .h(px(24.))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(semantic(Role::TextMuted)))
                                 .on_click(cx.listener(
                                     move |v, _, w, cx| {
                                         if !v.preferences.collapsed.remove(&key) {
@@ -1299,7 +1443,7 @@ impl GitCrab {
                 tree = tree.child(
                     self.button(("branch", i), "")
                         .icon(icon(if current { "check" } else { "branch" }).text_color(rgb(
-                            if current { ACCENT } else { MUTED },
+                            if current { semantic(Role::ActionPrimary) } else { semantic(Role::TextMuted) },
                         )))
                         .child(div().min_w_0().truncate().child(parts.last().unwrap().to_string()))
                         .w_full()
@@ -1307,9 +1451,9 @@ impl GitCrab {
                         .h(px(24.))
                         .pl(px(20. + (parts.len() - 1) as f32 * 12.))
                         .pr_2()
-                        .text_color(rgb(if current || selected { TEXT } else { MUTED }))
+                        .text_color(rgb(if current || selected { semantic(Role::TextDefault) } else { semantic(Role::TextMuted) }))
                         .when(current, |b| b.font_weight(FontWeight::SEMIBOLD))
-                        .when(selected, |b| b.bg(rgb(SELECTED)))
+                        .when(selected, |b| b.bg(rgb(semantic(Role::InteractionSelected))))
                         .tooltip(format!("{} · Double-click to checkout", b))
                         .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| {
                             if e.click_count() == 2 {
@@ -1321,51 +1465,59 @@ impl GitCrab {
                         })),
                 );
             }
-            nav = nav
-                .child(tree)
-                .child(div().mt_3().child(heading("TAGS & REFERENCES")));
-            let mut seen = std::collections::HashSet::new();
-            for c in &s.commits {
-                for r in &c.refs {
-                    if r == "HEAD" || s.branches.contains(r) || !seen.insert(r.clone()) {
-                        continue;
-                    }
-                    let id = c.id.clone();
-                    nav = nav.child(
-                        self.button(
-                            ("ref", seen.len()),
-                            r.trim_start_matches("tag: ").to_string(),
-                        )
-                        .icon(icon(if s.remote_refs.contains(r) {
-                            "remote"
-                        } else {
-                            "tag"
-                        }))
-                        .w_full()
-                        .justify_start()
-                        .h(px(30.))
-                        .text_color(rgb(MUTED))
-                        .tooltip(r.clone())
-                        .on_click(
-                            cx.listener(move |v, _, w, cx| v.select(Some(id.clone()), w, cx)),
-                        ),
-                    );
+            nav = nav.child(tree);
+            for (kind, glyph, refs) in [
+                ("Remotes", "remote", &s.remote_refs),
+                ("Tags", "tag", &s.tags),
+            ] {
+                let key = format!("{}|{kind}", self.state.path);
+                let collapsed = self.preferences.collapsed.contains(&key);
+                nav = nav.child(
+                    self.button(
+                        SharedString::from(format!("ref-heading-{kind}")),
+                        format!("{kind} · {}", refs.len()),
+                    )
+                    .icon(icon(if collapsed { "right" } else { "down" }))
+                    .w_full()
+                    .justify_start()
+                    .h(type_size(cx, 30.))
+                    .on_click(cx.listener(move |v, _, w, cx| {
+                        if !v.preferences.collapsed.remove(&key) {
+                            v.preferences.collapsed.insert(key.clone());
+                        }
+                        v.persist_preferences(w, cx);
+                        cx.notify();
+                    })),
+                );
+                for (i, reference) in refs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| !collapsed && r.to_lowercase().contains(&query))
+                {
+                    let id = s
+                        .commits
+                        .iter()
+                        .find(|c| c.refs.contains(reference))
+                        .map(|c| c.id.clone());
+                    nav=nav.child(self.button(SharedString::from(format!("{kind}-{i}")),reference.clone()).icon(icon(glyph)).w_full().justify_start().h(type_size(cx,26.)).tooltip(reference.clone())
+                        .on_click(cx.listener(move |v,_,w,cx|{if let Some(id)=id.clone(){v.select(Some(id),w,cx);}else{v.state.notice="Reference tip is outside loaded history. Load more commits to reveal it.".into();cx.notify();}})));
                 }
             }
+            nav = nav.child(heading(format!("Stashes · {}", s.stash_count)));
         }
         div()
             .size_full()
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(SIDEBAR))
+            .bg(rgb(semantic(Role::SurfaceNav)))
             .overflow_hidden()
             .child(nav)
             .child(
                 div()
                     .p_2()
                     .border_t_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(semantic(Role::BorderDivider)))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -1392,76 +1544,224 @@ impl GitCrab {
                             .w_full()
                             .justify_start()
                             .on_click(cx.listener(|v, _, w, cx| {
-                                v.settings_open = true;
-                                v.focus.focus(w);
-                                cx.notify();
+                                v.open_settings(w, cx);
                             })),
                     ),
             )
             .into_any_element()
     }
-    fn history(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.state.snapshot.is_none() {
-            return panel()
-                .bg(rgb(CANVAS))
-                .items_center()
-                .justify_center()
-                .gap_3()
-                .p_4()
-                .child(
-                    img(ImageSource::Resource(Resource::Embedded(
-                        "gitcrab.png".into(),
-                    )))
-                    .size(px(52.)),
+    fn new_tab(&self, cx: &mut Context<Self>) -> AnyElement {
+        let loading = self.state.loading();
+        let recent = Preferences::current(cx).recent;
+        let notice = self
+            .open_failure
+            .as_ref()
+            .map(|failure| (failure.path.as_str(), failure.details.as_str()))
+            .or_else(|| self.state.error.then_some(("", self.state.notice.as_str())));
+        panel()
+            .relative()
+            .track_focus(&self.focus)
+            .bg(rgb(semantic(Role::SurfaceCanvas)))
+            .text_color(rgb(semantic(Role::TextDefault)))
+            .text_size(px(self.preferences.font_size))
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_4()
+            .child(
+                img(ImageSource::Resource(Resource::Embedded(
+                    "gitcrab.png".into(),
+                )))
+                .size(px(52.)),
+            )
+            .child(
+                div()
+                    .text_size(type_size(cx, 22.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(if loading {
+                        "Opening repository…"
+                    } else {
+                        "Open a repository"
+                    }),
+            )
+            .when(!loading, |el| {
+                el.child(
+                    div().text_color(rgb(semantic(Role::TextSecondary))).child(
+                        "Choose a local Git repository to browse history and review changes.",
+                    ),
                 )
                 .child(
-                    div()
-                        .text_size(px(22.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(if self.state.loading() {
-                            "Opening repository…"
-                        } else {
-                            "Open a repository"
-                        }),
-                )
-                .child(
-                    div()
-                        .text_color(rgb(MUTED))
-                        .text_size(type_size(cx, 12.))
-                        .text_center()
-                        .child("Browse history, review changes, and create your next commit."),
-                )
-                .child(
-                    Button::new("welcome-open")
+                    Button::new("browse-repository")
                         .primary()
+                        .tab_stop(true)
                         .icon(icon("folder"))
-                        .label("Open a repository")
-                        .disabled(self.state.loading() || self.settings_open)
+                        .label("Browse…")
+                        .disabled(self.settings_open)
                         .on_click(|_, w, cx| w.dispatch_action(Box::new(Open), cx)),
                 )
-                .child(
+                .when(!recent.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .w_full()
+                            .max_w(px(360.))
+                            .mt_3()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_color(rgb(semantic(Role::TextMuted)))
+                                    .child("Recent repositories"),
+                            )
+                            .child(
+                                div()
+                                    .id("new-tab-recent-list")
+                                    .max_h(px(112.))
+                                    .overflow_y_scroll()
+                                    .children(recent.into_iter().enumerate().map(
+                                        |(index, path)| {
+                                            let name = std::path::Path::new(&path)
+                                                .file_name()
+                                                .map(|name| name.to_string_lossy().into_owned())
+                                                .unwrap_or_else(|| path.clone());
+                                            self.button(("new-tab-recent", index), "")
+                                                .icon(icon("history"))
+                                                .justify_start()
+                                                .overflow_hidden()
+                                                .child(div().min_w_0().truncate().child(name))
+                                                .tooltip(path.clone())
+                                                .tab_stop(true)
+                                                .disabled(self.settings_open)
+                                                .on_click(move |_, w, cx| {
+                                                    w.dispatch_action(
+                                                        Box::new(super::workspace::OpenRecent(
+                                                            path.clone(),
+                                                        )),
+                                                        cx,
+                                                    );
+                                                })
+                                        },
+                                    )),
+                            ),
+                    )
+                })
+            })
+            .child(
+                div().absolute().left(px(16.)).bottom(px(16.)).child(
+                    self.button("new-tab-appearance", "Appearance")
+                        .icon(icon("settings"))
+                        .on_click(cx.listener(|v, _, w, cx| {
+                            v.open_settings(w, cx);
+                        })),
+                ),
+            )
+            .when_some(notice, |el, (path, details)| {
+                let name = std::path::Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Repository".into());
+                let copy = if path.is_empty() {
+                    details.to_owned()
+                } else {
+                    format!("{path}\n{details}")
+                };
+                el.child(
                     div()
-                        .text_size(type_size(cx, 12.))
-                        .text_color(rgb(SUBTLE))
-                        .child("Ctrl/Cmd+O  ·  Existing local Git repositories"),
+                        .absolute()
+                        .top(px(16.))
+                        .right(px(16.))
+                        .w(px(380.))
+                        .p_3()
+                        .rounded(px(8.))
+                        .bg(rgb(semantic(Role::SurfacePanel)))
+                        .border_1()
+                        .border_color(rgb(semantic(Role::BorderDivider)))
+                        .shadow_lg()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .size(px(6.))
+                                        .rounded_full()
+                                        .bg(rgb(semantic(Role::StatusWarningFg))),
+                                )
+                                .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(
+                                    if path.is_empty() {
+                                        "Action failed"
+                                    } else {
+                                        "Couldn’t open repository"
+                                    },
+                                ))
+                                .child(
+                                    self.icon_button(
+                                        "copy-open-error",
+                                        "copy",
+                                        "Copy error details",
+                                    )
+                                    .tab_stop(true)
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copy.clone(),
+                                            ));
+                                        },
+                                    ),
+                                )
+                                .child(
+                                    self.button("dismiss-open-error", "×")
+                                        .tab_stop(true)
+                                        .tooltip("Dismiss error")
+                                        .on_click(cx.listener(|v, _, _, cx| {
+                                            v.open_failure = None;
+                                            v.state.error = false;
+                                            v.state.notice.clear();
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .when(!path.is_empty(), |toast| {
+                            toast.child(
+                                div()
+                                    .overflow_hidden()
+                                    .truncate()
+                                    .text_size(type_size(cx, 12.))
+                                    .child(name),
+                            )
+                        })
+                        .child(
+                            div()
+                                .id("open-failure-details")
+                                .mt_1()
+                                .max_h(px(80.))
+                                .overflow_y_scroll()
+                                .text_size(type_size(cx, 12.))
+                                .text_color(rgb(semantic(Role::TextSecondary)))
+                                .child(details.to_owned()),
+                        ),
                 )
-                .into_any_element();
-        }
+            })
+            .into_any_element()
+    }
+
+    fn history(&self, cx: &mut Context<Self>) -> AnyElement {
         let count = self.state.graph.rows.len();
         let weak = cx.weak_entity();
         panel()
-            .bg(rgb(CANVAS))
+            .bg(rgb(semantic(Role::SurfaceCanvas)))
             .child(
                 div()
-                    .h(px(26.))
+                    .h(type_size(cx, 28.))
                     .flex_none()
                     .flex()
                     .items_center()
                     .px_2()
                     .gap_2()
-                    .bg(rgb(CHROME))
+                    .bg(rgb(semantic(Role::SurfaceChrome)))
                     .text_size(type_size(cx, 12.))
-                    .text_color(rgb(SUBTLE))
+                    .text_color(rgb(semantic(Role::TextSecondary)))
                     .font_weight(FontWeight::MEDIUM)
                     .child(
                         div()
@@ -1494,13 +1794,17 @@ impl GitCrab {
             .when(
                 count < self.state.limit || self.state.limit == 100_000,
                 |e| {
-                    e.child(div().h(px(30.)).px_3().text_color(rgb(MUTED)).child(
-                        if self.state.limit == 100_000 && count == 100_000 {
-                            format!("{count} commits shown · history limit reached")
-                        } else {
-                            format!("All {count} commits loaded")
-                        },
-                    ))
+                    e.child(
+                        div()
+                            .h(px(30.))
+                            .px_3()
+                            .text_color(rgb(semantic(Role::TextMuted)))
+                            .child(if self.state.limit == 100_000 && count == 100_000 {
+                                format!("{count} commits shown · history limit reached")
+                            } else {
+                                format!("All {count} commits loaded")
+                            }),
+                    )
                 },
             )
             .when(
@@ -1521,8 +1825,14 @@ impl GitCrab {
             )
             .into_any_element()
     }
-    fn history_row(&self, index: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let height = if self.compact { 26. } else { 30. };
+    fn history_row(
+        &self,
+        index: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
+            .max(self.preferences.font_size * 20. / 13. + 8.);
         if index == 0 {
             let graph_width = graph_width(self.state.graph.lanes);
             let has_head = self
@@ -1539,26 +1849,20 @@ impl GitCrab {
                 .px_2()
                 .gap_2()
                 .min_w(px(graph_width + 360.))
-                .text_color(rgb(ACCENT))
+                .text_color(rgb(semantic(Role::ActionPrimary)))
                 .bg(rgb(if self.state.selected.is_none() {
-                    SELECTED
+                    semantic(Role::SurfaceWipSelected)
                 } else {
-                    CANVAS
+                    semantic(Role::SurfaceCanvas)
                 }))
                 .hover(|s| {
                     s.bg(rgb(if self.state.selected.is_none() {
-                        SELECTED
+                        semantic(Role::InteractionSelected)
                     } else {
-                        GRAPH_HOVER
+                        semantic(Role::InteractionHover)
                     }))
                 })
-                .child(
-                    div()
-                        .w(px(110.))
-                        .flex_none()
-                        .text_size(type_size(cx, 12.))
-                        .child(badge("WIP", ACCENT)),
-                )
+                .child(div().w(px(110.)).flex_none().text_size(type_size(cx, 12.)))
                 .child(
                     canvas(
                         |_, _, _| (),
@@ -1566,18 +1870,18 @@ impl GitCrab {
                             let x = graph_lane_x(bounds.origin.x, 0, w.scale_factor());
                             let y = bounds.origin.y + px(height / 2.);
                             if has_head {
-                                paint_vertical_lane(w, x, y + px(5.), bounds.bottom(), PALETTE[0]);
+                                paint_vertical_lane(w, x, y + px(5.), bounds.bottom(), lanes()[0]);
                             }
                             w.paint_quad(
                                 outline(
                                     Bounds::new(
-                                        point(x - px(5.), y - px(5.)),
-                                        size(px(10.), px(10.)),
+                                        point(x - px(9.), y - px(9.)),
+                                        size(px(18.), px(18.)),
                                     ),
-                                    rgb(PALETTE[0]),
+                                    rgb(lanes()[0]),
                                     BorderStyle::Dashed,
                                 )
-                                .corner_radii(px(5.)),
+                                .corner_radii(px(9.)),
                             );
                         },
                     )
@@ -1589,23 +1893,41 @@ impl GitCrab {
                     div()
                         .flex_1()
                         .font_weight(FontWeight::MEDIUM)
-                        .child("Working changes"),
+                        .min_w(px(96.))
+                        .max_w(px(180.))
+                        .child(
+                            Input::new(&self.wip_summary)
+                                .disabled(self.settings_open)
+                                .h(type_size(cx, 24.))
+                                .text_size(type_size(cx, 12.)),
+                        ),
                 )
-                .child(badge(
-                    self.state
-                        .snapshot
-                        .as_ref()
-                        .map(|s| {
-                            format!(
-                                "{} {}",
-                                s.status.len(),
-                                if s.status.len() == 1 { "file" } else { "files" }
-                            )
+                .children(self.state.snapshot.as_ref().into_iter().flat_map(|s| {
+                    s.change_counts()
+                        .into_iter()
+                        .zip([
+                            ("M", "Modified", Role::StatusWarningFg),
+                            ("+", "Added", Role::StatusSuccessFg),
+                            ("−", "Deleted", Role::StatusErrorFg),
+                            ("R", "Renamed", Role::StatusInfoFg),
+                        ])
+                        .map(|(count, (mark, name, role))| {
+                            badge(format!("{mark} {count}"), semantic(role))
+                                .id(SharedString::from(format!("wip-{name}")))
+                                .tooltip(move |w, cx| {
+                                    Tooltip::new(format!("{count} {name} paths")).build(w, cx)
+                                })
                         })
-                        .unwrap_or_else(|| "Clean".into()),
-                    MUTED,
-                ))
-                .on_click(cx.listener(|v, _, w, cx| v.select(None, w, cx)))
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|v, _, w, cx| {
+                        if v.state.selected.is_some() {
+                            let job = v.state.select(None);
+                            v.dispatch(job, w, cx);
+                        }
+                    }),
+                )
                 .into_any_element();
         }
         let i = index - 1;
@@ -1659,18 +1981,6 @@ impl GitCrab {
             .trim_start_matches("HEAD -> ")
             .to_string();
         let color = row.color;
-        let author_image = self.author_images.get(&c.author).cloned();
-        let (avatar_background, avatar_foreground) = author_avatar_colors(&c.author);
-        let initial = c
-            .author
-            .chars()
-            .find(|ch| ch.is_alphabetic())
-            .and_then(|ch| ch.to_uppercase().next())
-            .unwrap_or('?')
-            .to_string();
-        let avatar_top = px((height - AUTHOR_IMAGE_SIZE) / 2.);
-        let lane_left =
-            px(GRAPH_LANE_INSET + row.lane as f32 * GRAPH_LANE_PITCH - AUTHOR_IMAGE_SIZE / 2.);
         let merge = c.parents.len() > 1;
         let mut el = div()
             .id(("commit", i))
@@ -1683,9 +1993,19 @@ impl GitCrab {
             .gap_2()
             .cursor_pointer()
             .overflow_hidden()
-            .when(selected, |e| e.bg(rgb(SELECTED)))
-            .hover(|s| s.bg(rgb(if selected { SELECTED } else { GRAPH_HOVER })))
-            .text_color(rgb(if matched { TEXT } else { MUTED }))
+            .when(selected, |e| e.bg(rgb(semantic(Role::InteractionSelected))))
+            .hover(|s| {
+                s.bg(rgb(if selected {
+                    semantic(Role::InteractionSelected)
+                } else {
+                    semantic(Role::InteractionHover)
+                }))
+            })
+            .text_color(rgb(if matched {
+                semantic(Role::TextDefault)
+            } else {
+                semantic(Role::TextMuted)
+            }))
             .child(
                 div()
                     .id(("refs", i))
@@ -1696,7 +2016,7 @@ impl GitCrab {
                     .gap_1()
                     .overflow_hidden()
                     .text_size(type_size(cx, 12.))
-                    .text_color(rgb(TEXT))
+                    .text_color(rgb(semantic(Role::TextDefault)))
                     .when(!refs.is_empty(), |e| {
                         e.child(
                             self.button(("ref-detail", i), "")
@@ -1705,7 +2025,7 @@ impl GitCrab {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_color(rgb(TEXT))
+                                        .text_color(rgb(semantic(Role::TextDefault)))
                                         .child(refs),
                                 )
                                 .flex_1()
@@ -1752,16 +2072,16 @@ impl GitCrab {
                                 let scale = w.scale_factor();
                                 let x = |lane| graph_lane_x(origin.x, lane, scale);
                                 let y = origin.y + px(height / 2.);
-                                let band_x = origin.x;
-                                let band_y = origin.y + px(2.);
-                                let band_height = bounds.size.height - px(4.);
+                                let band_x = x(row.lane);
+                                let band_y = origin.y + px(3.);
+                                let band_height = bounds.size.height - px(6.);
                                 let band_right = bounds.right();
                                 w.paint_quad(fill(
                                     Bounds::new(
                                         point(band_x, band_y),
                                         size(band_right - band_x, band_height),
                                     ),
-                                    branch_tint(color, 0x0c),
+                                    branch_tint(color, 0x2e),
                                 ));
                                 w.paint_quad(fill(
                                     Bounds::new(
@@ -1789,7 +2109,7 @@ impl GitCrab {
                                         x(edge.from_lane),
                                         top,
                                         bottom,
-                                        PALETTE[edge.color % PALETTE.len()],
+                                        lanes()[edge.color % lanes().len()],
                                     );
                                 }
                                 for (edge, above) in
@@ -1807,54 +2127,26 @@ impl GitCrab {
                                     if let Ok(path) = path.build() {
                                         w.paint_path(
                                             path,
-                                            rgb(PALETTE[edge.color % PALETTE.len()]),
+                                            rgb(lanes()[edge.color % lanes().len()]),
                                         );
                                     }
                                 }
                                 let center_x = x(row.lane);
-                                let radius = if selected || merge { 12. } else { 11. };
+                                let radius = if merge { 5. } else { 4. };
                                 w.paint_quad(
                                     fill(
                                         Bounds::new(
                                             point(center_x - px(radius), y - px(radius)),
                                             size(px(radius * 2.), px(radius * 2.)),
                                         ),
-                                        rgb(PALETTE[color % PALETTE.len()]),
+                                        rgb(lanes()[color % lanes().len()]),
                                     )
                                     .corner_radii(px(radius)),
                                 );
                             },
                         )
                         .size_full(),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left(lane_left)
-                            .top(avatar_top)
-                            .size(px(AUTHOR_IMAGE_SIZE))
-                            .rounded_full()
-                            .bg(rgb(avatar_background))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(11.))
-                            .line_height(px(AUTHOR_IMAGE_SIZE))
-                            .text_color(rgb(avatar_foreground))
-                            .child(initial),
-                    )
-                    .when_some(author_image, |el, path| {
-                        el.child(
-                            img(path)
-                                .absolute()
-                                .left(lane_left)
-                                .top(avatar_top)
-                                .size(px(AUTHOR_IMAGE_SIZE))
-                                .rounded_full()
-                                .object_fit(ObjectFit::Cover),
-                        )
-                    }),
+                    ),
             )
             .child(
                 div()
@@ -1862,6 +2154,8 @@ impl GitCrab {
                     .min_w_0()
                     .truncate()
                     .when(selected, |e| e.font_weight(FontWeight::MEDIUM))
+                    .bg(branch_tint(color, 0x2e))
+                    .py(px(3.))
                     .child(c.subject.clone()),
             )
             .child(
@@ -1872,7 +2166,7 @@ impl GitCrab {
                     .truncate()
                     .text_size(type_size(cx, 12.))
                     .font_family(CODE_FONT)
-                    .text_color(rgb(SUBTLE))
+                    .text_color(rgb(semantic(Role::TextSecondary)))
                     .child(c.id[..8.min(c.id.len())].to_string()),
             )
             .on_click(cx.listener(move |v, _, w, cx| v.select(Some(id.clone()), w, cx)));
@@ -1885,7 +2179,7 @@ impl GitCrab {
                     .bottom_0()
                     .left_0()
                     .w(px(2.))
-                    .bg(rgb(ACCENT)),
+                    .bg(rgb(semantic(Role::ActionPrimary))),
             );
         }
         let view = cx.entity();
@@ -1992,6 +2286,21 @@ impl Render for GitCrab {
                 let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
             }
         }
+        #[cfg(feature = "native-evidence")]
+        if let Some(path) = std::env::var_os("GITCRAB_DRAFT_PROBE") {
+            let data = serde_json::json!({"draft":self.state.draft,"revision":self.state.draft_revision,"wip":self.wip_summary.read(cx).value().to_string(),"summary":self.draft.read(cx).value().to_string(),"body":self.description.read(cx).value().to_string(),"wip_focused":self.wip_summary.read(cx).focus_handle(cx).is_focused(window),"summary_focused":self.draft.read(cx).focus_handle(cx).is_focused(window),"activity":self.activity.iter().map(|r|&r.summary).collect::<Vec<_>>()});
+            let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
+        }
+        if self.state.snapshot.is_none() {
+            return div()
+                .relative()
+                .size_full()
+                .child(self.new_tab(cx))
+                .children(
+                    dialogs.map(|d| deferred(d).with_priority(geometry::LAYER_MODAL as usize)),
+                )
+                .into_any_element();
+        }
         let title = self
             .state
             .path
@@ -2001,17 +2310,24 @@ impl Render for GitCrab {
             .unwrap_or("Repository")
             .to_string();
         let in_diff = self.state.diff_context.is_some();
-        let sidebar = if in_diff {
+        let ui_scale = self.preferences.font_size / 13.;
+        let single_pane = f32::from(window.viewport_size().width) < 648. * ui_scale + 44.;
+        let rail = in_diff || f32::from(window.viewport_size().width) < 1200. * ui_scale;
+        let sidebar = if rail {
             div()
                 .flex()
                 .flex_col()
                 .items_center()
                 .size_full()
-                .bg(rgb(CHROME))
+                .bg(rgb(semantic(Role::SurfaceChrome)))
                 .gap_2()
                 .child(
                     self.icon_button("rail-back", "back", "Return to history · Escape")
                         .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
+                )
+                .child(
+                    self.icon_button("rail-references", "branch", "Open reference navigation")
+                        .on_click(cx.listener(|v, _, w, cx| v.show_references(w, cx))),
                 )
                 .child(
                     self.icon_button("rail-working", "changes", "Working changes")
@@ -2044,21 +2360,17 @@ impl Render for GitCrab {
 
         let menu_focus = self.focus.clone();
         let mut toolbar = div()
-            .h(px(TOOLBAR_HEIGHT))
-            .bg(rgb(RAISED))
+            .h(type_size(cx,TOOLBAR_HEIGHT))
+            .bg(rgb(semantic(Role::SurfaceChrome)))
             .flex_none()
             .flex()
             .items_center()
-            .gap_2()
+            .gap_1()
             .px_3()
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(semantic(Role::BorderDivider)))
             .child(
-                self.action_button("repository-selector", title.clone())
-                    .icon(icon("down"))
-                    .w(px(210.))
-                    .h(px(32.))
-                    .justify_start()
+                components::selector("repository-selector", "Repository", title.clone(), "folder")
                     .tooltip(format!(
                         "{} · Open repository · Ctrl/Cmd+O",
                         self.state.path
@@ -2102,44 +2414,60 @@ impl Render for GitCrab {
                         menu
                     }),
             )
-            .child(
-                self.button("refresh", "Refresh")
-                    .icon(icon("refresh"))
-                    .h(px(32.))
-                    .tooltip("Refresh repository status · F5")
-                    .disabled(self.state.loading())
-                    .on_click(cx.listener(|v, _, w, cx| v.refresh(&Refresh, w, cx))),
-            )
-            .child(separator());
+            .child(separator())
+            .child({
+                let branches=self.state.snapshot.as_ref().map(|s|s.branches.clone()).unwrap_or_default();
+                let weak=cx.weak_entity();
+                components::selector("branch-selector","Checked out",branch.clone(),"branch")
+                    .tooltip(format!("{} · Choose a branch to reveal its history; checkout requires review",branch))
+                    .dropdown_menu(move |mut menu,_,_|{
+                        for branch in &branches {let branch=branch.clone();let weak=weak.clone();
+                            menu=menu.item(PopupMenuItem::new(branch.clone()).on_click(move |_,w,cx|{
+                                let _=weak.update(cx,|v,cx|{
+                                    let id=v.state.snapshot.as_ref().and_then(|s|s.commits.iter().find(|c|c.refs.contains(&branch))).map(|c|c.id.clone());
+                                    if let Some(id)=id {v.select(Some(id),w,cx);}else{v.state.notice="Branch tip is outside loaded history. Load more commits to reveal it.".into();cx.notify();}
+                                });
+                            }));
+                        }menu
+                    })
+            });
         let narrow_toolbar =
-            f32::from(window.viewport_size().width) < 1150. || self.preferences.font_size > 15.;
-        for (i, (op, label, glyph)) in [
-            (Operation::CreateBranch, "Branch", "branch"),
-            (Operation::Checkout, "Checkout", "history"),
-            (Operation::Merge, "Merge", "merge"),
-            (Operation::Stash, "Stash", "stash"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            toolbar = toolbar.child(
-                self.button(("toolbar", i), if narrow_toolbar { "" } else { label })
-                    .icon(icon(glyph))
-                    .h(px(32.))
-                    .tooltip(format!("{label} · Review before applying"))
-                    .disabled(
-                        self.state.busy
-                            || !self
-                                .state
-                                .snapshot
-                                .as_ref()
-                                .is_some_and(|s| !s.head_id.is_empty()),
-                    )
-                    .when(narrow_toolbar, |b| b.w(px(32.)))
-                    .on_click(
-                        cx.listener(move |v, _, w, cx| v.review(op.clone(), String::new(), w, cx)),
-                    ),
-            );
+            f32::from(window.viewport_size().width) < 1120. * (self.preferences.font_size / 13.);
+        if !narrow_toolbar {
+            toolbar = toolbar.child(separator());
+            for (label, glyph) in [("Fetch", "fetch"), ("Pull", "pull"), ("Push", "push")] {
+                toolbar=toolbar.child(components::toolbar_command(SharedString::from(format!("remote-{glyph}")),label,glyph).disabled(true).tooltip(format!("{label} unavailable: network and authentication support is not implemented")));
+            }
+            toolbar = toolbar.child(separator());
+            for (i, (op, label, glyph)) in [
+                (Operation::CreateBranch, "Branch", "branch-plus"),
+                (Operation::Merge, "Merge", "merge"),
+                (Operation::Stash, "Stash", "stash"),
+                (Operation::PopStash, "Pop", "pop"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if i == 2 {
+                    toolbar = toolbar.child(separator());
+                }
+                toolbar = toolbar.child(
+                    components::toolbar_command(("toolbar", i), label, glyph)
+                        .disabled(
+                            self.state.busy
+                                || (i == 3
+                                    && self
+                                        .state
+                                        .snapshot
+                                        .as_ref()
+                                        .is_none_or(|s| s.stash_count == 0)),
+                        )
+                        .tooltip(format!("{label} · Review before applying"))
+                        .on_click(cx.listener(move |v, _, w, cx| {
+                            v.review(op.clone(), String::new(), w, cx)
+                        })),
+                );
+            }
         }
         toolbar = toolbar
             .child(div().flex_1())
@@ -2154,7 +2482,7 @@ impl Render for GitCrab {
                 bar.child(
                     div()
                         .text_size(type_size(cx, 12.))
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(semantic(Role::TextMuted)))
                         .child(format!("{} matches", self.search_matches.len())),
                 )
                 .child(
@@ -2170,13 +2498,113 @@ impl Render for GitCrab {
                         .on_click(cx.listener(|v, _, w, cx| v.search_step(1, w, cx))),
                 )
             });
+        let weak = cx.weak_entity();
+        toolbar = toolbar.child(
+            self.icon_button("toolbar-more", "more", "More repository actions")
+                .dropdown_menu(move |mut menu, _, _| {
+                    menu = menu.item(
+                        PopupMenuItem::new("Refresh repository · F5").action(Box::new(Refresh)),
+                    );
+                    for (op, label) in [
+                        (Operation::CreateBranch, "Create branch…"),
+                        (Operation::Checkout, "Checkout…"),
+                        (Operation::Merge, "Merge…"),
+                        (Operation::Stash, "Stash…"),
+                        (Operation::PopStash, "Pop latest stash…"),
+                    ] {
+                        let weak = weak.clone();
+                        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, w, cx| {
+                            let _ =
+                                weak.update(cx, |v, cx| v.review(op.clone(), String::new(), w, cx));
+                        }));
+                    }
+                    let appearance = weak.clone();
+                    let refs = weak.clone();
+                    menu = menu
+                        .separator()
+                        .item(PopupMenuItem::new("References…").on_click(move |_, w, cx| {
+                            let _ = refs.update(cx, |v, cx| v.show_references(w, cx));
+                        }))
+                        .item(PopupMenuItem::new("Appearance…").on_click(move |_, w, cx| {
+                            let _ = appearance.update(cx, |v, cx| {
+                                v.open_settings(w, cx);
+                            });
+                        }));
+                    menu.separator().item(
+                        PopupMenuItem::new("Fetch / Pull / Push: network support unavailable")
+                            .disabled(true),
+                    )
+                }),
+        );
+        let main_content = if single_pane {
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(if self.constrained_inspector {
+                    inspector
+                } else {
+                    center
+                })
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .bg(rgb(semantic(Role::BorderDivider)))
+                .child(
+                    h_resizable(SharedString::from(format!(
+                        "workspace-{rail}-{}",
+                        self.layout_revision
+                    )))
+                    .with_state(&self.panels[usize::from(rail)])
+                    .on_resize(cx.listener(
+                        move |v,
+                              state: &Entity<gpui_component::resizable::ResizableState>,
+                              w,
+                              cx| {
+                            let sizes = state.read(cx).sizes();
+                            if sizes.len() == 3 {
+                                if !rail {
+                                    v.preferences.nav_width = f32::from(sizes[0]).clamp(150., 330.);
+                                }
+                                v.preferences.inspector_width =
+                                    f32::from(sizes[2]).clamp(260., 560.);
+                            }
+                            v.persist_preferences(w, cx);
+                            cx.notify();
+                        },
+                    ))
+                    .child(
+                        resizable_panel()
+                            .size(px(if rail {
+                                44.
+                            } else {
+                                self.preferences.nav_width
+                            }))
+                            .size_range(if rail {
+                                px(44.)..px(45.)
+                            } else {
+                                px(150.)..px(330.)
+                            })
+                            .child(sidebar),
+                    )
+                    .child(resizable_panel().child(div().size_full().pl(px(SEAM)).child(center)))
+                    .child(
+                        resizable_panel()
+                            .size(px(self.preferences.inspector_width))
+                            .size_range(px(260.)..px(560.))
+                            .child(div().size_full().pl(px(SEAM)).child(inspector)),
+                    ),
+                )
+                .into_any_element()
+        };
         div()
             .relative()
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(CANVAS))
-            .text_color(rgb(TEXT))
+            .bg(rgb(semantic(Role::SurfaceCanvas)))
+            .text_color(rgb(semantic(Role::TextDefault)))
             .text_size(px(self.preferences.font_size))
             .track_focus(&self.focus)
             .key_context("GitCrab")
@@ -2206,95 +2634,113 @@ impl Render for GitCrab {
             .on_action(cx.listener(|v, _: &SearchNext, w, cx| v.search_step(1, w, cx)))
             .on_action(cx.listener(|v, _: &SearchPrevious, w, cx| v.search_step(-1, w, cx)))
             .child(toolbar)
+            .when(single_pane, |el| {
+                el.child(
+                    section_bar()
+                        .h(type_size(cx, 36.))
+                        .child(self.button("compact-history", "History / Diff").on_click(
+                            cx.listener(|v, _, _, cx| {
+                                v.constrained_inspector = false;
+                                cx.notify();
+                            }),
+                        ))
+                        .child(
+                            self.button("compact-inspector", "Changes / Details")
+                                .on_click(cx.listener(|v, _, _, cx| {
+                                    v.constrained_inspector = true;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .child(
+                section_bar()
+                    .h(type_size(cx, 28.))
+                    .child(format!("{} · {}", title, branch))
+                    .child(div().flex_1())
+                    .child(
+                        self.state
+                            .snapshot
+                            .as_ref()
+                            .filter(|s| !s.operations.is_empty())
+                            .map(|s| {
+                                format!(
+                                    "Active {} · finish or abort in terminal",
+                                    s.operations.join(", ")
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                self.state
+                                    .snapshot
+                                    .as_ref()
+                                    .map(|s| s.upstream_context.clone())
+                                    .unwrap_or_else(|| "Upstream unknown".into())
+                            }),
+                    ),
+            )
             .when(self.state.error, |el| {
+                let details = self.state.notice.clone();
                 el.child(
                     div()
                         .id("error-notice")
-                        .max_h(px(90.))
-                        .overflow_y_scroll()
                         .p_3()
                         .mx_2()
                         .mt_2()
                         .rounded(px(6.))
-                        .bg(tint(DANGER, 0x14))
-                        .text_color(rgb(DANGER))
+                        .bg(rgb(semantic(Role::SurfacePanel)))
+                        .border_1()
+                        .border_color(rgb(semantic(Role::BorderDivider)))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .justify_between()
+                                .gap_2()
                                 .child(
                                     div()
+                                        .size(px(6.))
+                                        .rounded_full()
+                                        .bg(rgb(semantic(Role::StatusErrorFg))),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .child("Git could not complete this action"),
+                                        .child("Action failed"),
+                                )
+                                .child(
+                                    self.icon_button("copy-error", "copy", "Copy error details")
+                                        .on_click(move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                details.clone(),
+                                            ));
+                                        }),
                                 )
                                 .child(self.button("dismiss-error", "Dismiss").on_click(
                                     cx.listener(|v, _, _, cx| {
                                         v.state.error = false;
+                                        v.state.notice.clear();
                                         cx.notify();
                                     }),
                                 )),
                         )
                         .child(
                             div()
+                                .id("error-details")
+                                .max_h(px(80.))
+                                .overflow_y_scroll()
                                 .text_size(type_size(cx, 12.))
+                                .text_color(rgb(semantic(Role::TextSecondary)))
                                 .child(self.state.notice.clone()),
                         ),
                 )
             })
-            .child(
-                div().flex_1().min_h_0().bg(rgb(BORDER)).child(
-                    h_resizable(SharedString::from(format!(
-                        "workspace-{in_diff}-{}",
-                        self.layout_revision
-                    )))
-                    .with_state(&self.panels[usize::from(in_diff)])
-                    .on_resize(cx.listener(
-                        move |v,
-                              state: &Entity<gpui_component::resizable::ResizableState>,
-                              w,
-                              cx| {
-                            let sizes = state.read(cx).sizes();
-                            if sizes.len() == 3 {
-                                if !in_diff {
-                                    v.preferences.nav_width = f32::from(sizes[0]).clamp(150., 330.);
-                                }
-                                v.preferences.inspector_width =
-                                    f32::from(sizes[2]).clamp(260., 560.);
-                            }
-                            v.persist_preferences(w, cx);
-                            cx.notify();
-                        },
-                    ))
-                    .child(
-                        resizable_panel()
-                            .size(px(if in_diff {
-                                44.
-                            } else {
-                                self.preferences.nav_width
-                            }))
-                            .size_range(if in_diff {
-                                px(44.)..px(45.)
-                            } else {
-                                px(150.)..px(330.)
-                            })
-                            .child(sidebar),
-                    )
-                    .child(resizable_panel().child(div().size_full().pl(px(SEAM)).child(center)))
-                    .child(
-                        resizable_panel()
-                            .size(px(self.preferences.inspector_width))
-                            .size_range(px(260.)..px(560.))
-                            .child(div().size_full().pl(px(SEAM)).child(inspector)),
-                    ),
-                ),
-            )
+            .child(main_content)
             .child(
                 div()
-                    .h(px(24.))
-                    .bg(rgb(CHROME))
+                    .h(type_size(cx, 28.))
+                    .bg(rgb(semantic(Role::SurfaceChrome)))
                     .border_t_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(semantic(Role::BorderDivider)))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -2302,20 +2748,31 @@ impl Render for GitCrab {
                     .px_3()
                     .gap_2()
                     .text_size(type_size(cx, 12.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(semantic(Role::TextMuted)))
                     .child(div().size(px(5.)).rounded_full().bg(rgb(
                         if self.state.busy || self.state.loading() {
-                            ACCENT
+                            semantic(Role::ActionPrimary)
+                        } else if self.state.error {
+                            semantic(Role::StatusWarningFg)
                         } else {
-                            POSITIVE
+                            semantic(Role::StatusSuccessFg)
                         },
                     )))
                     .child(div().flex_1().truncate().child(if self.state.busy {
                         "Running Git operation…".into()
                     } else if self.state.loading() {
                         "Loading repository…".into()
+                    } else if self.state.error {
+                        String::new()
                     } else {
-                        self.state.notice.clone()
+                        if self.state.notice.is_empty() {
+                            self.activity
+                                .front()
+                                .map(|r| r.summary.clone())
+                                .unwrap_or_default()
+                        } else {
+                            self.state.notice.clone()
+                        }
                     }))
                     .child(
                         div()
@@ -2329,15 +2786,24 @@ impl Render for GitCrab {
                                 branch
                             }),
                     )
+                    .when(!self.activity.is_empty(), |bar| {
+                        bar.child(
+                            self.button(
+                                "activity-results",
+                                format!("Activity ({})", self.activity.len()),
+                            )
+                            .on_click(cx.listener(|v, _, w, cx| v.show_activity(w, cx))),
+                        )
+                    })
                     .when_some(self.watch_warning.clone(), |bar, warning| {
                         bar.child(
                             self.button("watch-warning", "Live refresh unavailable")
-                                .text_color(rgb(WARNING))
+                                .text_color(rgb(semantic(Role::StatusWarningFg)))
                                 .tooltip(warning),
                         )
                     }),
             )
-            .when(self.settings_open, |el| el.child(self.settings_dialog(cx)))
-            .children(dialogs)
+            .children(dialogs.map(|d| deferred(d).with_priority(geometry::LAYER_MODAL as usize)))
+            .into_any_element()
     }
 }

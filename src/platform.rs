@@ -25,3 +25,25 @@ pub fn git_executable() -> OsString {
     }
     "git".into()
 }
+
+/// Worktree identity for existing directories; missing paths retain their own key.
+/// Linked worktrees have a .git file and remain distinct from their common repo.
+pub fn worktree_identity(path: &std::path::Path) -> std::path::PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let identity = if canonical.is_dir() {
+        canonical
+            .ancestors()
+            .find(|p| p.join(".git").exists())
+            .unwrap_or(&canonical)
+    } else {
+        &canonical
+    };
+    #[cfg(windows)]
+    {
+        std::path::PathBuf::from(identity.to_string_lossy().to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        identity.to_path_buf()
+    }
+}

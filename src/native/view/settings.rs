@@ -1,26 +1,61 @@
 use super::*;
 
 impl GitCrab {
+    pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open || window.has_active_dialog(cx) {
+            return;
+        }
+        self.settings_open = true;
+        let weak = cx.weak_entity();
+        let close = weak.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let content = weak.update(cx, |v, cx| v.settings_dialog(cx)).ok();
+            let close = close.clone();
+            dialog
+                .title("Appearance")
+                .w(px(480.))
+                .p_4()
+                .child(div().children(content))
+                .on_close(move |_, w, cx| {
+                    let _ = close.update(cx, |v, cx| {
+                        v.settings_open = false;
+                        v.persist_preferences(w, cx);
+                        cx.notify();
+                    });
+                })
+        });
+        cx.notify();
+    }
+
     pub(super) fn settings_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut content = div()
             .id("appearance-settings")
-            .max_h(relative(0.94))
+            .max_h(px(440.))
             .overflow_y_scroll()
             .w(px(430.))
             .rounded(px(10.))
-            .bg(rgb(RAISED))
+            .bg(rgb(semantic(Role::SurfaceOverlay)))
             .border_1()
-            .border_color(rgb(BORDER))
-            .p_5()
+            .border_color(rgb(semantic(Role::BorderDivider)))
+            .p_4()
             .flex()
             .flex_col()
             .gap_3()
-            .child(div().text_lg().child("Appearance"))
-            .child("GitCrab Dark · native system fonts")
+
+            .child("App appearance · native system fonts")
+            .child(self.action_button("theme-preference", if self.preferences.theme == gitcrab_core::appearance::ThemePreference::System { "Theme: Follow system" } else { "Theme: Neutral Black + Electric Blue" })
+                .tab_stop(true)
+                .on_click(cx.listener(|v, _, _, cx| {
+                    use gitcrab_core::appearance::ThemePreference;
+                    v.preferences.theme = if v.preferences.theme == ThemePreference::System { ThemePreference::Dark } else { ThemePreference::System };
+                    super::super::theme::install(cx);
+                    cx.refresh_windows();
+                })))
+            .child(div().text_color(rgb(semantic(Role::TextMuted))).child("Follow system uses Neutral Black until the proposed light palette passes native qualification."))
             .child(
                 div()
                     .text_size(type_size(cx, 12.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(semantic(Role::TextMuted)))
                     .child(format!(
                         "GitCrab {} · {}",
                         env!("CARGO_PKG_VERSION"),
@@ -59,6 +94,8 @@ impl GitCrab {
                     cx.notify();
                 })),
             )
+            .child(self.action_button("file-actions-visibility",if self.preferences.always_show_file_actions {"File actions: Always visible · larger targets"}else{"File actions: Reveal on hover or focus"})
+                .tab_stop(true).on_click(cx.listener(|v,_,_,cx|{v.preferences.always_show_file_actions=!v.preferences.always_show_file_actions;cx.notify();})))
             .child(
                 self.action_button("reset-appearance", "Reset appearance and layout")
                     .tab_stop(true)
@@ -75,6 +112,16 @@ impl GitCrab {
                         cx.notify();
                     })),
             );
+        #[cfg(feature = "native-evidence")]
+        {
+            content = content.child(
+                self.action_button(
+                    "validation-palette",
+                    "Validation: swap dark / proposed light",
+                )
+                .on_click(|_, _, cx| super::super::theme::toggle_validation_palette(cx)),
+            );
+        }
         for (index, label, value) in [
             (0, "Text size", self.preferences.font_size),
             (1, "Navigation width", self.preferences.nav_width),
@@ -104,14 +151,14 @@ impl GitCrab {
                     .disabled(if direction < 0. {
                         value <= [11., 150., 260., 11.][index]
                     } else {
-                        value >= [18., 330., 560., 20.][index]
+                        value >= [26., 330., 560., 26.][index]
                     })
                     .tab_stop(true)
                     .on_click(cx.listener(move |v, _, _, cx| {
                         match index {
                             0 => {
                                 v.preferences.font_size =
-                                    (v.preferences.font_size + direction).clamp(11., 18.);
+                                    (v.preferences.font_size + direction).clamp(11., 26.);
                                 gpui_component::Theme::global_mut(cx).font_size =
                                     px(v.preferences.font_size);
                             }
@@ -126,7 +173,7 @@ impl GitCrab {
                             }
                             _ => {
                                 v.preferences.code_size =
-                                    (v.preferences.code_size + direction).clamp(11., 20.);
+                                    (v.preferences.code_size + direction).clamp(11., 26.);
                             }
                         };
                         if index == 1 || index == 2 {
@@ -151,17 +198,21 @@ impl GitCrab {
                     .child(
                         self.action_button("settings-close", "Close")
                             .tab_stop(true)
-                            .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
+                            .on_click(cx.listener(|v, _, w, cx| {
+                                v.back(&Back, w, cx);
+                                w.close_dialog(cx);
+                            })),
                     )
                     .child(
                         self.primary_button("save-appearance", "Save appearance", false)
                             .tab_stop(true)
-                            .on_click(cx.listener(|v, _, _, cx| {
+                            .on_click(cx.listener(|v, _, w, cx| {
                                 v.preference_save = None;
                                 match v.save_preferences(cx) {
                                     Ok(()) => {
                                         v.state.notice = "Appearance saved".into();
                                         v.settings_open = false;
+                                        w.close_dialog(cx);
                                     }
                                     Err(error) => {
                                         v.state.error = true;
@@ -172,15 +223,6 @@ impl GitCrab {
                             })),
                     ),
             );
-        div()
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(rgba(OVERLAY))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(content)
-            .into_any_element()
+        content.into_any_element()
     }
 }

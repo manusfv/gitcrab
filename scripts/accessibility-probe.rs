@@ -32,11 +32,18 @@ impl Render for Probe {
             .child(Button::new("busy").label("Committing").loading(true))
             .child(Input::new(&self.input))
             .child(
-                div()
-                    .id("files")
-                    .child("File list")
-                    .child("Selected: archive.txt")
-                    .child("notes.txt"),
+                uniform_list("files", 10_000, |range, _, _| {
+                    range
+                        .map(|i| {
+                            div().id(("file", i)).h(px(28.)).child(if i == 0 {
+                                "Selected: archive.txt".to_string()
+                            } else {
+                                format!("notes-{i}.txt")
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .h(px(120.)),
             )
             .children(dialogs)
     }
