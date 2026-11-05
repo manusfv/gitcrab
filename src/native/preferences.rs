@@ -16,6 +16,7 @@ pub struct Preferences {
     pub always_show_file_actions: bool,
     pub collapsed: std::collections::BTreeSet<String>,
     pub recent: Vec<String>,
+    pub history_columns: gitcrab_core::history_columns::HistoryColumns,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -31,6 +32,7 @@ impl Default for Preferences {
             always_show_file_actions: false,
             collapsed: Default::default(),
             recent: vec![],
+            history_columns: Default::default(),
         }
     }
 }
@@ -81,6 +83,9 @@ impl Preferences {
             compact_diff,
             always_show_file_actions
         );
+        if self.history_columns != previous.history_columns {
+            shared.history_columns = self.history_columns.clone();
+        }
         for key in previous.collapsed.difference(&self.collapsed) {
             shared.collapsed.remove(key);
         }
@@ -167,6 +172,7 @@ impl Preferences {
             13.
         };
         p.recent.truncate(10);
+        p.history_columns.normalize();
         p
     }
     pub fn save(&self) -> Result<(), String> {
@@ -192,6 +198,7 @@ mod tests {
         assert!(p.compact && p.split);
         assert_eq!(p.font_size, 15.);
         assert_eq!(p.recent, ["example"]);
+        assert_eq!(p.history_columns, Default::default());
         assert_eq!(p.theme, gitcrab_core::appearance::ThemePreference::Dark);
         let p: Preferences = serde_json::from_str(r#"{"theme":"missing","code_size":17}"#).unwrap();
         assert_eq!(p.code_size, 17.);

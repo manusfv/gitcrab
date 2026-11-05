@@ -127,14 +127,14 @@ pub const DARK: [u32; 65] = [
     0xababab, // syntax.comment
     0x00000099, // overlay.scrim
     0x00000066, // overlay.shadow
-    0x58dae0, // graph.lane.1
-    0xffff73, // graph.lane.2
-    0xe0a7ff, // graph.lane.3
-    0xb9eba5, // graph.lane.4
-    0xf596b0, // graph.lane.5
-    0xd9ad72, // graph.lane.6
-    0x91ffff, // graph.lane.7
-    0xd0db68, // graph.lane.8
+    0x20b6c7, // graph.lane.1
+    0xdbb83f, // graph.lane.2
+    0xad58d5, // graph.lane.3
+    0x42b875, // graph.lane.4
+    0xda5d91, // graph.lane.5
+    0xd28a47, // graph.lane.6
+    0x329ccb, // graph.lane.7
+    0x9ab13f, // graph.lane.8
 ];
 pub const LIGHT: [u32; 65] = [
     0xfafbfc, // surface.canvas

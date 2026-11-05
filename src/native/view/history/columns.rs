@@ -1,0 +1,266 @@
+use super::*;
+use gitcrab_core::history_columns::ColumnLayout;
+
+// Each divider owns five pixels on either side of the visible boundary.
+const RESIZE_HALF_WIDTH: f32 = 5.;
+
+#[derive(Clone)]
+struct DraggedColumn {
+    owner: EntityId,
+    column: HistoryColumn,
+}
+
+impl Render for DraggedColumn {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_1()
+            .rounded(px(4.))
+            .bg(rgb(semantic(Role::SurfaceOverlay)))
+            .text_color(rgb(semantic(Role::TextDefault)))
+            .border_1()
+            .border_color(rgb(semantic(Role::BorderDivider)))
+            .child(self.column.label())
+    }
+}
+
+#[derive(Clone)]
+struct ResizeColumn {
+    owner: EntityId,
+    column: HistoryColumn,
+}
+
+impl Render for ResizeColumn {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+impl GitCrab {
+    fn history_column_width(&self, entry: &ColumnLayout) -> f32 {
+        if entry.column == HistoryColumn::Graph {
+            entry.width.max(graph_width(self.state.graph.lanes))
+        } else {
+            entry.width
+        }
+    }
+
+    pub(super) fn history_table_width(&self) -> f32 {
+        self.preferences
+            .history_columns
+            .visible()
+            .map(|e| self.history_column_width(e))
+            .sum()
+    }
+
+    pub(super) fn history_cell(&self, entry: &ColumnLayout) -> Div {
+        div()
+            .w(px(self.history_column_width(entry)))
+            .flex_none()
+            .h_full()
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .when(entry.column != HistoryColumn::Graph, |el| el.px_2())
+    }
+
+    fn columns_changed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.history_column_drop = None;
+        // Discrete choices are saved before returning, including a toggle
+        // immediately followed by closing the window.
+        self.preference_save = None;
+        if let Err(error) = self.save_preferences(cx) {
+            self.state.error = true;
+            self.state.notice = format!("Could not save column layout: {error}");
+        }
+        cx.notify();
+    }
+
+    pub(super) fn history_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let owner = cx.entity_id();
+        let weak = cx.weak_entity();
+        div()
+            .id("history-header")
+            .h(type_size(cx, 28.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .bg(rgb(semantic(Role::SurfaceChrome)))
+            .text_size(type_size(cx, 12.))
+            .text_color(rgb(semantic(Role::TextSecondary)))
+            .font_weight(FontWeight::MEDIUM)
+            .children(self.preferences.history_columns.visible().map(|entry| {
+                let column = entry.column;
+                let width = self.history_column_width(entry);
+                let after = self.history_column_drop == Some((column, true));
+                div()
+                    .id(("history-column", column as usize))
+                    .relative()
+                    .w(px(width))
+                    .h_full()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .can_drop(move |value, _, _| {
+                        value
+                            .downcast_ref::<DraggedColumn>()
+                            .is_some_and(|drag| drag.owner == owner && drag.column != column)
+                    })
+                    .on_drag_move(cx.listener(
+                        move |v, event: &DragMoveEvent<DraggedColumn>, w, cx| {
+                            if event.drag(cx).owner != owner {
+                                return;
+                            }
+                            if cx.active_drag_cursor_style() != Some(CursorStyle::ClosedHand) {
+                                cx.set_active_drag_cursor_style(CursorStyle::ClosedHand, w);
+                            }
+                            if !event.bounds.contains(&event.event.position) {
+                                return;
+                            }
+                            let after = event.event.position.x >= event.bounds.center().x;
+                            if v.history_column_drop != Some((column, after)) {
+                                v.history_column_drop = Some((column, after));
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .on_drop(cx.listener(move |v, drag: &DraggedColumn, w, cx| {
+                        if drag.owner == owner {
+                            let after = v.history_column_drop == Some((column, true));
+                            v.preferences
+                                .history_columns
+                                .move_to(drag.column, column, after);
+                            v.columns_changed(w, cx);
+                        }
+                    }))
+                    .group("history-column-drop")
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(5.))
+                            .bottom(px(5.))
+                            .w(px(1.))
+                            .when(after, |el| el.right_0())
+                            .when(!after, |el| el.left_0())
+                            .bg(tint(semantic(Role::ActionPrimary), 0x90))
+                            .invisible()
+                            .group_drag_over::<DraggedColumn>("history-column-drop", |el| {
+                                el.visible()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id(("history-column-label", column as usize))
+                            // Leave space on both sides. A label can never receive
+                            // the mouse down that starts a divider resize.
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .mx(px(RESIZE_HALF_WIDTH))
+                            .px(px(3.))
+                            .flex()
+                            .items_center()
+                            .cursor_grab()
+                            .active(|el| el.cursor_grabbing())
+                            .on_drag(DraggedColumn { owner, column }, |drag, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| drag.clone())
+                            })
+                            .child(div().truncate().child(column.label())),
+                    )
+                    .child(
+                        div()
+                            .id(("history-column-resize", column as usize))
+                            .absolute()
+                            .right(px(-RESIZE_HALF_WIDTH))
+                            .top_0()
+                            .bottom_0()
+                            .w(px(RESIZE_HALF_WIDTH * 2.))
+                            .occlude()
+                            .cursor_col_resize()
+                            .group("history-column-resize")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |v, event: &MouseDownEvent, _, _| {
+                                    v.history_column_resize =
+                                        Some((column, event.position.x, width));
+                                }),
+                            )
+                            .on_drag(ResizeColumn { owner, column }, |drag, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| drag.clone())
+                            })
+                            .on_drag_move(cx.listener(
+                                move |v, event: &DragMoveEvent<ResizeColumn>, w, cx| {
+                                    let drag = event.drag(cx);
+                                    if drag.owner != owner || drag.column != column {
+                                        return;
+                                    }
+                                    let Some((resizing, start, width)) = v.history_column_resize
+                                    else {
+                                        return;
+                                    };
+                                    if resizing != column {
+                                        return;
+                                    }
+                                    v.preferences.history_columns.resize(
+                                        column,
+                                        width + f32::from(event.event.position.x - start),
+                                    );
+                                    v.persist_preferences(w, cx);
+                                    cx.notify();
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(RESIZE_HALF_WIDTH))
+                                    .top(px(6.))
+                                    .bottom(px(6.))
+                                    .w(px(1.))
+                                    .bg(tint(semantic(Role::TextSecondary), 0x25))
+                                    .group_hover("history-column-resize", |el| {
+                                        el.bg(tint(semantic(Role::TextSecondary), 0x65))
+                                    }),
+                            ),
+                    )
+            }))
+            .context_menu(move |mut menu, _, cx| {
+                let Some(view) = weak.upgrade() else {
+                    return menu;
+                };
+                let layout = view.read(cx).preferences.history_columns.clone();
+                for column in HistoryColumn::ALL {
+                    let weak = weak.clone();
+                    let visible = layout
+                        .columns
+                        .iter()
+                        .any(|e| e.column == column && e.visible);
+                    menu = menu.item(
+                        PopupMenuItem::new(column.label())
+                            .checked(visible)
+                            .disabled(column == HistoryColumn::Message)
+                            .on_click(move |_, w, cx| {
+                                let _ = weak.update(cx, |v, cx| {
+                                    v.preferences.history_columns.toggle(column);
+                                    v.columns_changed(w, cx);
+                                });
+                            }),
+                    );
+                }
+                let weak = weak.clone();
+                menu.separator()
+                    .item(
+                        PopupMenuItem::new("Reset columns").on_click(move |_, w, cx| {
+                            let _ = weak.update(cx, |v, cx| {
+                                v.preferences.history_columns = HistoryColumns::default();
+                                v.history_horizontal_scroll
+                                    .set_offset(point(px(0.), px(0.)));
+                                v.columns_changed(w, cx);
+                            });
+                        }),
+                    )
+            })
+            .into_any_element()
+    }
+}

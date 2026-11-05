@@ -14,6 +14,23 @@ pub struct GraphRow {
     /// Segments from this row's center to the next row's center.
     pub edges: Vec<Edge>,
 }
+impl GraphRow {
+    /// A junction connects multiple paths above or below this commit. Count
+    /// only this node's segments; other lanes can pass through the same row.
+    pub fn is_junction(&self, incoming: &[Edge]) -> bool {
+        incoming
+            .iter()
+            .filter(|edge| edge.to_lane == self.lane)
+            .count()
+            > 1
+            || self
+                .edges
+                .iter()
+                .filter(|edge| edge.from_lane == self.lane)
+                .count()
+                > 1
+    }
+}
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Edge {
     pub from_lane: usize,
@@ -138,6 +155,36 @@ mod tests {
         assert_eq!(graph.lanes, 1);
         assert!(graph.rows.iter().all(|r| r.lane == 0 && r.color == 0));
         assert!(graph.rows[2].edges.is_empty());
+        for (index, row) in graph.rows.iter().enumerate() {
+            let incoming = index
+                .checked_sub(1)
+                .map(|i| graph.rows[i].edges.as_slice())
+                .unwrap_or_default();
+            assert!(!row.is_junction(incoming));
+        }
+    }
+    #[test]
+    fn junctions_mark_merges_and_branch_points_but_not_parallel_commits() {
+        let graph = layout(&[
+            c("merge", &["a", "b"]),
+            c("a", &["base"]),
+            c("b", &["base"]),
+            c("base", &["root"]),
+            c("root", &[]),
+        ]);
+        let junctions: Vec<_> = graph
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let incoming = index
+                    .checked_sub(1)
+                    .map(|i| graph.rows[i].edges.as_slice())
+                    .unwrap_or_default();
+                row.is_junction(incoming)
+            })
+            .collect();
+        assert_eq!(junctions, [true, false, false, true, false]);
     }
     #[test]
     fn octopus_and_disconnected_roots_preserve_topology() {

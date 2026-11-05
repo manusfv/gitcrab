@@ -12,6 +12,7 @@ Built in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crates
 ## Features
 
 - **Follow the history.** Browse branches and tags, inspect commit metadata and changed files, and search loaded history. Load more commits in 500-commit increments.
+- **Customize history columns.** Drag headers to reorder and dividers to resize. Right-click a header to show or hide columns. GitCrab saves the layout automatically, and Reset columns restores the defaults.
 - **Prepare a focused commit.** Review staged and unstaged changes separately. Stage or unstage files, all files, or complete hunks, then write a summary and description.
 - **Read changes your way.** Switch between unified and positional split diffs, inspect original line numbers, highlight whitespace, navigate hunks, and select or copy lines across virtualized rows.
 - **Review local Git operations.** Create branches, check out revisions, merge, cherry-pick, revert, stash, and pop with repository and target context before confirming.
