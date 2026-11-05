@@ -40,7 +40,7 @@ To build without launching:
 cargo build --locked --release --bin gitcrab
 ```
 
-The executable is `target/release/gitcrab` on Linux and macOS, or `target/release/gitcrab.exe` on Windows. Git must also be installed on the machine running the executable.
+The executable is `target/release/gitcrab` on Linux and macOS, or `target/release/gitcrab.exe` on Windows. Git must also be installed on the machine running the executable. Windows release builds launch without a console window. Debug builds keep the console for diagnostics.
 
 ### Platform requirements
 
