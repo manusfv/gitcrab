@@ -11,12 +11,13 @@ impl GitCrab {
             return el.into_any_element();
         }
         if let Some(id) = &self.state.selected {
-            if let Some(c) = self
+            if let Some((index, c)) = self
                 .state
                 .snapshot
                 .as_ref()
-                .and_then(|s| s.commits.iter().find(|c| &c.id == id))
+                .and_then(|s| s.commits.iter().enumerate().find(|(_, c)| &c.id == id))
             {
+                let lane_color = self.state.graph.rows.get(index).map(|row| row.color);
                 let timestamp = c.date.clone();
                 let copy_id = c.id.clone();
                 let initials = c
@@ -137,13 +138,26 @@ impl GitCrab {
                                         )
                                     })),
                             )
-                            .child(
-                                div()
-                                    .px(px(INSPECTOR_INSET))
-                                    .text_size(type_size(cx, 12.))
-                                    .text_color(rgb(ACCENT))
-                                    .child(c.refs.join(" · ")),
-                            ),
+                            .when(!c.refs.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap_1()
+                                        .px(px(INSPECTOR_INSET))
+                                        .children(c.refs.iter().map(|reference| {
+                                            div()
+                                                .px_1()
+                                                .rounded(px(CONTROL_RADIUS))
+                                                .text_size(type_size(cx, 12.))
+                                                .text_color(rgb(TEXT))
+                                                .when_some(lane_color, |badge, color| {
+                                                    badge.bg(branch_tint(color, REF_TINT))
+                                                })
+                                                .child(reference.clone())
+                                        })),
+                                )
+                            }),
                     )
                     .child(
                         inspector_bar()
@@ -340,12 +354,7 @@ impl GitCrab {
                                         } else {
                                             f.worktree
                                         };
-                                        let tint = match status {
-                                            'A' | '?' => GREEN,
-                                            'D' | 'U' => RED,
-                                            'R' => WARNING,
-                                            _ => ACCENT,
-                                        };
+                                        let tint = file_status_color(status);
                                         let active = v.state.patch.as_ref().is_some_and(|p| {
                                             p.path == f.path && p.staged == staged
                                         });
@@ -357,7 +366,9 @@ impl GitCrab {
                                             .px(px(INSPECTOR_INSET))
                                             .gap_1()
                                             .when(active, |e| e.bg(rgb(SELECTED)))
-                                            .hover(|e| e.bg(rgb(HOVER)))
+                                            .hover(|e| {
+                                                e.bg(rgb(if active { SELECTED } else { HOVER }))
+                                            })
                                             .child(badge(status.to_string(), tint))
                                             .child(
                                                 div().flex_1().min_w_0().child(
@@ -521,12 +532,12 @@ impl GitCrab {
                             "Commit {staged_count} staged {}",
                             if staged_count == 1 { "file" } else { "files" }
                         ),
+                        !self.can_commit(),
                     )
                     .icon(icon("check"))
                     .mx(px(INSPECTOR_INSET))
                     .my(px(6.))
                     .tooltip("Commit staged changes · Ctrl/Cmd+Enter")
-                    .disabled(!self.can_commit())
                     .on_click(cx.listener(|v, _, w, cx| v.commit_staged(&CommitStaged, w, cx))),
                 );
         }

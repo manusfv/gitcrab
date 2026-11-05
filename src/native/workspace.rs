@@ -243,7 +243,7 @@ impl Render for Workspace {
                     ),
             )
             .when_some(self.picker_error.clone(), |el, error| {
-                el.child(div().px_3().text_color(rgb(RED)).child(error))
+                el.child(div().px_3().text_color(rgb(DANGER)).child(error))
             })
             .child(
                 div()

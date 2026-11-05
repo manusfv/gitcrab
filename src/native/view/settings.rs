@@ -8,7 +8,7 @@ impl GitCrab {
             .overflow_y_scroll()
             .w(px(430.))
             .rounded(px(10.))
-            .bg(rgb(PANEL))
+            .bg(rgb(RAISED))
             .border_1()
             .border_color(rgb(BORDER))
             .p_5()
@@ -16,7 +16,7 @@ impl GitCrab {
             .flex_col()
             .gap_3()
             .child(div().text_lg().child("Appearance"))
-            .child("Atom One Dark · native system fonts")
+            .child("GitCrab Dark · native system fonts")
             .child(
                 div()
                     .text_size(type_size(cx, 12.))
@@ -154,7 +154,7 @@ impl GitCrab {
                             .on_click(cx.listener(|v, _, w, cx| v.back(&Back, w, cx))),
                     )
                     .child(
-                        self.primary_button("save-appearance", "Save appearance")
+                        self.primary_button("save-appearance", "Save appearance", false)
                             .tab_stop(true)
                             .on_click(cx.listener(|v, _, _, cx| {
                                 v.preference_save = None;

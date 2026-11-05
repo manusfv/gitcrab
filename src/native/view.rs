@@ -164,7 +164,7 @@ pub struct GitCrab {
     operation_feedback: Entity<OperationFeedback>,
     split: bool,
     compact: bool,
-    dim_whitespace: bool,
+    show_whitespace: bool,
     active_hunk: usize,
     history_scroll: UniformListScrollHandle,
     diff_scroll: UniformListScrollHandle,
@@ -272,7 +272,7 @@ impl GitCrab {
             operation_feedback,
             split: preferences.split,
             compact: preferences.compact,
-            dim_whitespace: false,
+            show_whitespace: false,
             active_hunk: 0,
             history_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
@@ -908,7 +908,7 @@ impl GitCrab {
                                 .child(op.help()),
                         )
                         .when_some(issue, |e, issue| {
-                            e.child(div().text_color(rgb(RED)).child(issue))
+                            e.child(div().text_color(rgb(DANGER)).child(issue))
                         }),
                 )
                 .on_ok(move |_, w, cx| {
@@ -1080,8 +1080,19 @@ impl GitCrab {
             .with_variant(ButtonVariant::Secondary)
             .outline()
     }
-    fn primary_button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-        self.button(id, label).primary()
+    fn primary_button(
+        &self,
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        disabled: bool,
+    ) -> Button {
+        let label = label.into();
+        self.button(id, if disabled { label.clone() } else { "".into() })
+            .primary()
+            .disabled(disabled)
+            .when(!disabled, |button| {
+                button.child(div().text_color(rgb(CHROME)).child(label))
+            })
     }
 
     fn segment_button(
@@ -1146,7 +1157,7 @@ impl GitCrab {
                 .size_full()
                 .flex()
                 .flex_col()
-                .bg(rgb(CHROME))
+                .bg(rgb(SIDEBAR))
                 .child(div().flex_1())
                 .child(
                     self.button("startup-appearance", "Appearance")
@@ -1347,7 +1358,7 @@ impl GitCrab {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(CHROME))
+            .bg(rgb(SIDEBAR))
             .overflow_hidden()
             .child(nav)
             .child(
@@ -1392,6 +1403,7 @@ impl GitCrab {
     fn history(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.state.snapshot.is_none() {
             return panel()
+                .bg(rgb(CANVAS))
                 .items_center()
                 .justify_center()
                 .gap_3()
@@ -1438,6 +1450,7 @@ impl GitCrab {
         let count = self.state.graph.rows.len();
         let weak = cx.weak_entity();
         panel()
+            .bg(rgb(CANVAS))
             .child(
                 div()
                     .h(px(26.))
@@ -1530,9 +1543,15 @@ impl GitCrab {
                 .bg(rgb(if self.state.selected.is_none() {
                     SELECTED
                 } else {
-                    PANEL
+                    CANVAS
                 }))
-                .hover(|s| s.bg(rgb(HOVER)))
+                .hover(|s| {
+                    s.bg(rgb(if self.state.selected.is_none() {
+                        SELECTED
+                    } else {
+                        GRAPH_HOVER
+                    }))
+                })
                 .child(
                     div()
                         .w(px(110.))
@@ -1665,7 +1684,7 @@ impl GitCrab {
             .cursor_pointer()
             .overflow_hidden()
             .when(selected, |e| e.bg(rgb(SELECTED)))
-            .hover(|s| s.bg(rgb(if selected { SELECTED } else { HOVER })))
+            .hover(|s| s.bg(rgb(if selected { SELECTED } else { GRAPH_HOVER })))
             .text_color(rgb(if matched { TEXT } else { MUTED }))
             .child(
                 div()
@@ -1677,11 +1696,18 @@ impl GitCrab {
                     .gap_1()
                     .overflow_hidden()
                     .text_size(type_size(cx, 12.))
-                    .text_color(rgb(PALETTE[color % 8]))
+                    .text_color(rgb(TEXT))
                     .when(!refs.is_empty(), |e| {
                         e.child(
                             self.button(("ref-detail", i), "")
-                                .child(div().flex_1().min_w_0().truncate().child(refs))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(rgb(TEXT))
+                                        .child(refs),
+                                )
                                 .flex_1()
                                 .min_w_0()
                                 .justify_start()
@@ -1735,7 +1761,7 @@ impl GitCrab {
                                         point(band_x, band_y),
                                         size(band_right - band_x, band_height),
                                     ),
-                                    branch_tint(color, if selected { 0x32 } else { 0x27 }),
+                                    branch_tint(color, 0x0c),
                                 ));
                                 w.paint_quad(fill(
                                     Bounds::new(
@@ -2040,7 +2066,8 @@ impl Render for GitCrab {
                     .disabled(self.state.busy)
                     .dropdown_menu(move |menu, _, _| {
                         let mut menu = menu.action_context(menu_focus.clone());
-                        menu = menu.item(PopupMenuItem::new("Open repository…").action(Box::new(Open)));
+                        menu = menu
+                            .item(PopupMenuItem::new("Open repository…").action(Box::new(Open)));
                         for path in &recent {
                             let path = path.clone();
                             let name = std::path::Path::new(&path)
@@ -2189,8 +2216,8 @@ impl Render for GitCrab {
                         .mx_2()
                         .mt_2()
                         .rounded(px(6.))
-                        .bg(rgba(0xe06c7514))
-                        .text_color(rgb(RED))
+                        .bg(tint(DANGER, 0x14))
+                        .text_color(rgb(DANGER))
                         .child(
                             div()
                                 .flex()
@@ -2280,7 +2307,7 @@ impl Render for GitCrab {
                         if self.state.busy || self.state.loading() {
                             ACCENT
                         } else {
-                            GREEN
+                            POSITIVE
                         },
                     )))
                     .child(div().flex_1().truncate().child(if self.state.busy {

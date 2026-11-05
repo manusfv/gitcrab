@@ -1,4 +1,98 @@
 use super::*;
+use gitcrab_core::highlight::Span;
+use std::ops::Range;
+
+fn syntax_style(kind: char) -> HighlightStyle {
+    HighlightStyle {
+        color: Some(
+            rgb(match kind {
+                'c' => MUTED,
+                's' => SYNTAX_STRING,
+                'k' => SYNTAX_KEYWORD,
+                'n' => SYNTAX_NUMBER,
+                _ => TEXT,
+            })
+            .into(),
+        ),
+        ..Default::default()
+    }
+}
+
+fn diff_highlights(
+    text: &str,
+    spans: &[Span],
+    prefix: usize,
+    show_whitespace: bool,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    if !show_whitespace {
+        return spans
+            .iter()
+            .filter(|span| span.start < text.len() + prefix)
+            .map(|span| {
+                (
+                    span.start - prefix..(span.end - prefix).min(text.len()),
+                    syntax_style(span.kind),
+                )
+            })
+            .collect();
+    }
+
+    let mut spans = spans.iter().peekable();
+    let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    for (start, character) in text.char_indices() {
+        while spans.peek().is_some_and(|span| span.end <= start + prefix) {
+            spans.next();
+        }
+        let end = start + character.len_utf8();
+        let mut style = spans
+            .peek()
+            .filter(|span| span.start <= start + prefix)
+            .map_or_else(HighlightStyle::default, |span| syntax_style(span.kind));
+        if character.is_whitespace() {
+            style.underline = Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(rgb(MUTED).into()),
+                wavy: false,
+            });
+        }
+        if style == HighlightStyle::default() {
+            continue;
+        }
+        if let Some((range, previous)) = highlights.last_mut() {
+            if range.end == start && *previous == style {
+                range.end = end;
+                continue;
+            }
+        }
+        highlights.push((start..end, style));
+    }
+    highlights
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn marks_only_whitespace_without_changing_syntax_or_byte_offsets() {
+        let text = "é // 🦀\ttext";
+        let patch = gitcrab_core::diff::parse(&format!("@@ -1 +1 @@\n+{text}"));
+        let spans = &patch[1].highlights;
+        let marked = diff_highlights(text, spans, 1, true);
+        let whitespace: Vec<_> = marked
+            .iter()
+            .filter(|(_, style)| style.underline.is_some())
+            .map(|(range, _)| &text[range.clone()])
+            .collect();
+        assert_eq!(whitespace, [" ", " ", "\t"]);
+        assert!(marked.iter().any(|(range, style)| {
+            &text[range.clone()] == "🦀" && *style == syntax_style('c')
+        }));
+        assert!(diff_highlights(text, spans, 1, false)
+            .iter()
+            .all(|(_, style)| style.underline.is_none()));
+    }
+}
 
 impl GitCrab {
     pub(super) fn diff(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -11,6 +105,7 @@ impl GitCrab {
         };
         let weak = cx.weak_entity();
         let mut el = panel()
+            .bg(rgb(CANVAS))
             .child(
                 section_bar()
                     .child(
@@ -239,7 +334,7 @@ impl GitCrab {
             .child(div().h(px(32.)).flex_none().px_2().flex().items_center().gap_2()
                 .when(self.split, |e| e.child(self.action_button("split-before", "Before").icon(icon("back")).on_click(cx.listener(|v,_,_,cx| {v.pan_diff(false);cx.notify();})))
                     .child(self.action_button("split-after", "After").icon(icon("right")).on_click(cx.listener(|v,_,_,cx| {v.pan_diff(true);cx.notify();}))))
-                .child(self.action_button("dim-whitespace", "Dim whitespace").outline().selected(self.dim_whitespace).on_click(cx.listener(|v,_,_,cx| {v.dim_whitespace=!v.dim_whitespace;cx.notify();})))
+                .child(self.action_button("show-whitespace", "Show whitespace").outline().selected(self.show_whitespace).on_click(cx.listener(|v,_,_,cx| {v.show_whitespace=!v.show_whitespace;cx.notify();})))
                 .child(self.action_button("selection-help", "Help").on_click(|_,w,cx| { w.open_dialog(cx,|d,_,_| d.title("Diff help").alert().child("Split: Before / After or Alt+Left / Alt+Right reveals either pane. The horizontal wheel scrolls. Click / Shift-click selects lines. Ctrl/Cmd+A selects all; Ctrl/Cmd+C copies original source.")); })));
         el.into_any_element()
     }
@@ -325,7 +420,7 @@ impl GitCrab {
                             '+' => DIFF_ADDED,
                             '-' => DIFF_REMOVED,
                             '@' => DIFF_HUNK,
-                            _ => PANEL,
+                            _ => CANVAS,
                         }
                     }))
                     .child(
@@ -346,33 +441,32 @@ impl GitCrab {
                                 )
                             }),
                     )
+                    .child(
+                        div()
+                            .w(px(9. * scale))
+                            .flex_none()
+                            .text_color(rgb(match l.kind {
+                                '+' => POSITIVE,
+                                '-' => DANGER,
+                                _ => MUTED,
+                            }))
+                            .child(match l.kind {
+                                '+' => "+",
+                                '-' => "−",
+                                _ => "",
+                            }),
+                    )
                     .child({
                         let mut end = l.text.len().min(8192);
                         while !l.text.is_char_boundary(end) {
                             end -= 1;
                         }
-                        let text = SharedString::from(l.text[..end].to_string());
-                        let highlights = l.highlights.iter().filter(|s| s.end <= end).map(|s| {
-                            (
-                                s.start..s.end,
-                                HighlightStyle {
-                                    color: Some(
-                                        rgb(match s.kind {
-                                            'c' => MUTED,
-                                            's' => GREEN,
-                                            'k' => SYNTAX_KEYWORD,
-                                            'n' => SYNTAX_NUMBER,
-                                            _ => TEXT,
-                                        })
-                                        .into(),
-                                    ),
-                                    ..Default::default()
-                                },
-                            )
-                        });
+                        let prefix = usize::from(matches!(l.kind, ' ' | '+' | '-') && end > 0);
+                        let text = SharedString::from(l.text[prefix..end].to_string());
+                        let highlights =
+                            diff_highlights(&text, &l.highlights, prefix, self.show_whitespace);
                         div()
                             .whitespace_nowrap()
-                            .when(self.dim_whitespace, |el| el.opacity(0.8))
                             .flex_none()
                             .child(StyledText::new(text).with_highlights(highlights))
                     });
