@@ -8,9 +8,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use tokio::sync::oneshot;
-use ts_rs::TS;
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "args")]
 pub enum Action {
     Open {
@@ -45,9 +44,10 @@ pub enum Action {
         target: String,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Operation {
     CreateBranch,
+    CreateBranchAt { start: String },
     Checkout,
     Merge,
     CherryPick,
@@ -55,13 +55,68 @@ pub enum Operation {
     Stash,
     PopStash,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+impl Operation {
+    pub fn validate_target(&self, target: &str) -> Result<(), String> {
+        if matches!(self, Self::Stash | Self::PopStash) {
+            return Ok(());
+        }
+        if target.trim().is_empty() {
+            return Err("Enter a target before continuing.".into());
+        }
+        if matches!(self, Self::CreateBranch | Self::CreateBranchAt { .. }) {
+            if target == "@"
+                || target.starts_with('-')
+                || target.starts_with('/')
+                || target.ends_with('/')
+                || target.ends_with('.')
+                || target.contains("..")
+                || target.contains("@{")
+                || target.contains("//")
+                || target
+                    .chars()
+                    .any(|c| c.is_control() || " ~^:?*[\\".contains(c))
+                || target
+                    .split('/')
+                    .any(|part| part.starts_with('.') || part.ends_with(".lock"))
+            {
+                return Err(
+                    "Use a valid Git branch name; spaces and revision syntax are not allowed."
+                        .into(),
+                );
+            }
+        } else if target.starts_with('-') || target.contains('\0') {
+            return Err("Enter a branch or revision, without command options.".into());
+        }
+        Ok(())
+    }
+    pub fn placeholder(&self) -> &'static str {
+        match self {
+            Self::CreateBranch | Self::CreateBranchAt { .. } => "feature/branch-name",
+            Self::Stash => "Optional message",
+            Self::PopStash => "",
+            _ => "Branch name or commit revision",
+        }
+    }
+    pub fn help(&self) -> &'static str {
+        match self {
+            Self::CreateBranch | Self::CreateBranchAt { .. } => {
+                "Creates a local branch without switching your working tree."
+            }
+            Self::Stash => "Stashes tracked changes. Untracked files stay in the working tree.",
+            Self::PopStash => {
+                "Applies the latest stash. Conflicts remain visible in Working changes."
+            }
+            _ => "Git checks the target and local changes. Failures remain here for correction.",
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
     pub epoch: u32,
     pub sequence: u32,
     pub action: Action,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data")]
 pub enum Reply {
     Snapshot {
@@ -71,12 +126,13 @@ pub enum Reply {
     },
     Details {
         id: String,
-        files: Vec<String>,
+        files: Vec<crate::git::FileChange>,
     },
     Diff {
         id: Option<String>,
         path: String,
         staged: bool,
+        original_path: Option<String>,
         lines: Vec<diff::Line>,
         split: Vec<(Option<diff::Line>, Option<diff::Line>)>,
         hunks: Vec<String>,
@@ -87,12 +143,12 @@ pub enum Reply {
         committed_draft: Option<String>,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Failure {
     pub message: String,
     pub refresh: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Response {
     pub epoch: u32,
     pub sequence: u32,
@@ -223,10 +279,12 @@ impl Session {
                     lines.drain(..first);
                 }
                 let split = diff::split(&lines);
+                let original_path = g.diff_identity(id.as_deref(), &path, staged)?;
                 return Ok(Reply::Diff {
                     id,
                     path,
                     staged,
+                    original_path,
                     lines,
                     split,
                     hunks: titles,
@@ -272,6 +330,7 @@ impl Session {
             Action::Operation { op, target } => {
                 match op {
                     Operation::CreateBranch => g.create_branch(&target)?,
+                    Operation::CreateBranchAt { start } => g.create_branch_at(&target, &start)?,
                     Operation::Checkout => g.checkout(&target)?,
                     Operation::Merge => g.merge(&target)?,
                     Operation::CherryPick => g.cherry_pick(&target)?,
@@ -296,6 +355,51 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn operation_targets_match_git_branch_syntax_and_optional_messages() {
+        for name in [
+            "",
+            " ",
+            "-bad",
+            "a..b",
+            "a.lock",
+            "a/.hidden",
+            "a/b.lock",
+            "a b",
+            "a@{b",
+            "@",
+            "a/",
+            "/a",
+            "a//b",
+            "a.",
+            "a?b",
+            "a[b",
+            "a\\b",
+        ] {
+            assert!(
+                Operation::CreateBranch.validate_target(name).is_err(),
+                "{name}"
+            );
+        }
+        for name in ["feature/日本語", "topic-1", "a.b", "release/v1"] {
+            assert!(
+                Operation::CreateBranch.validate_target(name).is_ok(),
+                "{name}"
+            );
+        }
+        for op in [
+            Operation::Checkout,
+            Operation::Merge,
+            Operation::CherryPick,
+            Operation::Revert,
+        ] {
+            assert!(op.validate_target("").is_err());
+            assert!(op.validate_target("--bad").is_err());
+            assert!(op.validate_target("HEAD~1").is_ok());
+        }
+        assert!(Operation::Stash.validate_target("").is_ok());
+        assert!(Operation::PopStash.validate_target("").is_ok());
+    }
     #[test]
     fn hunk_tokens_expire_after_mutations_and_failures_refresh() {
         let path = std::env::temp_dir().join(format!(
@@ -424,37 +528,69 @@ mod tests {
         assert_eq!(session.epoch, 5);
     }
     #[test]
-    fn export_contract() {
-        let config = ts_rs::Config::default();
-        let types = [
-            crate::git::Commit::decl(&config),
-            crate::git::FileChange::decl(&config),
-            RepoSnapshot::decl(&config),
-            crate::graph::Edge::decl(&config),
-            crate::graph::GraphRow::decl(&config),
-            crate::graph::Graph::decl(&config),
-            diff::Line::decl(&config),
-            Operation::decl(&config),
-            Action::decl(&config),
-            Request::decl(&config),
-            Reply::decl(&config),
-            Failure::decl(&config),
-            Response::decl(&config),
-        ];
-        let content = format!(
-            "// Generated by cargo test export_contract. Do not edit.\n{}\n",
-            types
-                .iter()
-                .map(|t| format!("export {t}"))
-                .collect::<Vec<_>>()
-                .join("\n")
+    fn protocol_round_trip_preserves_repository_identity() {
+        let request = Request {
+            epoch: 42,
+            sequence: 93,
+            action: Action::Open {
+                path: "repository ü 日本語".into(),
+                limit: 10000,
+            },
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        let decoded: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.epoch, 42);
+        assert_eq!(decoded.sequence, 93);
+        assert!(
+            matches!(decoded.action, Action::Open { path, limit: 10000 } if path == "repository ü 日本語")
         );
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend/contract.ts");
-        if std::env::var_os("GITCRAB_UPDATE_TYPES").is_some() {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, content).unwrap();
-        } else {
-            assert_eq!(std::fs::read_to_string(path).unwrap().replace("\r\n", "\n"), content, "Run GITCRAB_UPDATE_TYPES=1 cargo test export_contract and commit the generated contract");
+    }
+    #[test]
+    fn bounded_queue_reports_busy_without_blocking() {
+        let (tx, _rx) = sync_channel::<Pending>(8);
+        let service = Service { tx };
+        let mut receivers = vec![];
+        for sequence in 0..8 {
+            receivers.push(
+                service
+                    .submit(Request {
+                        epoch: 1,
+                        sequence,
+                        action: Action::Refresh { limit: 500 },
+                    })
+                    .unwrap(),
+            );
         }
+        assert!(service
+            .submit(Request {
+                epoch: 1,
+                sequence: 9,
+                action: Action::Refresh { limit: 500 }
+            })
+            .unwrap_err()
+            .contains("busy"));
+    }
+    #[test]
+    fn dropped_window_receiver_does_not_stop_worker() {
+        let service = Service::new();
+        let first = service
+            .submit(Request {
+                epoch: 1,
+                sequence: 1,
+                action: Action::Refresh { limit: 1 },
+            })
+            .unwrap();
+        drop(first);
+        let second = service
+            .submit(Request {
+                epoch: 1,
+                sequence: 2,
+                action: Action::Refresh { limit: 1 },
+            })
+            .unwrap()
+            .blocking_recv()
+            .unwrap();
+        assert_eq!(second.sequence, 2);
+        assert!(second.result.is_err());
     }
 }

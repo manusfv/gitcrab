@@ -4,35 +4,47 @@ version = "0.1.0"
 edition = "2021"
 description = "An independent Git desktop client with a lane-based history graph"
 license = "MIT"
+default-run = "gitcrab-gpui"
 
 [lib]
 name = "gitcrab_core"
-
-[[bin]]
-name = "gitcrab"
-path = "src/desktop.rs"
-required-features = ["desktop"]
 
 [[example]]
 name = "benchmark"
 path = "scripts/benchmark.rs"
 
 [features]
-default = []
-desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd"]
-custom-protocol = ["tauri/custom-protocol"]
-native-smoke = ["desktop", "dep:tauri-plugin-wdio-webdriver"]
+default = ["gpui-desktop"]
+gpui-desktop = ["dep:gpui", "dep:gpui-component", "dep:anyhow", "dep:serde_json", "dep:notify", "dep:async-channel"]
+native-evidence = ["gpui-desktop", "dep:serde_json"]
+[[bin]]
+name = "gitcrab-gpui"
+path = "src/native/main.rs"
+required-features = ["gpui-desktop"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-ts-rs = "12"
 tokio = { version = "1", features = ["sync"] }
-tauri = { version = "2", optional = true }
-rfd = { version = "0.15", optional = true }
-tauri-plugin-wdio-webdriver = { version = "=1.5.1", optional = true }
 
-[build-dependencies]
-tauri-build = { version = "2", optional = true }
+gpui = { version = "=0.2.2", optional = true }
+gpui-component = { version = "=0.5.1", optional = true, default-features = false }
+anyhow = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+notify = { version = "=7.0.0", optional = true }
+async-channel = { version = "=2.5.0", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
 
 [profile.release]
 lto = "thin"
+
+[patch.crates-io]
+# gpui -> zed-async-tar -> xattr 0.2.3 uses a removed libc Linux alias.
+xattr = { path = "vendor/xattr" }
+
+
+[[example]]
+name = "accessibility-probe"
+path = "scripts/accessibility-probe.rs"
+required-features = ["gpui-desktop"]

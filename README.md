@@ -1,50 +1,44 @@
 # GitCrab
 
-An independent local Git desktop client built with Tauri 2, Rust, React and TypeScript. Original graph topology, branding and assets, with a compact dark interface informed by recorded the reference app screenshots.
+A native Rust Git desktop client inspired by the reference app's Git workflows. GPUI renders the main interface without a WebView. Git operations, history topology, patch parsing and the bounded worker remain framework independent.
 
+
+The native workspace polish adds consistent iconography, clearer Git context and selection, a guided staging/commit flow, and explicit diff modes.
 
 ## Run
 
-Install Node 24 LTS, stable Rust, Git and the native prerequisites, then:
+Install stable Rust, Git and the native prerequisites:
 
 ```sh
-npm ci
-npm run tauri -- dev
-# Development with a startup repository:
-npm run tauri -- dev -- /path/to/repository
-# Embedded local assets and a release executable:
-npm run tauri -- build --no-bundle -- --locked
+cargo run --locked --release --bin gitcrab-gpui -- /path/to/repository
+cargo test --locked --no-default-features --lib
 ```
 
-The compiled executable is `target/release/gitcrab` (`gitcrab.exe` on Windows). Launch it with a repository directory as the first argument or use the native folder picker. Windows paths with spaces must be quoted. Frontend assets are embedded; Node is a build dependency, not an end-user dependency. Git and the platform WebView runtime remain required.
-
-The repository-local Windows Rust wrapper remains available for this workspace; see platform notes for its isolated GNU setup. Standard Windows builds use MSVC.
+On Windows, quote paths containing spaces. The executable is `target/release/gitcrab-gpui.exe`; Linux/macOS omit `.exe`. Start without a repository to use the native folder picker. This workspace's provisioned GNU installation can be used through `scripts/cargo-gpui-local.ps1`; Windows release builds also require the SDK shader compiler via `GPUI_FXC_PATH`.
 
 ## Workflows
 
-- Select commits for full IDs, parents, author/date, refs and changed files. File diffs compare with the first parent; root commits work too.
-- Select WIP for separate unstaged/index lists and a commit editor. Stage or unstage a file, all files or an individual complete hunk. Hunk operations affect only the index. Renames retain both paths.
-- Open files in the central unified/split diff, with original blob line numbers and a retained staging/details panel. The navigation collapses to a rail. Large history and diff lists render visible rows.
-- Create/switch/merge branches, checkout commits, cherry-pick, revert, stash and pop through explicit target-review dialogs. Double-clicking a local branch reviews checkout. Commit context menus expose local operations. No remote writes or destructive discard/reset actions are exposed.
-- Use Cmd+O on macOS or Ctrl+O elsewhere for the native picker, F5 to refresh, and arrow keys inside history to select commits. Search dims unmatched rows while preserving topology. Drag panel dividers or focus them and use arrow keys. Text uses normal selectable DOM controls and clipboard behavior.
-- History loads a bounded prefix of 500 commits at a time. Full identifiers appear in details/tooltips. Refresh is explicit; there is no idle polling loop.
+- Navigate branches/tags, search history, select commits with pointer/arrow keys, inspect metadata and open first-parent/root diffs. Load history in bounded 500-commit increments.
+- Select WIP for separate unstaged/index lists and commit editing. Stage/unstage files, all files or complete hunks without discarding worktree contents.
+- Review unified or positional split diffs with original blob line numbers, lexical colors, hunk navigation, whitespace emphasis, horizontal scrolling and explicit line-range selection/copy across virtual rows.
+- Review create-branch, checkout, merge, cherry-pick, revert, stash and pop operations with repository/HEAD/target context. Git errors and conflicts remain visible; state refreshes on success and failure.
+- Use Cmd+O on macOS or Ctrl+O elsewhere, F5 to refresh, Cmd/Ctrl+Enter to commit staged changes, and context menus for commit operations. Resize panels and use Appearance for density, text size and keyboard width controls. Explicitly save preferences to the platform configuration directory.
 
-Git errors appear in a selectable error banner. Failed operations refresh status, including conflict state, while preserving unsent commit text. Conflict resolution and continue/abort require external Git tools.
+No destructive discard/reset UI or remote writes are exposed. Conflict resolution/continue/abort, line staging, rebase/reset UI, hosting integrations and full the reference app parity remain future work. See the capability matrix.
 
-## Validate and package
+## Validation and development packages
 
 ```sh
 cargo fmt --all -- --check
-cargo test --locked --lib
-npm test
-npm run build
-# Native renderer test executable; NEVER package this feature:
-cargo build --locked --features desktop,custom-protocol,native-smoke
-node scripts/webdriver-smoke.mjs
+cargo test --locked --no-default-features --lib
+cargo build --locked --release --bin gitcrab-gpui
+# Separate evidence executable, never the packaged production binary:
+cargo build --locked --features native-evidence --bin gitcrab-gpui
+pwsh -File scripts/smoke-gpui.ps1
 ```
 
-On Windows, `node scripts/native-e2e.mjs target/release/gitcrab.exe` exercises the actual production WebView with a disposable Git fixture. `scripts/capture-evidence.ps1` records the showcase through WebView2. Both require `npm ci`. Linux smoke runs under Xvfb. The optional renderer automation plugin is debug-only and excluded from release packages by a compile-time guard.
+The [native workflow](https://github.com/manusfv/gitcrab/actions/workflows/gpui.yml) targets Windows x64, Linux x64, macOS ARM64 and macOS Intel, with real renderer smoke runs and development packages. Check the exact run before claiming a platform passed. Packages are unsigned on Windows/Linux and ad-hoc signed on macOS, without notarization.
 
-The [four-target workflow](https://github.com/manusfv/gitcrab/actions/workflows/ci.yml) builds Windows x64, Linux x64 and separate Apple Silicon/Intel Mac packages. Artifacts are unsigned development packages with SHA-256 checksums. See [architecture](docs/architecture.md).
+Read [architecture](docs/architecture.md).
 
-Known limits: no command cancellation/timeouts, line staging, full conflict lifecycle, persisted settings, filesystem watcher, complete accessibility or semantic split alignment. The measured Windows fixtures do not establish broad 60 Hz performance or low memory on other hardware.
+GPUI is the sole desktop host. The runnable Tauri baseline is preserved in Git at `6000266`; the measured baseline and its harness are identified in the evidence ledger. Tauri/React/WebView source, configuration and dependencies have been removed after native workflow parity. Its four frontend tests/build passed before cutover. Historical WebView and egui evidence is labeled separately.

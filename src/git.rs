@@ -8,7 +8,7 @@ use std::{
 
 pub type GitResult<T> = Result<T, String>;
 
-#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct Commit {
     pub id: String,
     pub parents: Vec<String>,
@@ -18,7 +18,7 @@ pub struct Commit {
     pub refs: Vec<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct FileChange {
     /// Destination path for renames; relative to the repository root.
     pub path: String,
@@ -28,24 +28,40 @@ pub struct FileChange {
     pub worktree: char,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct RepoSnapshot {
     pub commits: Vec<Commit>,
     pub branches: Vec<String>,
+    #[serde(default)]
+    pub remote_refs: Vec<String>,
+    #[serde(default)]
+    pub stash_count: usize,
     pub head: String,
     /// Full HEAD identity, including when outside the loaded history page.
     pub head_id: String,
     pub status: Vec<FileChange>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug)]
+impl RepoSnapshot {
+    pub fn head_label(&self) -> String {
+        if self.head_id.is_empty() {
+            format!("{} · unborn branch", self.head)
+        } else if !self.branches.contains(&self.head) {
+            format!("Detached HEAD · {}", self.head)
+        } else {
+            self.head.clone()
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Hunk {
     pub title: String,
     /// Self-contained patch with original file headers and one hunk.
     pub patch: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Git {
     pub path: PathBuf,
 }
@@ -182,37 +198,103 @@ impl Git {
         Ok(RepoSnapshot {
             commits,
             branches,
+            stash_count: self
+                .run(&["stash", "list", "--format=%gd"])?
+                .lines()
+                .count(),
+            remote_refs: self
+                .run(&["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?
+                .lines()
+                .map(String::from)
+                .collect(),
             head,
             head_id,
             status,
         })
     }
 
-    pub fn changed_files(&self, commit: &str) -> GitResult<Vec<String>> {
+    pub fn changed_files(&self, commit: &str) -> GitResult<Vec<FileChange>> {
         validate_revision(commit)?;
         let parent = format!("{commit}^1");
         let data = if self.run(&["rev-parse", "--verify", &parent]).is_ok() {
-            self.run(&["diff", "--name-only", "-z", &parent, commit, "--"])?
+            self.run(&[
+                "diff",
+                "--find-renames",
+                "--name-status",
+                "-z",
+                &parent,
+                commit,
+                "--",
+            ])?
         } else {
             self.run(&[
                 "diff-tree",
                 "--root",
                 "--no-commit-id",
-                "--name-only",
+                "--find-renames",
+                "--name-status",
                 "-r",
                 "-z",
                 commit,
+                "--",
             ])?
         };
-        Ok(data
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect())
+        let mut fields = data.split('\0').filter(|s| !s.is_empty());
+        let mut files = Vec::new();
+        while let Some(status) = fields.next() {
+            let kind = status.chars().next().unwrap_or(' ');
+            let first = fields.next().ok_or("Missing changed-file path")?;
+            let (original_path, path) = if matches!(kind, 'R' | 'C') {
+                (
+                    Some(first.to_string()),
+                    fields.next().ok_or("Missing rename destination")?,
+                )
+            } else {
+                (None, first)
+            };
+            files.push(FileChange {
+                path: path.into(),
+                original_path,
+                index: kind,
+                worktree: ' ',
+            });
+        }
+        Ok(files)
+    }
+
+    /// Resolve identity in this comparison's namespace. An index rename's old
+    /// path belongs to HEAD, not to the index/worktree comparison.
+    pub fn diff_identity(
+        &self,
+        commit: Option<&str>,
+        path: &str,
+        staged: bool,
+    ) -> GitResult<Option<String>> {
+        let files = if let Some(id) = commit {
+            self.changed_files(id)?
+        } else {
+            parse_status(&self.bytes(&[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+            ])?)
+        };
+        Ok(files.into_iter().find(|f| f.path == path).and_then(|f| {
+            if commit.is_some()
+                || (staged && matches!(f.index, 'R' | 'C'))
+                || (!staged && matches!(f.worktree, 'R' | 'C'))
+            {
+                f.original_path
+            } else {
+                None
+            }
+        }))
     }
 
     /// A selected commit is diffed against its first parent. None selects index/worktree.
     pub fn diff(&self, commit: Option<&str>, path: &str, staged: bool) -> GitResult<String> {
+        let original = self.diff_identity(commit, path, staged)?;
         let mut args = vec![
             "diff",
             "--no-ext-diff",
@@ -241,7 +323,11 @@ impl Git {
         } else if staged {
             args.push("--cached");
         }
-        args.extend(["--", path]);
+        args.push("--");
+        if let Some(old) = &original {
+            args.push(old);
+        }
+        args.push(path);
         let diff = self.run(&args)?;
         if diff.is_empty()
             && commit.is_none()
@@ -367,6 +453,12 @@ impl Git {
         validate_revision(name)?;
         self.run(&["check-ref-format", "--branch", name])?;
         self.run(&["branch", "--", name]).map(|_| ())
+    }
+    pub fn create_branch_at(&self, name: &str, start: &str) -> GitResult<()> {
+        validate_revision(name)?;
+        validate_revision(start)?;
+        self.run(&["check-ref-format", "--branch", name])?;
+        self.run(&["branch", "--", name, start]).map(|_| ())
     }
     pub fn checkout(&self, branch: &str) -> GitResult<()> {
         validate_revision(branch)?;
@@ -529,6 +621,89 @@ mod tests {
         }
     }
     #[test]
+    fn rename_comparisons_keep_paths_and_blobs_in_the_correct_namespace() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        let old = "legacy 日本語 [1].txt";
+        let new = "archive 日本語 [2].txt";
+        let text = (0..30)
+            .map(|n| format!("stable line {n}\n"))
+            .collect::<String>();
+        fixture.write(old, &text);
+        git.stage(old).unwrap();
+        git.commit("root").unwrap();
+        let before = git.run(&["rev-parse", &format!("HEAD:{old}")]).unwrap();
+        git.run(&["mv", "--", old, new]).unwrap();
+        let staged = git.diff(None, new, true).unwrap();
+        assert!(staged.contains("rename from "));
+        assert!(!staged.contains("@@"));
+        assert_eq!(before, git.run(&["rev-parse", &format!(":{new}")]).unwrap());
+        git.commit("pure rename").unwrap();
+        let id = git.run(&["rev-parse", "HEAD"]).unwrap();
+        let files = git.changed_files(id.trim()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].original_path.as_deref(), Some(old));
+        assert_eq!(files[0].path, new);
+        let committed = git.diff(Some(id.trim()), new, false).unwrap();
+        assert!(committed.contains("similarity index 100%"));
+        assert!(!committed.contains("@@"));
+        // An unstaged edit after a staged rename compares against the new
+        // index path, while the staged comparison still uses HEAD's old path.
+        git.run(&["mv", "--", new, old]).unwrap();
+        fixture.write(old, &text.replace("stable line 15", "edited line 15"));
+        let working = git.diff(None, old, false).unwrap();
+        assert!(working.contains("-stable line 15"));
+        assert!(working.contains("+edited line 15"));
+        assert!(!working.contains("rename from"));
+        git.stage(old).unwrap();
+        let edited = git.diff(None, old, true).unwrap();
+        assert!(edited.contains("rename from"));
+        assert!(edited.contains("-stable line 15"));
+        git.commit("rename with edit").unwrap();
+        let id = git.run(&["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(
+            git.diff(Some(id.trim()), old, false).unwrap(),
+            git.run(&[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--find-renames",
+                "HEAD^1",
+                "HEAD",
+                "--",
+                new,
+                old
+            ])
+            .unwrap()
+        );
+        assert_eq!(
+            git.run(&["show", &format!("HEAD:{old}")]).unwrap(),
+            text.replace("stable line 15", "edited line 15")
+        );
+    }
+
+    #[test]
+    fn real_git_create_branch_at_keeps_head_and_index() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("file", "one");
+        git.stage("file").unwrap();
+        git.commit("first").unwrap();
+        let first = git.run(&["rev-parse", "HEAD"]).unwrap();
+        fixture.write("file", "two");
+        git.stage("file").unwrap();
+        git.commit("second").unwrap();
+        let head = git.run(&["rev-parse", "HEAD"]).unwrap();
+        let tree = git.run(&["write-tree"]).unwrap();
+        git.create_branch_at("feature/日本語", first.trim())
+            .unwrap();
+        assert_eq!(git.run(&["rev-parse", "feature/日本語"]).unwrap(), first);
+        assert_eq!(git.run(&["rev-parse", "HEAD"]).unwrap(), head);
+        assert_eq!(git.run(&["write-tree"]).unwrap(), tree);
+        assert!(git.create_branch_at("--bad", first.trim()).is_err());
+    }
+    #[test]
     fn real_git_unicode_paths_and_branch_names() {
         let fixture = Fixture::new();
         let git = &fixture.git;
@@ -634,7 +809,14 @@ mod tests {
         git.stage("root.txt").unwrap();
         git.commit("Root").unwrap();
         let root = git.snapshot(100).unwrap().commits[0].id.clone();
-        assert_eq!(git.changed_files(&root).unwrap(), vec!["root.txt"]);
+        assert_eq!(
+            git.changed_files(&root)
+                .unwrap()
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root.txt"]
+        );
         assert!(git
             .diff(Some(&root), "root.txt", false)
             .unwrap()
@@ -655,7 +837,11 @@ mod tests {
         assert!(state.commits[0].refs.contains(&"v1".into()));
         assert!(state.commits[0].refs.contains(&"HEAD".into()));
         assert_eq!(
-            git.changed_files(&state.commits[0].id).unwrap(),
+            git.changed_files(&state.commits[0].id)
+                .unwrap()
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
             vec!["feature.txt"]
         );
         git.checkout(&root).unwrap();
