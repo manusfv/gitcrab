@@ -119,6 +119,7 @@ Before a pull request, run the checks above and describe which behaviors and pla
 
 ## Documentation
 
+
 | Guide | What it covers |
 | --- | --- |
 | [Architecture](docs/architecture.md) | Git subprocesses, graph layout, worker/controller boundaries, and rendering |

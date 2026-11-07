@@ -10,6 +10,7 @@ The default host is GPUI, with an independent Rust application boundary. Depende
 | `src/service.rs` | Typed operations and replies; one dedicated worker; bounded queue of eight; repository epochs, mutation serialization and backend-issued cached hunk tokens. |
 | `src/controller.rs` | Framework-independent native state; one active and one replaceable pending read per snapshot/details/diff lane; latest-sequence/epoch reconciliation, draft preservation, mutation refresh and obsolete action clearing. |
 | `src/native/main.rs` | Native application/window, platform actions, menu definitions, shortcuts, component initialization and assets. |
+| `src/native/workspace.rs` | Repository tabs, tab activation/close guards, recent-repository opening and folder-picker routing. |
 | `src/native/view.rs` | GPUI entity, worker adapter, virtual history/diff/status/file rows, visible custom graph painting, native input/menus/dialogs, staging and commit interactions. |
 | `src/native/theme.rs`, `preferences.rs`, `assets.rs` | Semantic styling, bounded appearance preferences and original embedded GitCrab assets. |
 | `src/platform.rs` | Git executable lookup including macOS GUI-launch fallbacks and `GITCRAB_GIT`. |

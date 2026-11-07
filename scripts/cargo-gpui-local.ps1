@@ -1,3 +1,20 @@
+<#
+.SYNOPSIS
+Runs Cargo using an already provisioned local Windows GNU toolchain.
+.DESCRIPTION
+Optional helper retained for the historical native validation workflow. This is
+not a toolchain installer or the standard cross-platform development entry point.
+It expects .toolchain under the Git common directory's parent, containing:
+  rustup/toolchains/stable-x86_64-pc-windows-gnu
+  cargo/bin/cargo.exe
+  binutils/mingw64/bin
+  w64devkit/bin and w64devkit/lib/libktmw32.a
+Git is expected at C:/Program Files/Git/mingw64/bin. Release builds also require
+the Windows SDK shader compiler (GPUI_FXC_PATH when not discovered automatically).
+The helper sets process-local variables and copies libktmw32.a into the checkout's
+ignored .toolchain/native-lib. It does not provision any of these prerequisites.
+For the standard Rust/MSVC workflow, use cargo directly.
+#>
 param([Parameter(ValueFromRemainingArguments=$true)][string[]]$CargoArgs)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
