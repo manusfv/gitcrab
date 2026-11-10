@@ -13,7 +13,7 @@
   <a href="#contributing">Contributing</a>
 </p>
 
-![GitCrab workspace with repository tabs, a color-coded commit graph, and the selected commit’s details](docs/images/gitcrab-workspace.jpg)
+![GitCrab workspace with a branch sidebar, a color-coded commit graph, and the selected commit’s details](docs/images/gitcrab-workspace.jpg)
 
 ## Install
 
