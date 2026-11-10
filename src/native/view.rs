@@ -1292,6 +1292,14 @@ impl GitCrab {
                 .into_any_element()
         }
     }
+    fn highlight_sidebar_row(button: Button, highlighted: bool) -> Button {
+        button.selected(highlighted).when(highlighted, |button| {
+            button
+                .bg(rgb(semantic(Role::ActionAccentTintHover)))
+                .text_color(rgb(semantic(Role::TextDefault)))
+        })
+    }
+
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.state.snapshot.is_none() {
             return div()
@@ -1357,9 +1365,8 @@ impl GitCrab {
                             .flex_1()
                             .justify_start()
                             .h(px(32.))
-                            .when(self.state.selected.is_none(), |b| {
-                                b.bg(rgb(semantic(Role::InteractionSelected)))
-                                    .text_color(rgb(semantic(Role::ActionPrimary)))
+                            .map(|button| {
+                                Self::highlight_sidebar_row(button, self.state.selected.is_none())
                             })
                             .on_click(cx.listener(|v, _, w, cx| v.select(None, w, cx))),
                     )
@@ -1477,7 +1484,7 @@ impl GitCrab {
                         .pr_2()
                         .text_color(rgb(if current || selected { semantic(Role::TextDefault) } else { semantic(Role::TextMuted) }))
                         .when(current, |b| b.font_weight(FontWeight::SEMIBOLD))
-                        .when(selected, |b| b.bg(rgb(semantic(Role::InteractionSelected))))
+                        .map(|button| Self::highlight_sidebar_row(button, current || selected))
                         .tooltip(format!("{} · Double-click to checkout", b))
                         .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| {
                             if e.click_count() == 2 {
@@ -1524,6 +1531,7 @@ impl GitCrab {
                         .find(|c| c.refs.contains(reference))
                         .map(|c| c.id.clone());
                     nav=nav.child(self.button(SharedString::from(format!("{kind}-{i}")),reference.clone()).icon(icon(glyph)).w_full().justify_start().h(type_size(cx,26.)).tooltip(reference.clone())
+                        .map(|button| Self::highlight_sidebar_row(button, id.is_some() && id == self.state.selected))
                         .on_click(cx.listener(move |v,_,w,cx|{if let Some(id)=id.clone(){v.select(Some(id),w,cx);}else{v.state.notice="Reference tip is outside loaded history. Load more commits to reveal it.".into();cx.notify();}})));
                 }
             }
