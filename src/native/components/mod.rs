@@ -1,10 +1,12 @@
 //! P01/P02: native controls retain gpui-component interaction/focus behavior.
+pub mod rail;
 use super::theme::*;
 use gpui::{prelude::*, *};
 use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
     Sizable,
 };
+
 #[derive(Clone, Copy)]
 pub enum ControlSize {
     Regular,

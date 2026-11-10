@@ -149,7 +149,9 @@ pub struct GitCrab {
     active_hunk: usize,
     history_scroll: UniformListScrollHandle,
     history_horizontal_scroll: ScrollHandle,
-    history_column_drop: Option<(gitcrab_core::history_columns::HistoryColumn, bool)>,
+    history_column_drag:
+        Option<components::rail::RailDrag<gitcrab_core::history_columns::HistoryColumn>>,
+    history_column_drag_start: Option<(gitcrab_core::history_columns::HistoryColumn, Pixels)>,
     history_column_resize: Option<(gitcrab_core::history_columns::HistoryColumn, Pixels, f32)>,
     diff_scroll: UniformListScrollHandle,
     selection: Option<Range<usize>>,
@@ -289,7 +291,8 @@ impl GitCrab {
             active_hunk: 0,
             history_scroll: UniformListScrollHandle::new(),
             history_horizontal_scroll: ScrollHandle::new(),
-            history_column_drop: None,
+            history_column_drag: None,
+            history_column_drag_start: None,
             history_column_resize: None,
             diff_scroll: UniformListScrollHandle::new(),
             selection: None,
@@ -1869,7 +1872,7 @@ impl Render for GitCrab {
         } else if in_diff {
             self.review_placeholder(cx)
         } else {
-            self.history(cx)
+            self.history(window, cx)
         };
         let branch = self
             .state
@@ -2159,6 +2162,7 @@ impl Render for GitCrab {
             }))
             .on_action(cx.listener(|v, _: &SearchNext, w, cx| v.search_step(1, w, cx)))
             .on_action(cx.listener(|v, _: &SearchPrevious, w, cx| v.search_step(-1, w, cx)))
+            .child(self.column_drag_events(cx))
             .child(toolbar)
             .when(single_pane, |el| {
                 el.child(

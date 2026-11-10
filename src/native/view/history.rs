@@ -3,7 +3,16 @@ use gitcrab_core::history_columns::{HistoryColumn, HistoryColumns};
 mod columns;
 
 impl GitCrab {
-    pub(super) fn history(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn column_drag_events(&self, cx: &Context<Self>) -> impl IntoElement {
+        components::rail::end_events(
+            cx.weak_entity(),
+            Self::finish_column_drag,
+            Self::cancel_column_drag,
+        )
+    }
+
+    pub(super) fn history(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.prepare_column_drag(window, cx);
         let count = self.state.graph.rows.len();
         let weak = cx.weak_entity();
         panel()

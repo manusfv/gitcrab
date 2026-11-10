@@ -6,9 +6,10 @@ use super::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{button::*, Disableable, Sizable, WindowExt};
-use std::{cell::Cell, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 mod tab_order;
+use components::rail::RailDrag;
 
 actions!(gitcrab, [NewTab, CloseTab, NextTab, PreviousTab]);
 
@@ -20,19 +21,11 @@ pub struct OpenRecent(pub String);
 struct DraggedTab {
     workspace: EntityId,
     tab: EntityId,
-    label: String,
-    selected: bool,
-    width: Rc<Cell<Pixels>>,
 }
 
 impl Render for DraggedTab {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // Keep the source tab's size and appearance without a close control.
-        tab_chrome(self.selected)
-            // GPUI measures drag roots with minimum-content space. Use the
-            // laid-out source width instead of letting a truncated label shrink.
-            .w(self.width.get())
-            .child(div().child(tab_label("dragged-tab-label", self.label.clone()).tab_stop(false)))
+        div()
     }
 }
 
@@ -94,7 +87,8 @@ pub struct Workspace {
     picking: bool,
     picker_error: Option<String>,
     scroll: ScrollHandle,
-    tab_drop_target: Option<(EntityId, bool)>,
+    tab_drag: Option<RailDrag<EntityId>>,
+    tab_drag_start: Option<(EntityId, Pixels)>,
 }
 
 impl Workspace {
@@ -109,7 +103,8 @@ impl Workspace {
             picking: false,
             picker_error: None,
             scroll: ScrollHandle::new(),
-            tab_drop_target: None,
+            tab_drag: None,
+            tab_drag_start: None,
         }
     }
 
@@ -168,34 +163,47 @@ impl Workspace {
         }
     }
 
-    fn drop_tab(
-        &mut self,
-        drag: &DraggedTab,
-        target: Option<EntityId>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if drag.workspace != cx.entity_id() || self.blocked(window, cx) {
-            return;
-        }
-        let Some(from) = self.tabs.iter().position(|tab| tab.entity_id() == drag.tab) else {
+    fn order_tabs(&mut self, dragged: EntityId, order: &[EntityId]) {
+        let Some(from) = self.tabs.iter().position(|tab| tab.entity_id() == dragged) else {
             return;
         };
-        let slot = if let Some(target) = target {
-            let Some(index) = self.tabs.iter().position(|tab| tab.entity_id() == target) else {
-                return;
-            };
-            let after = self.tab_drop_target == Some((target, true));
-            index + usize::from(after)
-        } else {
-            self.tabs.len()
+        let Some(to) = order.iter().position(|id| *id == dragged) else {
+            return;
         };
-        self.tab_drop_target = None;
-        // Move existing entities without activating, recreating, or clearing them.
-        if tab_order::move_to_slot(&mut self.tabs, &mut self.active, from, slot) {
-            self.scroll.scroll_to_item(self.active);
+        let slot = to + usize::from(from < to);
+        tab_order::move_to_slot(&mut self.tabs, &mut self.active, from, slot);
+    }
+
+    fn move_tab_drag(&mut self, pointer: Pixels, cx: &mut Context<Self>) {
+        let Some(rail) = self.tab_drag.as_mut().filter(|rail| !rail.released) else {
+            return;
+        };
+        if rail.update(pointer, std::time::Instant::now()) {
+            let dragged = rail.dragged;
+            let order: Vec<_> = rail.order().collect();
+            self.order_tabs(dragged, &order);
         }
         cx.notify();
+    }
+
+    fn finish_tab_drag(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.tab_drag.as_ref().is_some_and(|rail| !rail.released) {
+            self.move_tab_drag(event.position.x, cx);
+            self.tab_drag
+                .as_mut()
+                .unwrap()
+                .release(std::time::Instant::now());
+        }
+    }
+
+    fn cancel_tab_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab_drag.as_ref().is_some_and(|rail| !rail.released) {
+            let rail = self.tab_drag.take().unwrap();
+            self.order_tabs(rail.dragged, rail.original());
+            cx.stop_active_drag(window);
+            cx.stop_propagation();
+            cx.notify();
+        }
     }
 
     fn open_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -255,6 +263,28 @@ impl Render for Workspace {
         let dialogs = gpui_component::Root::render_dialog_layer(window, cx);
         let blocked = self.blocked(window, cx);
         let workspace_id = cx.entity_id();
+        let now = std::time::Instant::now();
+        if self.tab_drag.as_ref().is_some_and(|rail| rail.settled(now)) {
+            self.tab_drag = None;
+        }
+        if self
+            .tab_drag
+            .as_ref()
+            .is_some_and(|rail| rail.animating(now))
+        {
+            let weak = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = weak.update(cx, |_, cx| cx.notify());
+            });
+            window.request_animation_frame();
+        }
+        let drop_bounds = Rc::new(RefCell::new(
+            self.tabs
+                .iter()
+                .map(|tab| (tab.entity_id(), Bounds::<Pixels>::default()))
+                .collect::<Vec<_>>(),
+        ));
+
         let mut strip = div()
             .id("repository-tabs")
             .flex_1()
@@ -263,10 +293,27 @@ impl Render for Workspace {
             .items_center()
             .gap(px(4.))
             .overflow_x_scroll()
-            .track_scroll(&self.scroll);
+            .track_scroll(&self.scroll)
+            .on_drag_move(
+                cx.listener(move |v, event: &DragMoveEvent<DraggedTab>, w, cx| {
+                    if event.drag(cx).workspace != cx.entity_id() || v.blocked(w, cx) {
+                        return;
+                    }
+                    if v.tab_drag
+                        .as_ref()
+                        .is_none_or(|rail| rail.dragged != event.drag(cx).tab)
+                    {
+                        return;
+                    }
+                    if cx.active_drag_cursor_style() != Some(CursorStyle::ClosedHand) {
+                        cx.set_active_drag_cursor_style(CursorStyle::ClosedHand, w);
+                    }
+                    v.move_tab_drag(event.event.position.x, cx);
+                }),
+            );
         for (index, entity) in self.tabs.iter().enumerate() {
             let tab_id = entity.entity_id();
-            let tab_width = Rc::new(Cell::new(px(0.)));
+
             let tab = entity.read(cx);
             let path = tab.repository_path();
             let mut label = std::path::Path::new(path)
@@ -305,76 +352,54 @@ impl Render for Workspace {
             } else {
                 path.to_owned()
             };
-            strip = strip.child(
+            strip = strip.child(components::rail::item(
                 tab_chrome(selected)
                     .id(("repository-tab", tab_id))
                     .child({
-                        let tab_width = tab_width.clone();
+                        let drop_bounds = drop_bounds.clone();
                         canvas(
-                            move |bounds, _, _| tab_width.set(bounds.size.width),
+                            move |bounds, _, _| {
+                                drop_bounds.borrow_mut()[index].1 = bounds;
+                            },
                             |_, _, _, _| {},
                         )
                         .absolute()
                         .size_full()
                     })
-                    .when(!blocked, |el| {
-                        let after = self.tab_drop_target == Some((tab_id, true));
-                        el.can_drop(move |value, _, _| {
-                            value.downcast_ref::<DraggedTab>().is_some_and(|drag| {
-                                drag.workspace == workspace_id && drag.tab != tab_id
-                            })
-                        })
-                        .on_drag_move(cx.listener(
-                            move |v, event: &DragMoveEvent<DraggedTab>, w, cx| {
-                                if event.drag(cx).workspace != cx.entity_id()
-                                    || !event.bounds.contains(&event.event.position)
-                                    || v.blocked(w, cx)
-                                {
-                                    return;
-                                }
-                                let after = event.event.position.x
-                                    >= event.bounds.origin.x + event.bounds.size.width / 2.;
-                                let target = Some((tab_id, after));
-                                if v.tab_drop_target != target {
-                                    v.tab_drop_target = target;
-                                    cx.notify();
-                                }
-                            },
-                        ))
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .w(px(2.))
-                                .when(after, |el| el.right_0())
-                                .when(!after, |el| el.left_0())
-                                .bg(rgb(semantic(Role::ActionPrimary)))
-                                .invisible()
-                                .group_drag_over::<DraggedTab>("repository-tab-drop", |el| {
-                                    el.visible()
-                                }),
-                        )
-                        .group("repository-tab-drop")
-                        .on_drop(cx.listener(
-                            move |v, drag: &DraggedTab, w, cx| {
-                                v.drop_tab(drag, Some(tab_id), w, cx);
-                            },
-                        ))
-                    })
                     .child(
                         div()
                             .id(("drag-repository-tab", tab_id))
+                            .cursor_grab()
+                            .active(|el| el.cursor_grabbing())
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |v, event: &MouseDownEvent, _, _| {
+                                    v.tab_drag_start = Some((tab_id, event.position.x));
+                                }),
+                            )
                             .when(!blocked, |el| {
+                                let weak = cx.weak_entity();
+                                let bounds = drop_bounds.clone();
                                 el.on_drag(
                                     DraggedTab {
                                         workspace: workspace_id,
                                         tab: tab_id,
-                                        label: label.clone(),
-                                        selected,
-                                        width: tab_width.clone(),
                                     },
-                                    |drag, _, _, cx| {
+                                    move |drag, _, w, cx| {
+                                        let _ = weak.update(cx, |v, cx| {
+                                            let pointer = v
+                                                .tab_drag_start
+                                                .filter(|(id, _)| *id == tab_id)
+                                                .map(|(_, x)| x)
+                                                .unwrap_or(w.mouse_position().x);
+                                            v.tab_drag = RailDrag::new(
+                                                &bounds.borrow(),
+                                                tab_id,
+                                                pointer,
+                                                4.,
+                                            );
+                                            v.move_tab_drag(w.mouse_position().x, cx);
+                                        });
                                         cx.stop_propagation();
                                         cx.new(|_| drag.clone())
                                     },
@@ -390,7 +415,7 @@ impl Render for Workspace {
                                 .tooltip(tooltip)
                                 .on_click(cx.listener(
                                     move |v, _, w, cx| {
-                                        if !v.blocked(w, cx) {
+                                        if !cx.has_active_drag() && !v.blocked(w, cx) {
                                             v.activate(index, w, cx);
                                         }
                                     },
@@ -404,7 +429,10 @@ impl Render for Workspace {
                             .tooltip(format!("Close {label} tab"))
                             .on_click(cx.listener(move |v, _, w, cx| v.close(index, w, cx))),
                     ),
-            );
+                self.tab_drag.as_ref(),
+                tab_id,
+                now,
+            ));
         }
         strip = strip.child(
             div()
@@ -412,21 +440,6 @@ impl Render for Workspace {
                 .flex_1()
                 .min_w(rems(32. / 13.))
                 .h(rems(28. / 13.))
-                .when(!blocked, |el| {
-                    el.can_drop(move |value, _, _| {
-                        value
-                            .downcast_ref::<DraggedTab>()
-                            .is_some_and(|drag| drag.workspace == workspace_id)
-                    })
-                    .drag_over::<DraggedTab>(|style, _, _, _| {
-                        style
-                            .border_l_2()
-                            .border_color(rgb(semantic(Role::ActionPrimary)))
-                    })
-                    .on_drop(cx.listener(|v, drag: &DraggedTab, w, cx| {
-                        v.drop_tab(drag, None, w, cx);
-                    }))
-                })
                 .child(
                     Button::new("new-repository-tab")
                         .ghost()
@@ -455,6 +468,11 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
+            .child(components::rail::end_events(
+                cx.weak_entity(),
+                Self::finish_tab_drag,
+                Self::cancel_tab_drag,
+            ))
             .on_action(cx.listener(Self::pick))
             .on_action(cx.listener(|v, _: &NewTab, w, cx| {
                 if !v.blocked(w, cx) {
