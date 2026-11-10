@@ -1,4 +1,13 @@
 fn main() {
+    #[cfg(all(windows, feature = "gpui-desktop"))]
+    {
+        println!("cargo:rerun-if-changed=icons/gitcrab.rc");
+        println!("cargo:rerun-if-changed=icons/gitcrab.ico");
+        embed_resource::compile_for("icons/gitcrab.rc", ["gitcrab"], embed_resource::NONE)
+            .manifest_required()
+            .expect("embed GitCrab's Windows icon");
+    }
+
     println!("cargo:rerun-if-changed=src");
     let branch = std::process::Command::new("git")
         .args(["symbolic-ref", "--quiet", "HEAD"])

@@ -1,10 +1,30 @@
 use gpui::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
+
+const LOGO_LIGHT: &str = "gitcrab-light.svg";
+const LOGO_DARK: &str = "gitcrab-dark.svg";
+
+pub fn logo(on_light_surface: bool) -> gpui::Img {
+    gpui::img(gpui::ImageSource::Resource(gpui::Resource::Embedded(
+        if on_light_surface {
+            LOGO_LIGHT
+        } else {
+            LOGO_DARK
+        }
+        .into(),
+    )))
+}
+
 pub struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         Ok(match path {
-            "gitcrab.png" => Some(Cow::Borrowed(include_bytes!("../../icons/32x32.png"))),
+            LOGO_LIGHT => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/gitcrab-light.svg"
+            ))),
+            LOGO_DARK => Some(Cow::Borrowed(include_bytes!(
+                "../../icons/gitcrab-dark.svg"
+            ))),
             "icons/branch.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../icons/native/branch.svg"
             ))),
@@ -70,6 +90,6 @@ impl AssetSource for Assets {
         })
     }
     fn list(&self, _: &str) -> Result<Vec<SharedString>> {
-        Ok(vec!["gitcrab.png".into()])
+        Ok(vec![LOGO_LIGHT.into(), LOGO_DARK.into()])
     }
 }

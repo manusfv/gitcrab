@@ -16,7 +16,7 @@ use gpui_component::{
     menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
     resizable::{h_resizable, resizable_panel},
     tooltip::Tooltip,
-    Disableable, Selectable, Sizable, WindowExt,
+    Disableable, Selectable, Sizable, Theme, WindowExt,
 };
 use std::ops::Range;
 
@@ -1600,12 +1600,7 @@ impl GitCrab {
             .justify_center()
             .gap_3()
             .p_4()
-            .child(
-                img(ImageSource::Resource(Resource::Embedded(
-                    "gitcrab.png".into(),
-                )))
-                .size(px(52.)),
-            )
+            .child(super::assets::logo(!Theme::global(cx).is_dark()).size(px(52.)))
             .child(
                 div()
                     .text_size(type_size(cx, 22.))

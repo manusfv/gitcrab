@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52" viewBox="128 100 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">GitCrab</title>
+  <desc id="desc">Two staggered black and blue crab routes. Arms: 86 units wide with two 45-degree turns. Legs: 118 units wide. Central channel: 40 units wide. Matching open commit rings. Transparent background.</desc>
+  <!-- All straight contour edges use 0, 45 or 90 degrees. Ring radii: 86 and 43. -->
+  <g id="left-route" fill="#111318">
+    <path id="left-body" d="M 453.431458,610 L 559.431458,504 L 736,504 L 800,568 L 692,676 L 620,676 L 454,842 L 418.8772,842 L 362,898.8772 L 362,1020 L 244,1020 L 244,850 L 407.904546,686.095454 L 330,608.190909 L 390.811183,547.379726 Z"/>
+    <path id="left-arm" d="M 420,637.379726 L 292,509.379726 L 292,394 L 350,336" fill="none" stroke="#111318" stroke-width="86" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4"/>
+    <path id="left-commit" fill-rule="evenodd" d="M 483,289 A 86,86 0 1 0 311,289 A 86,86 0 1 0 483,289 Z M 440,289 A 43,43 0 1 1 354,289 A 43,43 0 1 1 440,289 Z"/>
+  </g>
+  <g id="right-route" fill="#668BFF">
+    <path id="right-body" d="M 636.568542,716 L 708.568542,716 L 850,574.568542 L 910.811183,635.379726 L 853.095454,693.095454 L 1010,850 L 1010,1020 L 892,1020 L 892,898.8772 L 835.1228,842 L 778,842 L 704,916 L 512.568542,916 L 474.568542,878 Z"/>
+    <path id="right-arm" d="M 848,637.379726 L 976,509.379726 L 976,394 L 918,336" fill="none" stroke="#668BFF" stroke-width="86" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4"/>
+    <path id="right-commit" fill-rule="evenodd" d="M 957,289 A 86,86 0 1 0 785,289 A 86,86 0 1 0 957,289 Z M 914,289 A 43,43 0 1 1 828,289 A 43,43 0 1 1 914,289 Z"/>
+  </g>
+</svg>
