@@ -9,14 +9,11 @@ default-run = "gitcrab"
 [lib]
 name = "gitcrab_core"
 
-[[example]]
-name = "benchmark"
-path = "scripts/benchmark.rs"
-
 [features]
 default = ["gpui-desktop"]
 gpui-desktop = ["dep:gpui", "dep:gpui-component", "dep:anyhow", "dep:serde_json", "dep:notify", "dep:async-channel", "dep:embed-resource"]
 native-evidence = ["gpui-desktop", "dep:serde_json"]
+
 [[bin]]
 name = "gitcrab"
 path = "src/native/main.rs"
@@ -47,9 +44,3 @@ lto = "thin"
 gpui-component = { path = "vendor/gpui-component" }
 # gpui -> zed-async-tar -> xattr 0.2.3 uses a removed libc Linux alias.
 xattr = { path = "vendor/xattr" }
-
-
-[[example]]
-name = "accessibility-probe"
-path = "scripts/accessibility-probe.rs"
-required-features = ["gpui-desktop"]

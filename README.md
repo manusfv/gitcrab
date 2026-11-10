@@ -97,8 +97,7 @@ GitCrab is under active development. The current focus is local repository workf
 Run these from the repository root:
 
 ```sh
-# Check generated design tokens and Rust formatting.
-node scripts/generate-tokens.mjs --check
+# Check Rust formatting.
 cargo fmt --all -- --check
 
 # Exercise the framework-independent Git, graph, diff, and controller code.
@@ -108,25 +107,13 @@ cargo test --locked --no-default-features --lib
 cargo build --locked --release --bin gitcrab
 ```
 
-Node.js is needed for the design-token check, not to run the desktop application.
-
-For renderer validation, build with the separate `native-evidence` feature. It enables deterministic view selection and readiness markers. The smoke harness requires PowerShell and a working desktop session. On Linux it uses X11 and `scrot`.
-
-```sh
-# Use an isolated output directory to preserve the production build.
-cargo build --locked --release --features native-evidence --bin gitcrab --target-dir target/native-evidence
-pwsh -File scripts/smoke-gpui.ps1 -Executable "$PWD/target/native-evidence/release/gitcrab"
-```
-
-On Windows, append `.exe` to the smoke executable path. The harness refuses an existing output destination. Use its `-OutputRoot` parameter with a new path for subsequent runs.
-
-After building the production binary, run `pwsh -File scripts/package-gpui.ps1 -Name <platform>` to create a local development archive and checksum under `dist/gpui-packages`. Use a platform name such as `windows-x64`. The package includes dependency license notices.
+The optional `native-evidence` feature enables deterministic view selection and readiness markers for renderer diagnostics.
 
 ### Contributing
 
 Bug reports, focused fixes, tests, and documentation improvements are welcome. [Open an issue](https://github.com/manusfv/gitcrab/issues) with your OS, revision, reproduction steps, and relevant Git errors. Use a disposable repository when reporting a mutation issue, and remove private paths and repository content from logs and screenshots.
 
-Before a pull request, run the checks above and describe which behaviors and platforms you verified. Keep renderer evidence separate from production packages.
+Before a pull request, run the checks above and describe which behaviors and platforms you verified.
 
 ## Acknowledgements
 
