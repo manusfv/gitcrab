@@ -29,7 +29,7 @@ mod tests {
     #[test]
     fn catalog_aliases_resolve_in_every_palette() {
         let doc: serde_json::Value =
-            serde_json::from_str(include_str!("../docs/product-design/tokens.json")).unwrap();
+            serde_json::from_str(include_str!("design_tokens.json")).unwrap();
         for id in ["dark", "light"] {
             for (i, name) in crate::design_tokens::ROLE_NAMES.iter().enumerate() {
                 let alias = doc["color"]["semantic"][name].as_str().unwrap();

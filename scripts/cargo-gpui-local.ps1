@@ -13,7 +13,7 @@ Git is expected at C:/Program Files/Git/mingw64/bin. Release builds also require
 the Windows SDK shader compiler (GPUI_FXC_PATH when not discovered automatically).
 The helper sets process-local variables and copies libktmw32.a into the checkout's
 ignored .toolchain/native-lib. It does not provision any of these prerequisites.
-For the standard Rust/MSVC workflow, use cargo directly.
+For the standard Rust/MSVC workflow, see the platform requirements in README.md.
 #>
 param([Parameter(ValueFromRemainingArguments=$true)][string[]]$CargoArgs)
 $ErrorActionPreference='Stop'

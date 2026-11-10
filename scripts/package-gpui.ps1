@@ -23,7 +23,6 @@ if($IsMacOS){
 }elseif($IsWindows){Copy-Item "$root/target/release/gitcrab.exe" "$stage/gitcrab.exe"}
 else{Copy-Item "$root/target/release/gitcrab" "$stage/gitcrab"; & chmod +x "$stage/gitcrab"}
 Copy-Item "$root/LICENSE" $stage
-Copy-Item "$root/THIRD_PARTY.md" $stage
 & "$PSScriptRoot/dependency-notices.ps1" -Destination (Join-Path $stage 'DEPENDENCY-LICENSES.txt')
 if($IsWindows){$archive="$stage.zip";if(Test-Path $archive){throw 'Archive already exists'};Compress-Archive "$stage/*" $archive}
 else{$archive="$stage.tar.gz";if(Test-Path $archive){throw 'Archive already exists'};& tar -czf $archive -C $out "gitcrab-$Name";if($LASTEXITCODE -ne 0){throw 'tar failed'}}
