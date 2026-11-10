@@ -50,7 +50,10 @@ fn display_date(date: &str) -> String {
 }
 
 const GRAPH_LANE_PITCH: f32 = geometry::SIZE_GRAPH_LANE_PITCH;
-const GRAPH_LANE_INSET: f32 = 14.;
+const GRAPH_LANE_INSET: f32 = 35.;
+// At the minimum width, the rightmost drawable lane is the first lane.
+const GRAPH_RIGHT_INSET: f32 =
+    gitcrab_core::history_columns::HistoryColumn::Graph.minimum_width() - GRAPH_LANE_INSET;
 
 fn local_author_images() -> std::collections::HashMap<String, std::path::PathBuf> {
     let Some(directory) = std::env::var_os("GITCRAB_AVATAR_DIR") else {
@@ -72,16 +75,16 @@ fn local_author_images() -> std::collections::HashMap<String, std::path::PathBuf
         .collect()
 }
 
-fn graph_width(lanes: usize) -> f32 {
-    (lanes as f32 * GRAPH_LANE_PITCH + 12.).max(92.)
-}
-
 fn graph_stroke(scale: f32) -> Pixels {
     px((2. * scale).round() / scale)
 }
 
-fn graph_lane_x(origin: Pixels, lane: usize, scale: f32) -> Pixels {
-    let logical = f32::from(origin) + GRAPH_LANE_INSET + lane as f32 * GRAPH_LANE_PITCH;
+fn graph_lane_x(bounds: Bounds<Pixels>, lane: usize, scale: f32) -> Pixels {
+    // Keep the normal lane pitch until a lane hits the rightmost drawable
+    // position. The same mapping keeps nodes and both halves of edges aligned.
+    let last = (f32::from(bounds.size.width) - GRAPH_RIGHT_INSET).max(GRAPH_LANE_INSET);
+    let inset = (GRAPH_LANE_INSET + lane as f32 * GRAPH_LANE_PITCH).min(last);
+    let logical = f32::from(bounds.origin.x) + inset;
     let half_stroke = f32::from(graph_stroke(scale)) / 2.;
     px(((logical - half_stroke) * scale).round() / scale + half_stroke)
 }
@@ -2306,6 +2309,35 @@ mod date_tests {
         );
         for value in ["", "unknown", "not a timestamp at all", "日付なし"] {
             assert_eq!(super::display_date(value), value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod graph_geometry_tests {
+    use super::*;
+    use gitcrab_core::history_columns::HistoryColumn;
+
+    #[::core::prelude::v1::test]
+    fn a_minimized_graph_uses_one_lane_and_separates_lanes_as_it_widens() {
+        let origin = point(px(211.4), px(0.));
+        let wide = Bounds::new(origin, size(px(180.), px(30.)));
+        let minimum = HistoryColumn::Graph.minimum_width();
+        let narrow = Bounds::new(origin, size(px(minimum), px(30.)));
+        let slightly_wider = Bounds::new(origin, size(px(minimum + 8.), px(30.)));
+        for scale in [1., 1.25, 2.] {
+            let first = graph_lane_x(wide, 0, scale);
+            for lane in [0, 1, 3, 50] {
+                assert_eq!(graph_lane_x(narrow, lane, scale), first);
+            }
+            assert_eq!(graph_lane_x(slightly_wider, 0, scale), first);
+            assert!(graph_lane_x(slightly_wider, 1, scale) > first);
+            assert_eq!(
+                graph_lane_x(slightly_wider, 1, scale),
+                graph_lane_x(slightly_wider, 50, scale)
+            );
+            assert!(graph_lane_x(wide, 3, scale) < graph_lane_x(wide, 4, scale));
+            assert!(first + px(9.) < narrow.right());
         }
     }
 }

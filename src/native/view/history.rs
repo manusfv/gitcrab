@@ -136,7 +136,7 @@ impl GitCrab {
                         HistoryColumn::Graph => (canvas(
                             |_, _, _| (),
                             move |bounds, _, w, _| {
-                                let x = graph_lane_x(bounds.origin.x, 0, w.scale_factor());
+                                let x = graph_lane_x(bounds, 0, w.scale_factor());
                                 let y = bounds.origin.y + px(height / 2.);
                                 if has_head {
                                     paint_vertical_lane(
@@ -349,16 +349,16 @@ impl GitCrab {
                                 move |bounds, _, w, _| {
                                     let origin = bounds.origin;
                                     let scale = w.scale_factor();
-                                    let x = |lane| graph_lane_x(origin.x, lane, scale);
+                                    let x = |lane| graph_lane_x(bounds, lane, scale);
                                     let y = origin.y + px(height / 2.);
-                                    let band_x = x(row.lane);
+                                    let center_x = x(row.lane);
                                     let band_y = origin.y + px(3.);
                                     let band_height = bounds.size.height - px(6.);
                                     let band_right = bounds.right();
                                     w.paint_quad(fill(
                                         Bounds::new(
-                                            point(band_x, band_y),
-                                            size(band_right - band_x, band_height),
+                                            point(center_x, band_y),
+                                            size(band_right - center_x, band_height),
                                         ),
                                         branch_tint(color, 0x24),
                                     ));
@@ -374,9 +374,17 @@ impl GitCrab {
                                             .iter()
                                             .map(|e| (e, true))
                                             .chain(row.edges.iter().map(|e| (e, false)))
+                                            .map(|(edge, above)| {
+                                                (
+                                                    x(edge.from_lane),
+                                                    x(edge.to_lane),
+                                                    edge.color,
+                                                    above,
+                                                )
+                                            })
                                     };
-                                    for (edge, above) in
-                                        edges().filter(|(e, _)| e.from_lane == e.to_lane)
+                                    for (from, _, edge_color, above) in
+                                        edges().filter(|(from, to, _, _)| from == to)
                                     {
                                         let (top, bottom) = if above {
                                             (bounds.top(), y)
@@ -385,32 +393,31 @@ impl GitCrab {
                                         };
                                         paint_vertical_lane(
                                             w,
-                                            x(edge.from_lane),
+                                            from,
                                             top,
                                             bottom,
-                                            lanes()[edge.color % lanes().len()],
+                                            lanes()[edge_color % lanes().len()],
                                         );
                                     }
-                                    for (edge, above) in
-                                        edges().filter(|(e, _)| e.from_lane != e.to_lane)
+                                    for (from, to, edge_color, above) in
+                                        edges().filter(|(from, to, _, _)| from != to)
                                     {
                                         let mut path = PathBuilder::stroke(graph_stroke(scale));
                                         let y0 = if above { y - px(height) } else { y };
                                         let y1 = y0 + px(height);
-                                        path.move_to(point(x(edge.from_lane), y0));
+                                        path.move_to(point(from, y0));
                                         path.cubic_bezier_to(
-                                            point(x(edge.to_lane), y1),
-                                            point(x(edge.from_lane), y0 + px(height * 0.6)),
-                                            point(x(edge.to_lane), y1 - px(height * 0.6)),
+                                            point(to, y1),
+                                            point(from, y0 + px(height * 0.6)),
+                                            point(to, y1 - px(height * 0.6)),
                                         );
                                         if let Ok(path) = path.build() {
                                             w.paint_path(
                                                 path,
-                                                rgb(lanes()[edge.color % lanes().len()]),
+                                                rgb(lanes()[edge_color % lanes().len()]),
                                             );
                                         }
                                     }
-                                    let center_x = x(row.lane);
                                     if junction {
                                         let radius = px(6.);
                                         let mut diamond = PathBuilder::fill();

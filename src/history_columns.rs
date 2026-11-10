@@ -33,10 +33,10 @@ impl HistoryColumn {
         }
     }
 
-    pub fn minimum_width(self) -> f32 {
+    pub const fn minimum_width(self) -> f32 {
         match self {
             Self::References => 80.,
-            Self::Graph => 92.,
+            Self::Graph => 54.,
             Self::Message => 200.,
             Self::Sha => 80.,
             Self::Author => 100.,
@@ -160,11 +160,22 @@ mod tests {
         let mut layout = HistoryColumns::default();
         layout.toggle(HistoryColumn::Author);
         layout.toggle(HistoryColumn::Graph);
+        layout.resize(HistoryColumn::Graph, 60.);
         layout.resize(HistoryColumn::Message, 480.);
         layout.move_to(HistoryColumn::Author, HistoryColumn::References, false);
         layout.move_to(HistoryColumn::References, HistoryColumn::Sha, true);
-        let restored: HistoryColumns =
+        let mut restored: HistoryColumns =
             serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
+        restored.normalize();
+        assert_eq!(
+            restored
+                .columns
+                .iter()
+                .find(|entry| entry.column == HistoryColumn::Graph)
+                .unwrap()
+                .width,
+            60.
+        );
         assert_eq!(layout, restored);
         assert_eq!(
             restored.visible().map(|e| e.column).collect::<Vec<_>>(),

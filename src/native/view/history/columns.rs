@@ -26,23 +26,16 @@ impl Render for ResizeColumn {
 }
 
 impl GitCrab {
-    fn history_column_width(&self, entry: &ColumnLayout) -> f32 {
-        if entry.column == HistoryColumn::Graph {
-            entry.width.max(graph_width(self.state.graph.lanes))
-        } else {
-            entry.width
-        }
-    }
     pub(super) fn history_table_width(&self) -> f32 {
         self.preferences
             .history_columns
             .visible()
-            .map(|e| self.history_column_width(e))
+            .map(|entry| entry.width)
             .sum()
     }
     pub(super) fn history_cell(&self, entry: &ColumnLayout) -> Div {
         div()
-            .w(px(self.history_column_width(entry)))
+            .w(px(entry.width))
             .flex_none()
             .h_full()
             .flex()
@@ -121,6 +114,16 @@ impl GitCrab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some((column, start, width)) = self
+            .history_column_resize
+            .take()
+            .filter(|_| cx.has_active_drag())
+        {
+            let width = width + f32::from(event.position.x - start);
+            self.preferences.history_columns.resize(column, width);
+            self.columns_changed(window, cx);
+            return;
+        }
         if self
             .history_column_drag
             .as_ref()
@@ -186,7 +189,7 @@ impl GitCrab {
                 }),
             )
             .on_drag_move(
-                cx.listener(move |v, event: &DragMoveEvent<ResizeColumn>, w, cx| {
+                cx.listener(move |v, event: &DragMoveEvent<ResizeColumn>, _, cx| {
                     let drag = event.drag(cx);
                     if drag.owner != owner {
                         return;
@@ -200,14 +203,15 @@ impl GitCrab {
                     v.preferences
                         .history_columns
                         .resize(column, width + f32::from(event.event.position.x - start));
-                    v.persist_preferences(w, cx);
                     cx.notify();
                 }),
             )
             .children(self.preferences.history_columns.visible().enumerate().map(
                 |(index, entry)| {
                     let column = entry.column;
-                    let width = self.history_column_width(entry);
+                    let width = entry.width;
+                    let minimized_graph =
+                        column == HistoryColumn::Graph && width <= column.minimum_width();
                     let moving = self
                         .history_column_drag
                         .as_ref()
@@ -272,7 +276,17 @@ impl GitCrab {
                                             cx.new(|_| drag.clone())
                                         }
                                     })
-                                    .child(div().truncate().child(column.label())),
+                                    .when(minimized_graph, |el| {
+                                        el.child(
+                                            icon("branch")
+                                                .size(type_size(cx, 14.))
+                                                .text_color(rgb(semantic(Role::TextSecondary))),
+                                        )
+                                        .tooltip(|w, cx| Tooltip::new("Graph").build(w, cx))
+                                    })
+                                    .when(!minimized_graph, |el| {
+                                        el.child(div().truncate().child(column.label()))
+                                    }),
                             )
                             .child(
                                 div()
