@@ -1,58 +1,91 @@
-<h1>
+<h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="icons/gitcrab-lockup-dark.svg">
     <img alt="GitCrab" src="icons/gitcrab-lockup-light.svg" width="300" height="100">
   </picture>
 </h1>
 
-**A native Git desktop client for exploring history, reviewing diffs, and preparing commits.**
+<p align="center"><strong>A native Git desktop client for exploring history, reviewing diffs, and staging hunks.</strong></p>
 
-Built in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui). GitCrab brings a lane-based commit graph, working changes, and commit details into one workspace.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#what-you-can-do">What you can do</a> ·
+  <a href="#contributing">Contributing</a>
+</p>
 
-[Get started](#get-started) · [Features](#features) · [Keyboard shortcuts](#keyboard-shortcuts) · [Development](#development)
+![GitCrab workspace with repository tabs, a color-coded commit graph, and the selected commit’s details](docs/images/gitcrab-workspace.jpg)
 
-## Features
+## Install
 
-- **Follow the history.** Browse branches and tags, inspect commit metadata and changed files, and search loaded history. Load more commits in 500-commit increments.
-- **Customize history columns.** Drag headers to reorder and dividers to resize. Right-click a header to show or hide columns. GitCrab saves the layout automatically, and Reset columns restores the defaults.
-- **Prepare a focused commit.** Review staged and unstaged changes separately. Stage or unstage files, all files, or complete hunks, then write a summary and description.
-- **Read changes your way.** Switch between unified and positional split diffs, inspect original line numbers, highlight whitespace, navigate hunks, and select or copy lines across virtualized rows.
-- **Review local Git operations.** Create branches, check out revisions, merge, cherry-pick, revert, stash, and pop with repository and target context before confirming.
-- **Make room for your work.** Resize panels and adjust interface density, text size, and diff appearance. Save preferences for your next session.
+Prebuilt executables will be published on [GitHub Releases](https://github.com/manusfv/gitcrab/releases). Until then, you can [build GitCrab from source](#build-from-source).
 
-The interface renders through GPUI without a WebView. Git operations run on a dedicated worker, and the Git, graph, and diff code can be tested independently of the desktop renderer.
+1. Install [Git](https://git-scm.com/downloads) so GitCrab can work with your repositories.
+2. When release builds are available, download the asset that matches your operating system and processor architecture.
+3. Launch GitCrab and choose a local repository. GitCrab reopens that repository on your next launch.
 
-## Get started
+## What you can do
 
-### Build and run
+- **Explore history.** Follow branches and tags through the commit graph, search loaded commits, and open a commit to inspect its metadata and changed files. Open multiple repositories in tabs and drag to reorder tabs or history columns.
+- **Review changes.** Switch between unified and side-by-side diffs, jump between hunks, and show whitespace when it matters. Review operations such as checkout, merge, cherry-pick, revert, and stash before applying them.
+- **Prepare a commit.** Open **Working changes**, select a file, and use **Stage hunk** on the change you want to include. Review the staged diff, write a summary and optional description, then commit.
 
-You need [stable Rust](https://www.rust-lang.org/tools/install), [Git](https://git-scm.com/downloads), and the native prerequisites below.
+<details>
+<summary>See the split diff view</summary>
 
-```sh
-git clone https://github.com/manusfv/gitcrab.git
-cd gitcrab
-cargo run --locked --release --bin gitcrab -- /path/to/repository
-```
+![Side-by-side diff of a staged file, with removed lines on the left, added lines on the right, and controls for unstaging each hunk](docs/images/gitcrab-split-diff.jpg)
 
-Replace `/path/to/repository` with a local Git repository. Quote paths containing spaces. Omit the path to reopen the saved repository, or use the native folder picker when no saved repository is available.
+</details>
 
-To build without launching:
+<details>
+<summary>Keyboard shortcuts</summary>
 
-```sh
-cargo build --locked --release --bin gitcrab
-```
+| Action | Windows / Linux | macOS |
+| --- | --- | --- |
+| Open a repository | `Ctrl+O` | `Cmd+O` |
+| Open a new repository tab | `Ctrl+T` | `Cmd+T` |
+| Find in loaded history | `Ctrl+F` | `Cmd+F` |
+| Select the previous or next history row | `↑` / `↓` | `↑` / `↓` |
+| Refresh the repository | `F5` | `F5` |
+| Commit staged changes | `Ctrl+Enter` | `Cmd+Enter` |
+| Select all or copy diff lines | `Ctrl+A` / `Ctrl+C` | `Cmd+A` / `Cmd+C` |
 
-The executable is `target/release/gitcrab` on Linux and macOS, or `target/release/gitcrab.exe` on Windows. Git must also be installed on the machine running the executable. Windows release builds launch without a console window. Debug builds keep the console for diagnostics.
+</details>
 
-### Platform requirements
+## Project status
 
-| Platform | Native requirements |
-| --- | --- |
-| Windows x64 | Rust/MSVC, Visual Studio C++ tools, and the Windows SDK. Release builds need the SDK shader compiler; use `GPUI_FXC_PATH` if discovery needs an explicit path. |
-| Linux x64 | The development libraries below, a supported Vulkan driver, and a working desktop session. |
-| macOS Apple Silicon / Intel | Stable Rust and full Xcode/Metal tools. Each architecture has a separate build. |
+GitCrab is under active development and focuses on local repositories. Fetch, pull, push, remote management, and an integrated conflict editor are future work. Staging supports whole files and hunks.
 
-On Ubuntu 24.04, install the native build dependencies:
+<details>
+<summary>Current technical limits</summary>
+
+- Side-by-side diffs align changes by position. Large patches stay in memory while the interface renders only visible rows.
+- Hunk discard is limited to supported UTF-8 worktree changes with LF line endings.
+- Git commands and hooks run to completion without cancellation or timeouts.
+- Screen readers, IME and dead-key input, Wayland interaction, and multi-monitor DPI transitions need further validation.
+
+</details>
+
+## Contributing
+
+GitCrab is written in Rust with a native [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) interface. The Git, graph, and diff code can be tested independently of the desktop renderer.
+
+Bug reports and focused pull requests are welcome. Include your OS, the GitCrab revision, and steps to reproduce when reporting a bug. [Open an issue](https://github.com/manusfv/gitcrab/issues/new)
+
+### Build from source
+
+You’ll need [stable Rust](https://www.rust-lang.org/tools/install), [Git](https://git-scm.com/downloads), and the native build tools for your platform.
+
+<details>
+<summary>Windows x64</summary>
+
+Use the Rust MSVC toolchain, Visual Studio C++ build tools, and the Windows SDK. Release builds require the SDK shader compiler. If discovery fails, set `GPUI_FXC_PATH` to the path of `fxc.exe`.
+
+</details>
+
+<details>
+<summary>Linux x64</summary>
+
+Use a desktop session with a working Vulkan driver. On Ubuntu 24.04, install the native dependencies with the following command.
 
 ```sh
 sudo apt-get install build-essential pkg-config clang libclang-dev libasound2-dev \
@@ -61,62 +94,36 @@ sudo apt-get install build-essential pkg-config clang libclang-dev libasound2-de
   libvulkan-dev mesa-vulkan-drivers
 ```
 
-### Your first commit
+</details>
 
-1. Open a local repository and select **Working changes** to inspect the index and worktree.
-2. Select a file to review its diff. Stage the intended files or hunks.
-3. Enter a commit summary and optional description, then commit the staged changes.
-4. Select a commit in the graph to inspect its metadata, changed files, and diff.
+<details>
+<summary>macOS · Apple Silicon and Intel</summary>
 
-Use GitCrab alongside your existing Git tools. Remote operations and advanced conflict workflows still require another client or the command line.
+Install full Xcode for the Metal build tools. Build separately for each architecture.
 
-## Keyboard shortcuts
-
-| Action | Windows / Linux | macOS |
-| --- | --- | --- |
-| Open a repository | `Ctrl+O` | `Cmd+O` |
-| Find in loaded history | `Ctrl+F` | `Cmd+F` |
-| Select previous / next history row | `↑` / `↓` | `↑` / `↓` |
-| Refresh repository state | `F5` | `F5` |
-| Commit staged changes | `Ctrl+Enter` | `Cmd+Enter` |
-| Select all / copy diff lines | `Ctrl+A` / `Ctrl+C` | `Cmd+A` / `Cmd+C` |
-
-Shortcuts act in the relevant view or editor. Commit submission requires a valid draft and staged changes. Commit context menus expose additional local operations.
-
-## Project status
-
-GitCrab is under active development. The current focus is local repository workflows.
-
-- **Still to come:** fetch/pull/push, remote management, an integrated conflict editor with continue/abort, line staging, amend/rebase/reset UI, and hosting integrations.
-- **Diff limits:** split alignment is positional and highlighting is lexical. Large patches remain resident in memory even though their displayed rows are virtualized. Reviewed hunk discard supports ordinary LF UTF-8 worktree modifications and rejects unsupported transformations.
-- **Execution limits:** Git subprocesses and hooks do not yet have cancellation or timeouts.
-- **Native acceptance:** screen-reader support, IME/dead-key input, interactive Wayland, multiple monitor/DPI transitions, and oldest supported OS/driver combinations need further validation.
-
-## Development
-
-Run these from the repository root:
+</details>
 
 ```sh
-# Check Rust formatting.
+git clone https://github.com/manusfv/gitcrab.git
+cd gitcrab
+cargo run --locked --release
+```
+
+To open a specific local repository, append `-- "/path/to/repository"` to the `cargo run` command.
+
+<details>
+<summary>Development commands</summary>
+
+```sh
 cargo fmt --all -- --check
-
-# Exercise the framework-independent Git, graph, diff, and controller code.
 cargo test --locked --no-default-features --lib
-
-# Build the production desktop application.
 cargo build --locked --release --bin gitcrab
 ```
 
-The optional `native-evidence` feature enables deterministic view selection and readiness markers for renderer diagnostics.
+The release executable is `target/release/gitcrab.exe` on Windows and `target/release/gitcrab` on Linux and macOS. Git is also required at runtime. The optional `native-evidence` feature enables deterministic view selection and readiness markers for renderer diagnostics.
 
-### Contributing
+</details>
 
-Bug reports, focused fixes, tests, and documentation improvements are welcome. [Open an issue](https://github.com/manusfv/gitcrab/issues) with your OS, revision, reproduction steps, and relevant Git errors. Use a disposable repository when reporting a mutation issue, and remove private paths and repository content from logs and screenshots.
+## License and acknowledgements
 
-Before a pull request, run the checks above and describe which behaviors and platforms you verified.
-
-## Acknowledgements
-
-## License
-
-[MIT](LICENSE). Third-party components retain their respective licenses. See the vendored [gpui-component](vendor/gpui-component/GITCRAB-PATCH.md) and [xattr](vendor/xattr/GITCRAB-PATCH.md) patch notes for provenance.
+GitCrab is licensed under [MIT](LICENSE). See the [gpui-component](vendor/gpui-component/GITCRAB-PATCH.md) and [xattr](vendor/xattr/GITCRAB-PATCH.md) patch notes for third-party provenance.
