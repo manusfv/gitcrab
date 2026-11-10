@@ -29,15 +29,11 @@ Prebuilt executables will be published on [GitHub Releases](https://github.com/m
 - **Review changes.** Switch between unified and side-by-side diffs, jump between hunks, and show whitespace when it matters. Review operations such as checkout, merge, cherry-pick, revert, and stash before applying them.
 - **Prepare a commit.** Open **Working changes**, select a file, and use **Stage hunk** on the change you want to include. Review the staged diff, write a summary and optional description, then commit.
 
-<details>
-<summary>See the split diff view</summary>
+### Split diff
 
 ![Side-by-side diff of a staged file, with removed lines on the left, added lines on the right, and controls for unstaging each hunk](docs/images/gitcrab-split-diff.jpg)
 
-</details>
-
-<details>
-<summary>Keyboard shortcuts</summary>
+### Keyboard shortcuts
 
 | Action | Windows / Linux | macOS |
 | --- | --- | --- |
@@ -48,8 +44,6 @@ Prebuilt executables will be published on [GitHub Releases](https://github.com/m
 | Refresh the repository | `F5` | `F5` |
 | Commit staged changes | `Ctrl+Enter` | `Cmd+Enter` |
 | Select all or copy diff lines | `Ctrl+A` / `Ctrl+C` | `Cmd+A` / `Cmd+C` |
-
-</details>
 
 ## Project status
 
@@ -76,14 +70,13 @@ Bug reports and focused pull requests are welcome. Include your OS, the GitCrab 
 You’ll need [stable Rust](https://www.rust-lang.org/tools/install), [Git](https://git-scm.com/downloads), and the native build tools for your platform.
 
 <details>
-<summary>Windows x64</summary>
+<summary>Platform prerequisites</summary>
+
+#### Windows x64
 
 Use the Rust MSVC toolchain, Visual Studio C++ build tools, and the Windows SDK. Release builds require the SDK shader compiler. If discovery fails, set `GPUI_FXC_PATH` to the path of `fxc.exe`.
 
-</details>
-
-<details>
-<summary>Linux x64</summary>
+#### Linux x64
 
 Use a desktop session with a working Vulkan driver. On Ubuntu 24.04, install the native dependencies with the following command.
 
@@ -94,10 +87,7 @@ sudo apt-get install build-essential pkg-config clang libclang-dev libasound2-de
   libvulkan-dev mesa-vulkan-drivers
 ```
 
-</details>
-
-<details>
-<summary>macOS · Apple Silicon and Intel</summary>
+#### macOS · Apple Silicon and Intel
 
 Install full Xcode for the Metal build tools. Build separately for each architecture.
 
@@ -111,8 +101,7 @@ cargo run --locked --release
 
 To open a specific local repository, append `-- "/path/to/repository"` to the `cargo run` command.
 
-<details>
-<summary>Development commands</summary>
+### Development commands
 
 ```sh
 cargo fmt --all -- --check
@@ -121,8 +110,6 @@ cargo build --locked --release --bin gitcrab
 ```
 
 The release executable is `target/release/gitcrab.exe` on Windows and `target/release/gitcrab` on Linux and macOS. Git is also required at runtime. The optional `native-evidence` feature enables deterministic view selection and readiness markers for renderer diagnostics.
-
-</details>
 
 ## License and acknowledgements
 
