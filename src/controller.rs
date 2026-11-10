@@ -1,5 +1,10 @@
 //! Presentation state and coalesced reads. Independent of any window framework.
-use crate::{diff, git::RepoSnapshot, graph::Graph, service::*};
+use crate::{
+    diff,
+    git::{ReferenceKind, RepoSnapshot},
+    graph::Graph,
+    service::*,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lane {
@@ -37,6 +42,7 @@ pub struct Controller {
     pub snapshot: Option<RepoSnapshot>,
     pub graph: Graph,
     pub selected: Option<String>,
+    previewed_ref: Option<(ReferenceKind, String)>,
     pub files: Vec<crate::git::FileChange>,
     pub patch: Option<Patch>,
     /// Selected review context survives asynchronous reads and refreshes.
@@ -63,6 +69,7 @@ impl Default for Controller {
             snapshot: None,
             graph: Graph::default(),
             selected: None,
+            previewed_ref: None,
             files: vec![],
             patch: None,
             diff_context: None,
@@ -120,6 +127,7 @@ impl Controller {
         self.snapshot = None;
         self.graph = Graph::default();
         self.selected = None;
+        self.previewed_ref = None;
         self.files.clear();
         self.patch = None;
         self.diff_context = None;
@@ -133,11 +141,33 @@ impl Controller {
         self.invalidate(Lane::Details);
         self.invalidate(Lane::Diff);
         self.selected = id.clone();
+        self.previewed_ref = None;
         self.files.clear();
         self.patch = None;
         self.diff_context = None;
         self.reopen = None;
         id.and_then(|id| self.read(Lane::Details, Action::Details { id }))
+    }
+
+    pub fn preview_ref(&mut self, kind: ReferenceKind, name: &str) -> Option<(Lane, Request)> {
+        let Some(id) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.loaded_ref_tip(kind, name))
+        else {
+            self.notice =
+                "Reference tip is outside loaded history. Load more commits to reveal it.".into();
+            return None;
+        };
+        let job = self.select(Some(id.to_owned()));
+        self.previewed_ref = Some((kind, name.to_owned()));
+        job
+    }
+
+    pub fn is_previewing(&self, kind: ReferenceKind, name: &str) -> bool {
+        self.previewed_ref
+            .as_ref()
+            .is_some_and(|(k, n)| *k == kind && n == name)
     }
     pub fn diff(&mut self, path: String, staged: bool) -> Option<(Lane, Request)> {
         self.invalidate(Lane::Diff);
@@ -244,6 +274,11 @@ impl Controller {
                     snapshot,
                     graph,
                 }) => {
+                    if self.previewed_ref.as_ref().is_some_and(|(kind, name)| {
+                        snapshot.loaded_ref_tip(*kind, name) != self.selected.as_deref()
+                    }) {
+                        self.previewed_ref = None;
+                    }
                     self.path = path;
                     self.snapshot = Some(snapshot);
                     self.graph = graph;
@@ -531,6 +566,70 @@ mod tests {
             result,
         }
     }
+    #[test]
+    fn preview_tracks_one_reference_even_when_branches_share_a_tip() {
+        use crate::git::{Commit, LocalBranch, WriteIdentity};
+        let mut c = Controller::default();
+        let mut snapshot = RepoSnapshot {
+            head: "main".into(),
+            head_id: "tip".into(),
+            reviewed: Some(WriteIdentity {
+                symbolic_head: "refs/heads/main".into(),
+                ..Default::default()
+            }),
+            commits: vec![Commit {
+                id: "tip".into(),
+                ..Default::default()
+            }],
+            branches: ["main", "feature", "backup"]
+                .map(|name| LocalBranch {
+                    name: name.into(),
+                    tip: "tip".into(),
+                })
+                .to_vec(),
+            ..Default::default()
+        };
+        c.snapshot = Some(snapshot.clone());
+
+        let (lane, job) = c
+            .preview_ref(ReferenceKind::LocalBranch, "feature")
+            .unwrap();
+        assert_eq!(lane, Lane::Details);
+        assert!(matches!(job.action, Action::Details { id } if id == "tip"));
+        assert_eq!(
+            c.snapshot.as_ref().unwrap().checked_out_branch(),
+            Some("main")
+        );
+        assert!(c.is_previewing(ReferenceKind::LocalBranch, "feature"));
+        assert!(!c.is_previewing(ReferenceKind::LocalBranch, "main"));
+        assert!(!c.is_previewing(ReferenceKind::LocalBranch, "backup"));
+
+        // A checkout elsewhere updates the green marker without losing the preview.
+        snapshot.head = "backup".into();
+        snapshot.reviewed.as_mut().unwrap().symbolic_head = "refs/heads/backup".into();
+        let (_, refresh) = c.refresh().unwrap();
+        c.complete(
+            Lane::Snapshot,
+            reply(
+                &refresh,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot,
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        assert_eq!(
+            c.snapshot.as_ref().unwrap().checked_out_branch(),
+            Some("backup")
+        );
+        assert!(c.is_previewing(ReferenceKind::LocalBranch, "feature"));
+
+        // Selecting the same commit in the graph is not a branch preview.
+        c.select(Some("tip".into()));
+        assert!(!c.is_previewing(ReferenceKind::LocalBranch, "feature"));
+    }
+
     #[test]
     fn rapid_selection_coalesces_and_rejects_old_replies() {
         let mut c = Controller::default();

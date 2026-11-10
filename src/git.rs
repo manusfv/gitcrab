@@ -34,10 +34,23 @@ pub struct WriteIdentity {
     pub symbolic_head: String,
     pub index: Vec<u8>,
 }
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct LocalBranch {
+    pub name: String,
+    pub tip: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceKind {
+    LocalBranch,
+    Remote,
+    Tag,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct RepoSnapshot {
     pub commits: Vec<Commit>,
-    pub branches: Vec<String>,
+    pub branches: Vec<LocalBranch>,
     #[serde(default)]
     pub remote_refs: Vec<String>,
     #[serde(default)]
@@ -95,10 +108,41 @@ impl RepoSnapshot {
             })
     }
 
+    pub fn checked_out_branch(&self) -> Option<&str> {
+        self.reviewed
+            .as_ref()?
+            .symbolic_head
+            .strip_prefix("refs/heads/")
+    }
+
+    pub fn loaded_ref_tip(&self, kind: ReferenceKind, name: &str) -> Option<&str> {
+        match kind {
+            ReferenceKind::LocalBranch => {
+                let tip = &self.branches.iter().find(|b| b.name == name)?.tip;
+                self.commits
+                    .iter()
+                    .any(|c| &c.id == tip)
+                    .then_some(tip.as_str())
+            }
+            ReferenceKind::Remote | ReferenceKind::Tag => {
+                let refs = if kind == ReferenceKind::Remote {
+                    &self.remote_refs
+                } else {
+                    &self.tags
+                };
+                refs.iter().any(|r| r == name).then_some(())?;
+                self.commits
+                    .iter()
+                    .find(|c| c.refs.iter().any(|r| r == name))
+                    .map(|c| c.id.as_str())
+            }
+        }
+    }
+
     pub fn head_label(&self) -> String {
         if self.head_id.is_empty() {
             format!("{} · unborn branch", self.head)
-        } else if !self.branches.contains(&self.head) {
+        } else if self.checked_out_branch().is_none() {
             format!("Detached HEAD · {}", self.head)
         } else {
             self.head.clone()
@@ -183,17 +227,15 @@ impl Git {
         for line in refs.lines() {
             let fields: Vec<_> = line.split('\0').collect();
             if fields.len() == 4 {
-                let list = if fields[3].starts_with("refs/heads/") {
-                    Some(&mut branches)
+                if let Some(name) = fields[3].strip_prefix("refs/heads/") {
+                    branches.push(LocalBranch {
+                        name: name.into(),
+                        tip: fields[0].into(),
+                    });
                 } else if fields[3].starts_with("refs/remotes/") {
-                    Some(&mut remote_refs)
+                    remote_refs.push(fields[1].to_string());
                 } else if fields[3].starts_with("refs/tags/") {
-                    Some(&mut tags)
-                } else {
-                    None
-                };
-                if let Some(list) = list {
-                    list.push(fields[1].to_string());
+                    tags.push(fields[1].to_string());
                 }
                 let target = if fields[2].is_empty() {
                     fields[0]
@@ -1244,6 +1286,7 @@ mod tests {
         git.checkout(&root).unwrap();
         assert!(git.run(&["symbolic-ref", "--quiet", "HEAD"]).is_err());
         let detached = git.snapshot(100).unwrap();
+        assert_eq!(detached.checked_out_branch(), None);
         assert!(detached
             .commits
             .iter()

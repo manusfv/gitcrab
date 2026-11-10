@@ -7,6 +7,7 @@ use super::preferences::Preferences;
 use super::theme::*;
 use gitcrab_core::{
     controller::{Controller, Lane},
+    git::ReferenceKind,
     service::{Action, Failure, Operation, Request, Response, Service},
 };
 use gpui::{prelude::*, *};
@@ -812,6 +813,27 @@ impl GitCrab {
         self.dispatch(j, window, cx);
     }
     fn select(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal_selection(id.as_deref(), window);
+        let job = self.state.select(id);
+        self.dispatch(job, window, cx);
+    }
+
+    fn preview_ref(
+        &mut self,
+        kind: ReferenceKind,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let job = self.state.preview_ref(kind, name);
+        if self.state.is_previewing(kind, name) {
+            let id = self.state.selected.clone();
+            self.reveal_selection(id.as_deref(), window);
+        }
+        self.dispatch(job, window, cx);
+    }
+
+    fn reveal_selection(&mut self, id: Option<&str>, window: &mut Window) {
         #[cfg(feature = "native-evidence")]
         {
             self.feedback_start = Some((std::time::Instant::now(), "selection-to-next-frame"));
@@ -819,9 +841,7 @@ impl GitCrab {
         self.selection = None;
         self.focus.focus(window);
         if let Some(snapshot) = &self.state.snapshot {
-            if let Some(index) = id
-                .as_ref()
-                .and_then(|id| snapshot.commits.iter().position(|c| &c.id == id))
+            if let Some(index) = id.and_then(|id| snapshot.commits.iter().position(|c| c.id == id))
             {
                 self.history_scroll
                     .scroll_to_item(index + 1, ScrollStrategy::Center);
@@ -832,8 +852,6 @@ impl GitCrab {
                     "This commit is outside loaded history. Load more commits to reveal it.".into();
             }
         }
-        let j = self.state.select(id);
-        self.dispatch(j, window, cx);
     }
     fn file(&mut self, path: String, staged: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.constrained_inspector = false;
@@ -1427,11 +1445,11 @@ impl GitCrab {
             );
             let mut tree = div().flex().flex_col().min_w_0();
             let mut groups = std::collections::BTreeSet::new();
-            for (i, b) in s
+            for b in s
                 .branches
                 .iter()
-                .enumerate()
-                .filter(|(_, b)| !local_collapsed && b.to_lowercase().contains(&query))
+                .map(|branch| &branch.name)
+                .filter(|b| !local_collapsed && b.to_lowercase().contains(&query))
             {
                 let parts = b.split('/').collect::<Vec<_>>();
                 let mut hidden = false;
@@ -1476,43 +1494,61 @@ impl GitCrab {
                 if hidden {
                     continue;
                 }
-                let id = s
-                    .commits
-                    .iter()
-                    .find(|c| c.refs.contains(b))
-                    .map(|c| c.id.clone());
                 let branch = b.clone();
-                let current = b == &s.head;
-                let selected = id.is_some() && id == self.state.selected;
+                let current = s.checked_out_branch() == Some(b.as_str());
+                let previewed = self.state.is_previewing(ReferenceKind::LocalBranch, b);
+                let hint = match (current, previewed) {
+                    (true, true) => "Checked out · Previewing",
+                    (true, false) => "Checked out · Click to preview",
+                    (false, true) => "Previewing · Double-click to checkout",
+                    (false, false) => "Click to preview · Double-click to checkout",
+                };
                 tree = tree.child(
-                    self.button(("branch", i), "")
-                        .icon(icon(if current { "check" } else { "branch" }).text_color(rgb(
-                            if current { semantic(Role::ActionPrimary) } else { semantic(Role::TextMuted) },
-                        )))
-                        .child(div().min_w_0().truncate().child(parts.last().unwrap().to_string()))
+                    self.button(SharedString::from(format!("local-branch-{b}")), "")
+                        .icon(
+                            icon(if current { "check" } else { "branch" }).text_color(rgb(
+                                if current {
+                                    semantic(Role::StatusSuccessFg)
+                                } else {
+                                    semantic(Role::TextMuted)
+                                },
+                            )),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(parts.last().unwrap().to_string()),
+                        )
                         .w_full()
                         .justify_start()
                         .h(px(24.))
                         .pl(px(20. + (parts.len() - 1) as f32 * 12.))
                         .pr_2()
-                        .text_color(rgb(if current || selected { semantic(Role::TextDefault) } else { semantic(Role::TextMuted) }))
+                        .text_color(rgb(if current || previewed {
+                            semantic(Role::TextDefault)
+                        } else {
+                            semantic(Role::TextMuted)
+                        }))
                         .when(current, |b| b.font_weight(FontWeight::SEMIBOLD))
-                        .map(|button| Self::highlight_sidebar_row(button, current || selected))
-                        .tooltip(format!("{} · Double-click to checkout", b))
+                        .when(current && !previewed, |button| {
+                            button.bg(rgb(semantic(Role::StatusSuccessBg)))
+                        })
+                        .map(|button| Self::highlight_sidebar_row(button, previewed))
+                        .tooltip(format!("{b} · {hint}"))
                         .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| {
                             if e.click_count() == 2 {
                                 v.review(Operation::Checkout, branch.clone(), w, cx);
                             } else {
-                                if let Some(id)=id.clone() { v.select(Some(id), w, cx); }
-                                else { v.state.notice="Branch tip is outside loaded history. Use Load more commits to reveal it.".into();cx.notify(); }
+                                v.preview_ref(ReferenceKind::LocalBranch, &branch, w, cx);
                             }
                         })),
                 );
             }
             nav = nav.child(tree);
-            for (kind, glyph, refs) in [
-                ("Remotes", "remote", &s.remote_refs),
-                ("Tags", "tag", &s.tags),
+            for (kind, glyph, ref_kind, refs) in [
+                ("Remotes", "remote", ReferenceKind::Remote, &s.remote_refs),
+                ("Tags", "tag", ReferenceKind::Tag, &s.tags),
             ] {
                 let key = format!("{}|{kind}", self.state.path);
                 let collapsed = self.preferences.collapsed.contains(&key);
@@ -1538,14 +1574,20 @@ impl GitCrab {
                     .enumerate()
                     .filter(|(_, r)| !collapsed && r.to_lowercase().contains(&query))
                 {
-                    let id = s
-                        .commits
-                        .iter()
-                        .find(|c| c.refs.contains(reference))
-                        .map(|c| c.id.clone());
-                    nav=nav.child(self.button(SharedString::from(format!("{kind}-{i}")),reference.clone()).icon(icon(glyph)).w_full().justify_start().h(type_size(cx,26.)).tooltip(reference.clone())
-                        .map(|button| Self::highlight_sidebar_row(button, id.is_some() && id == self.state.selected))
-                        .on_click(cx.listener(move |v,_,w,cx|{if let Some(id)=id.clone(){v.select(Some(id),w,cx);}else{v.state.notice="Reference tip is outside loaded history. Load more commits to reveal it.".into();cx.notify();}})));
+                    let previewed = self.state.is_previewing(ref_kind, reference);
+                    let reference = reference.clone();
+                    nav = nav.child(
+                        self.button(SharedString::from(format!("{kind}-{i}")), reference.clone())
+                            .icon(icon(glyph))
+                            .w_full()
+                            .justify_start()
+                            .h(type_size(cx, 26.))
+                            .tooltip(reference.clone())
+                            .map(|button| Self::highlight_sidebar_row(button, previewed))
+                            .on_click(cx.listener(move |v, _, w, cx| {
+                                v.preview_ref(ref_kind, &reference, w, cx);
+                            })),
+                    );
                 }
             }
             nav = nav.child(heading(format!("Stashes · {}", s.stash_count)));
@@ -1908,7 +1950,7 @@ impl Render for GitCrab {
 
         let menu_focus = self.focus.clone();
         let mut toolbar = div()
-            .h(type_size(cx,TOOLBAR_HEIGHT))
+            .h(type_size(cx, TOOLBAR_HEIGHT))
             .bg(rgb(semantic(Role::SurfaceChrome)))
             .flex_none()
             .flex()
@@ -1964,19 +2006,44 @@ impl Render for GitCrab {
             )
             .child(separator())
             .child({
-                let branches=self.state.snapshot.as_ref().map(|s|s.branches.clone()).unwrap_or_default();
-                let weak=cx.weak_entity();
-                components::selector("branch-selector","Checked out",branch.clone(),"branch")
-                    .tooltip(format!("{} · Choose a branch to reveal its history; checkout requires review",branch))
-                    .dropdown_menu(move |mut menu,_,_|{
-                        for branch in &branches {let branch=branch.clone();let weak=weak.clone();
-                            menu=menu.item(PopupMenuItem::new(branch.clone()).on_click(move |_,w,cx|{
-                                let _=weak.update(cx,|v,cx|{
-                                    let id=v.state.snapshot.as_ref().and_then(|s|s.commits.iter().find(|c|c.refs.contains(&branch))).map(|c|c.id.clone());
-                                    if let Some(id)=id {v.select(Some(id),w,cx);}else{v.state.notice="Branch tip is outside loaded history. Load more commits to reveal it.".into();cx.notify();}
-                                });
-                            }));
-                        }menu
+                let branches = self
+                    .state
+                    .snapshot
+                    .as_ref()
+                    .map(|s| {
+                        s.branches
+                            .iter()
+                            .map(|b| {
+                                let name = b.name.clone();
+                                let current = s.checked_out_branch() == Some(name.as_str());
+                                let previewed =
+                                    self.state.is_previewing(ReferenceKind::LocalBranch, &name);
+                                (name, current, previewed)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let weak = cx.weak_entity();
+                components::selector("branch-selector", "Checked out", branch.clone(), "branch")
+                    .tooltip(format!("{branch} · Choose a branch to preview its history"))
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for (name, current, previewed) in &branches {
+                            let label = if *previewed {
+                                format!("{name} · Previewing")
+                            } else {
+                                name.clone()
+                            };
+                            let name = name.clone();
+                            let weak = weak.clone();
+                            menu = menu.item(PopupMenuItem::new(label).checked(*current).on_click(
+                                move |_, w, cx| {
+                                    let _ = weak.update(cx, |v, cx| {
+                                        v.preview_ref(ReferenceKind::LocalBranch, &name, w, cx);
+                                    });
+                                },
+                            ));
+                        }
+                        menu
                     })
             });
         let narrow_toolbar =
