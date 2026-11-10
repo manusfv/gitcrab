@@ -13,7 +13,7 @@
   <a href="#contributing">Contributing</a>
 </p>
 
-![GitCrab workspace with a branch sidebar, a color-coded commit graph, and the selected commit’s details](docs/images/gitcrab-workspace.jpg)
+![GitCrab showing the commit graph and the feature/diff branch preview while main stays checked out](docs/images/gitcrab-workspace.jpg)
 
 ## Install
 
