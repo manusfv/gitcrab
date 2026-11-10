@@ -2,6 +2,26 @@ use super::*;
 use gitcrab_core::history_columns::{HistoryColumn, HistoryColumns};
 mod columns;
 
+const HISTORY_CELL_INSET: Rems = Rems(0.5);
+
+#[derive(Clone, Copy)]
+enum ReferenceSide {
+    Left,
+    Right,
+}
+
+fn paint_reference_link(w: &mut Window, start: Pixels, end: Pixels, y: Pixels, color: usize) {
+    let scale = w.scale_factor();
+    let top = px((f32::from(y) * scale - 0.5).round() / scale);
+    w.paint_quad(fill(
+        Bounds::new(
+            point(start.min(end), top),
+            size((end - start).abs(), px(1. / scale)),
+        ),
+        branch_tint(color, 0x70),
+    ));
+}
+
 impl GitCrab {
     pub(super) fn column_drag_events(&self, cx: &Context<Self>) -> impl IntoElement {
         components::rail::end_events(
@@ -261,6 +281,19 @@ impl GitCrab {
             .trim_start_matches("tag: ")
             .trim_start_matches("HEAD -> ")
             .to_string();
+        let columns = &self.preferences.history_columns;
+        let reference_side = if refs.is_empty() {
+            None
+        } else {
+            columns
+                .visible()
+                .zip(columns.visible().skip(1))
+                .find_map(|(left, right)| match (left.column, right.column) {
+                    (HistoryColumn::References, HistoryColumn::Graph) => Some(ReferenceSide::Left),
+                    (HistoryColumn::Graph, HistoryColumn::References) => Some(ReferenceSide::Right),
+                    _ => None,
+                })
+        };
         let color = row.color;
         let junction = row.is_junction(&incoming);
         let mut el = div()
@@ -369,6 +402,13 @@ impl GitCrab {
                                         ),
                                         branch_tint(color, 0x70),
                                     ));
+                                    if let Some(side) = reference_side {
+                                        let edge = match side {
+                                            ReferenceSide::Left => bounds.left(),
+                                            ReferenceSide::Right => bounds.right(),
+                                        };
+                                        paint_reference_link(w, edge, center_x, y, color);
+                                    }
                                     let edges = || {
                                         incoming
                                             .iter()
@@ -478,7 +518,41 @@ impl GitCrab {
                         .child(display_date(&c.date))
                         .into_any_element(),
                 };
-                self.history_cell(entry).child(cell).into_any_element()
+                self.history_cell(entry)
+                    .when_some(
+                        reference_side.filter(|_| entry.column == HistoryColumn::References),
+                        |frame, side| {
+                            // This segment spans the reference cell's padding and
+                            // meets the graph segment at their shared boundary.
+                            frame.relative().child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, w, _| {
+                                        let inset = w.rem_size() * HISTORY_CELL_INSET.0;
+                                        let (edge, badge) = match side {
+                                            ReferenceSide::Left => {
+                                                (bounds.right(), bounds.right() - inset)
+                                            }
+                                            ReferenceSide::Right => {
+                                                (bounds.left(), bounds.left() + inset)
+                                            }
+                                        };
+                                        paint_reference_link(
+                                            w,
+                                            badge,
+                                            edge,
+                                            bounds.center().y,
+                                            color,
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                        },
+                    )
+                    .child(cell)
+                    .into_any_element()
             }))
             .on_click(cx.listener(move |v, _, w, cx| v.select(Some(id.clone()), w, cx)));
         if c.id == snap.head_id {

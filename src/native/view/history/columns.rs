@@ -41,7 +41,9 @@ impl GitCrab {
             .flex()
             .items_center()
             .overflow_hidden()
-            .when(entry.column != HistoryColumn::Graph, |el| el.px_2())
+            .when(entry.column != HistoryColumn::Graph, |el| {
+                el.px(HISTORY_CELL_INSET)
+            })
     }
     fn columns_changed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.preference_save = None;
