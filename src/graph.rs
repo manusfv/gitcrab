@@ -75,8 +75,20 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
             i
         };
         let color = lanes[lane].as_ref().unwrap().1;
+        if let Some(previous) = graph.rows.last_mut() {
+            for edge in &mut previous.edges {
+                if edge.parent == commit.id {
+                    edge.to_lane = lane;
+                }
+            }
+        }
         let before = lanes.clone();
-        lanes[lane] = None;
+        // Several lanes can approach this commit. Free all of them below it.
+        for occupant in &mut lanes {
+            if occupant.as_ref().is_some_and(|(id, _)| id == &commit.id) {
+                *occupant = None;
+            }
+        }
         let mut parent_lanes = Vec::new();
         for (index, parent) in commit.parents.iter().enumerate() {
             let dest = if let Some(i) = lanes
@@ -106,19 +118,27 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
                 lanes[i] = Some((parent.clone(), parent_color));
                 i
             };
-            parent_lanes.push(dest);
+            if index == 0 && dest < lane {
+                // Keep a branch to the right of its shared parent until that
+                // parent arrives. The leftmost lane remains the parent's lane.
+                lanes[lane] = Some((parent.clone(), color));
+                parent_lanes.push(lane);
+            } else {
+                parent_lanes.push(dest);
+            }
         }
         let mut edges = Vec::new();
         for (i, occupant) in before.iter().enumerate() {
-            if i != lane {
-                if let Some((id, c)) = occupant {
-                    edges.push(Edge {
-                        from_lane: i,
-                        to_lane: i,
-                        color: *c,
-                        parent: id.clone(),
-                    });
+            if let Some((id, c)) = occupant {
+                if id == &commit.id {
+                    continue;
                 }
+                edges.push(Edge {
+                    from_lane: i,
+                    to_lane: i,
+                    color: *c,
+                    parent: id.clone(),
+                });
             }
         }
         for dest in parent_lanes {
@@ -204,6 +224,38 @@ mod tests {
         assert_eq!(graph.rows[4].lane, 0);
         assert!(graph.rows[5].edges.is_empty());
         assert_ne!(graph.rows[4].color, graph.rows[5].color);
+    }
+
+    #[test]
+    fn branches_keep_their_lanes_until_the_shared_parent_row() {
+        let commits = [
+            c("merge", &["main", "feature", "side"]),
+            c("main", &["base"]),
+            c("feature", &["base"]),
+            c("side", &["base"]),
+            c("unrelated", &[]),
+            c("base", &[]),
+            c("later", &[]),
+        ];
+        let graph = layout(&commits);
+        let feature = &graph.rows[2];
+        let side = &graph.rows[3];
+        let unrelated = &graph.rows[4];
+        let base = &graph.rows[5];
+        assert_eq!(unrelated.lane, 3);
+        for branch in [feature, side] {
+            assert!(branch.edges.iter().any(|edge| edge.parent == "base"
+                && edge.from_lane == branch.lane
+                && edge.to_lane == branch.lane
+                && edge.color == branch.color));
+            assert!(unrelated.edges.iter().any(|edge| edge.parent == "base"
+                && edge.from_lane == branch.lane
+                && edge.to_lane == base.lane
+                && edge.color == branch.color));
+        }
+        assert!(base.is_junction(&unrelated.edges));
+        assert!(base.edges.is_empty());
+        assert_eq!(graph.rows[6].lane, 0);
     }
     #[test]
     fn loading_more_history_does_not_move_existing_rows() {

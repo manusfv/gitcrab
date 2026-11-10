@@ -22,6 +22,28 @@ fn paint_reference_link(w: &mut Window, start: Pixels, end: Pixels, y: Pixels, c
     ));
 }
 
+fn paint_lane_corner(
+    w: &mut Window,
+    junction: Point<Pixels>,
+    lane_x: Pixels,
+    row_edge: Pixels,
+    color: u32,
+) {
+    let run = lane_x - junction.x;
+    let rise = row_edge - junction.y;
+    let radius = px(6.).min(run.abs()).min(rise.abs());
+    let bend_x = lane_x - if run < px(0.) { -radius } else { radius };
+    let bend_y = junction.y + if rise < px(0.) { -radius } else { radius };
+    let mut path = PathBuilder::stroke(graph_stroke(w.scale_factor()));
+    path.move_to(junction);
+    path.line_to(point(bend_x, junction.y));
+    path.curve_to(point(lane_x, bend_y), point(lane_x, junction.y));
+    path.line_to(point(lane_x, row_edge));
+    if let Ok(path) = path.build() {
+        w.paint_path(path, rgb(color));
+    }
+}
+
 impl GitCrab {
     pub(super) fn column_drag_events(&self, cx: &Context<Self>) -> impl IntoElement {
         components::rail::end_events(
@@ -124,6 +146,7 @@ impl GitCrab {
     ) -> AnyElement {
         let height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
             .max(self.preferences.font_size * 20. / 13. + 8.);
+        let lane_count = self.state.graph.lanes;
         if index == 0 {
             let has_head = self
                 .state
@@ -156,7 +179,8 @@ impl GitCrab {
                         HistoryColumn::Graph => (canvas(
                             |_, _, _| (),
                             move |bounds, _, w, _| {
-                                let x = graph_lane_x(bounds, 0, w.scale_factor());
+                                let x =
+                                    graph_lane_positions(bounds, lane_count, w.scale_factor())(0);
                                 let y = bounds.origin.y + px(height / 2.);
                                 if has_head {
                                     paint_vertical_lane(
@@ -245,6 +269,7 @@ impl GitCrab {
             || c.id.contains(&search)
             || c.author.to_lowercase().contains(&search);
         let row = self.state.graph.rows[i].clone();
+        let next_lane = self.state.graph.rows.get(i + 1).map(|row| row.lane);
         let mut incoming = i
             .checked_sub(1)
             .map(|p| self.state.graph.rows[p].edges.clone())
@@ -382,8 +407,9 @@ impl GitCrab {
                                 move |bounds, _, w, _| {
                                     let origin = bounds.origin;
                                     let scale = w.scale_factor();
-                                    let x = |lane| graph_lane_x(bounds, lane, scale);
-                                    let y = origin.y + px(height / 2.);
+                                    let x = graph_lane_positions(bounds, lane_count, scale);
+                                    let center_y = bounds.center().y;
+                                    let y = snap_graph_stroke_center(center_y, scale);
                                     let center_x = x(row.lane);
                                     let band_y = origin.y + px(3.);
                                     let band_height = bounds.size.height - px(6.);
@@ -407,56 +433,52 @@ impl GitCrab {
                                             ReferenceSide::Left => bounds.left(),
                                             ReferenceSide::Right => bounds.right(),
                                         };
-                                        paint_reference_link(w, edge, center_x, y, color);
+                                        paint_reference_link(w, edge, center_x, center_y, color);
                                     }
-                                    let edges = || {
-                                        incoming
-                                            .iter()
-                                            .map(|e| (e, true))
-                                            .chain(row.edges.iter().map(|e| (e, false)))
-                                            .map(|(edge, above)| {
-                                                (
-                                                    x(edge.from_lane),
-                                                    x(edge.to_lane),
-                                                    edge.color,
-                                                    above,
-                                                )
-                                            })
-                                    };
-                                    for (from, _, edge_color, above) in
-                                        edges().filter(|(from, to, _, _)| from == to)
-                                    {
+                                    let edges = incoming
+                                        .iter()
+                                        .map(|edge| (edge, true, Some(row.lane)))
+                                        .chain(
+                                            row.edges.iter().map(|edge| (edge, false, next_lane)),
+                                        );
+                                    let mut corners = Vec::new();
+                                    for (edge, above, lower_lane) in edges {
+                                        let from = x(edge.from_lane);
+                                        let to = x(edge.to_lane);
+                                        let edge_color = lanes()[edge.color % lanes().len()];
+                                        // Put a leftward turn on the lower row only when it meets that row's node.
+                                        let turns_below =
+                                            from > to && lower_lane == Some(edge.to_lane);
                                         let (top, bottom) = if above {
                                             (bounds.top(), y)
                                         } else {
                                             (y, bounds.bottom())
                                         };
-                                        paint_vertical_lane(
-                                            w,
-                                            from,
-                                            top,
-                                            bottom,
-                                            lanes()[edge_color % lanes().len()],
-                                        );
-                                    }
-                                    for (from, to, edge_color, above) in
-                                        edges().filter(|(from, to, _, _)| from != to)
-                                    {
-                                        let mut path = PathBuilder::stroke(graph_stroke(scale));
-                                        let y0 = if above { y - px(height) } else { y };
-                                        let y1 = y0 + px(height);
-                                        path.move_to(point(from, y0));
-                                        path.cubic_bezier_to(
-                                            point(to, y1),
-                                            point(from, y0 + px(height * 0.6)),
-                                            point(to, y1 - px(height * 0.6)),
-                                        );
-                                        if let Ok(path) = path.build() {
-                                            w.paint_path(
-                                                path,
-                                                rgb(lanes()[edge_color % lanes().len()]),
-                                            );
+                                        if from != to && above == turns_below {
+                                            let (junction_x, lane_x, row_edge) = if above {
+                                                (to, from, top)
+                                            } else {
+                                                (from, to, bottom)
+                                            };
+                                            let span = edge.from_lane.abs_diff(edge.to_lane);
+                                            corners.push((
+                                                span, junction_x, lane_x, row_edge, edge_color,
+                                            ));
+                                        } else {
+                                            let lane_x = if turns_below { from } else { to };
+                                            paint_vertical_lane(w, lane_x, top, bottom, edge_color);
                                         }
+                                    }
+                                    // Paint longer runs first so each nearer branch keeps its color at the turn.
+                                    corners.sort_by_key(|corner| std::cmp::Reverse(corner.0));
+                                    for (_, junction_x, lane_x, row_edge, edge_color) in corners {
+                                        paint_lane_corner(
+                                            w,
+                                            point(junction_x, y),
+                                            lane_x,
+                                            row_edge,
+                                            edge_color,
+                                        );
                                     }
                                     if junction {
                                         let radius = px(6.);

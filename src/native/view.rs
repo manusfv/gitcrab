@@ -79,14 +79,27 @@ fn graph_stroke(scale: f32) -> Pixels {
     px((2. * scale).round() / scale)
 }
 
-fn graph_lane_x(bounds: Bounds<Pixels>, lane: usize, scale: f32) -> Pixels {
-    // Keep the normal lane pitch until a lane hits the rightmost drawable
-    // position. The same mapping keeps nodes and both halves of edges aligned.
-    let last = (f32::from(bounds.size.width) - GRAPH_RIGHT_INSET).max(GRAPH_LANE_INSET);
-    let inset = (GRAPH_LANE_INSET + lane as f32 * GRAPH_LANE_PITCH).min(last);
-    let logical = f32::from(bounds.origin.x) + inset;
-    let half_stroke = f32::from(graph_stroke(scale)) / 2.;
-    px(((logical - half_stroke) * scale).round() / scale + half_stroke)
+fn snap_graph_stroke_center(center: Pixels, scale: f32) -> Pixels {
+    let half_stroke = graph_stroke(scale) / 2.;
+    let edge = (f32::from(center - half_stroke) * scale).round() / scale;
+    px(edge) + half_stroke
+}
+
+fn graph_lane_positions(
+    bounds: Bounds<Pixels>,
+    lane_count: usize,
+    scale: f32,
+) -> impl Fn(usize) -> Pixels {
+    let span = (f32::from(bounds.size.width) - GRAPH_LANE_INSET - GRAPH_RIGHT_INSET).max(0.);
+    let span = (span * scale).floor();
+    let gaps = lane_count.saturating_sub(1).max(1) as f32;
+    let min_pitch = (f32::from(graph_stroke(scale)) * scale).round();
+    let max_pitch = (GRAPH_LANE_PITCH * scale).round();
+    let pitch = (span / gaps).floor().clamp(min_pitch, max_pitch);
+    // If the strokes no longer fit side by side, share the last full slot.
+    let last_lane = (span / pitch) as usize;
+    let first = snap_graph_stroke_center(bounds.origin.x + px(GRAPH_LANE_INSET), scale);
+    move |lane| first + px(lane.min(last_lane) as f32 * pitch / scale)
 }
 
 fn paint_vertical_lane(w: &mut Window, x: Pixels, top: Pixels, bottom: Pixels, color: u32) {
@@ -2324,23 +2337,41 @@ mod graph_geometry_tests {
     #[::core::prelude::v1::test]
     fn a_minimized_graph_uses_one_lane_and_separates_lanes_as_it_widens() {
         let origin = point(px(211.4), px(0.));
-        let wide = Bounds::new(origin, size(px(180.), px(30.)));
         let minimum = HistoryColumn::Graph.minimum_width();
         let narrow = Bounds::new(origin, size(px(minimum), px(30.)));
         let slightly_wider = Bounds::new(origin, size(px(minimum + 8.), px(30.)));
         for scale in [1., 1.25, 2.] {
-            let first = graph_lane_x(wide, 0, scale);
-            for lane in [0, 1, 3, 50] {
-                assert_eq!(graph_lane_x(narrow, lane, scale), first);
+            let collapsed = graph_lane_positions(narrow, 50, scale);
+            let expanded = graph_lane_positions(slightly_wider, 50, scale);
+            let first = collapsed(0);
+            for lane in [1, 3, 49] {
+                assert_eq!(collapsed(lane), first);
             }
-            assert_eq!(graph_lane_x(slightly_wider, 0, scale), first);
-            assert!(graph_lane_x(slightly_wider, 1, scale) > first);
-            assert_eq!(
-                graph_lane_x(slightly_wider, 1, scale),
-                graph_lane_x(slightly_wider, 50, scale)
-            );
-            assert!(graph_lane_x(wide, 3, scale) < graph_lane_x(wide, 4, scale));
+            assert_eq!(expanded(0), first);
+            assert!(expanded(1) > first);
+            assert!(expanded(3) > expanded(2));
+            assert_eq!(expanded(10), expanded(49));
             assert!(first + px(9.) < narrow.right());
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn five_graph_lanes_have_equal_pixel_aligned_gaps_at_default_and_wide_widths() {
+        let origin = point(px(211.4), px(0.));
+        for scale in [1., 1.25, 1.5, 2.] {
+            for width in [100., 180.] {
+                let bounds = Bounds::new(origin, size(px(width), px(30.)));
+                let x = graph_lane_positions(bounds, 5, scale);
+                let gap = f32::from(x(1) - x(0)) * scale;
+                assert!(gap > 0.);
+                for lane in 1..5 {
+                    let actual_gap = f32::from(x(lane) - x(lane - 1)) * scale;
+                    assert!((actual_gap - gap).abs() < 0.001);
+                    let edge = f32::from(x(lane) - graph_stroke(scale) / 2.) * scale;
+                    assert!((edge - edge.round()).abs() < 0.001);
+                }
+                assert!(x(4) + px(9.) < bounds.right());
+            }
         }
     }
 }
