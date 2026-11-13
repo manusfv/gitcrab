@@ -934,16 +934,7 @@ impl GitCrab {
             menu = menu
                 .item(
                     PopupMenuItem::new("Create branch here…").on_click(move |_, w, cx| {
-                        create_view.update(cx, |v, cx| {
-                            v.review(
-                                Operation::CreateBranchAt {
-                                    start: start.clone(),
-                                },
-                                String::new(),
-                                w,
-                                cx,
-                            )
-                        })
+                        create_view.update(cx, |v, cx| v.prompt_branch(Some(start.clone()), w, cx))
                     }),
                 )
                 .separator();
@@ -960,7 +951,7 @@ impl GitCrab {
                 let short = target.chars().take(8).collect::<String>();
                 let label = match availability.reason() {
                     Some(reason) => format!("{} {short} — {reason}", command.label()),
-                    None => format!("{} {short}…", command.label()),
+                    None => format!("{} {short}", command.label()),
                 };
                 menu = menu.item(
                     PopupMenuItem::new(label)

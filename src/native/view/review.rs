@@ -637,6 +637,12 @@ impl GitCrab {
                     .relative()
                     .flex_1()
                     .min_h_0()
+                    // The previous patch stays in place, dimmed, until this
+                    // tab's write is reflected, instead of blanking the pane.
+                    .when(
+                        !self.state.patch_ready() && (self.state.busy || self.own_write),
+                        |el| el.opacity(0.55),
+                    )
                     .child(
                         uniform_list(
                             SharedString::from(format!("diff-{}-{}", p.path, self.split_active)),
@@ -705,11 +711,16 @@ impl GitCrab {
                         format!("{total} hunks, all in view")
                     }),
             );
-            // Full-size actions for the hunk in view; the header buttons stay compact.
+            // Full-size actions: the selected lines when rows with changes are
+            // selected, otherwise the hunk in view. Header buttons stay compact.
             let index = position.current;
-            if p.id.is_none() && !conflict && p.hunk_blocked.is_none() && index < p.hunks.len() {
+            let lines = self.selected_changes();
+            if self.hunk_actions_allowed(p, conflict) && !lines.is_empty() {
+                bar = self.line_actions(bar.child(separator()), p, lines, "toolbar", cx);
+            } else if self.hunk_actions_allowed(p, conflict) && index < p.hunks.len() {
                 let token = p.token;
                 let unstage = p.staged;
+                let ready = self.diff_actions_ready();
                 let title = p.hunks[index].clone();
                 bar = bar
                     .child(separator())
@@ -729,8 +740,8 @@ impl GitCrab {
                             ControlSize::Compact,
                             cx,
                         )
-                        .disabled_when(self.state.busy)
-                        .tooltip(title.clone())
+                        .disabled_when(!ready)
+                        .tooltip(format!("{title} · select rows to act on single lines"))
                         .on_click(cx.listener(move |v, _, w, cx| {
                             v.mutate(
                                 Action::Hunk {
@@ -752,15 +763,13 @@ impl GitCrab {
                                 ControlSize::Compact,
                                 cx,
                             )
-                            .disabled_when(self.state.busy)
+                            .disabled_when(!ready)
                             .tooltip(format!(
                                 "Review discarding only this working-copy hunk · {title}"
                             ))
-                            .on_click(
-                                cx.listener(move |v, _, w, cx| {
-                                    v.review_discard(token, index, w, cx)
-                                }),
-                            ),
+                            .on_click(cx.listener(move |v, _, w, cx| {
+                                v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
+                            })),
                         )
                     });
             }
@@ -775,12 +784,17 @@ impl GitCrab {
                     && record.at.elapsed() < std::time::Duration::from_secs(60)
             })
             .cloned();
-        bar.when(self.state.busy, |bar| {
+        let refreshing = !self.state.busy && !self.state.patch_ready();
+        bar.when(self.state.busy || refreshing, |bar| {
             bar.child(
                 div()
                     .text_size(type_size(cx, 12.))
                     .text_color(rgb(semantic(Role::TextSecondary)))
-                    .child(self.running_label()),
+                    .child(if refreshing {
+                        "Updating diff…".to_string()
+                    } else {
+                        self.running_label()
+                    }),
             )
         })
         .when_some(outcome.filter(|_| !self.state.busy), |bar, record| {
@@ -826,6 +840,8 @@ impl GitCrab {
                     w.open_dialog(cx, |d, _, _| {
                         d.title("Diff help").alert().child(
                             "Click or Shift-click to select rows; Ctrl/Cmd+A selects all. \
+                             With rows selected in working changes, Stage, Unstage or Discard acts on just those added and removed lines; \
+                             in Split a selected row includes both sides. \
                              Ctrl/Cmd+C copies source text: in Split it copies the side you clicked. \
                              Ctrl/Cmd+Shift+C copies the selection as a patch with +/- markers. \
                              Copy leaves the clipboard unchanged when nothing is selected. \
@@ -993,10 +1009,98 @@ impl GitCrab {
             )
             .into_any_element()
     }
+    /// Whether this comparison offers hunk and line actions at all.
+    fn hunk_actions_allowed(&self, p: &gitcrab_core::controller::Patch, conflict: bool) -> bool {
+        p.id.is_none() && !conflict && p.hunk_blocked.is_none() && !p.hunks.is_empty()
+    }
+
+    /// Whether the patch on screen is current and no write is running.
+    fn diff_actions_ready(&self) -> bool {
+        self.state.patch_ready() && !self.state.busy
+    }
+
+    /// Changed lines in the selected rows, as indices into the patch lines.
+    fn selected_changes(&self) -> Vec<usize> {
+        match (&self.state.patch, &self.selection) {
+            (Some(p), Some(range)) => gitcrab_core::diff::selected_changes(
+                &p.content,
+                self.split_active,
+                range.clone(),
+            ),
+            _ => vec![],
+        }
+    }
+
+    /// Stage or Unstage, and Discard, for the selected changed `lines`.
+    fn line_actions<E: ParentElement + FluentBuilder>(
+        &self,
+        bar: E,
+        p: &gitcrab_core::controller::Patch,
+        lines: Vec<usize>,
+        place: &'static str,
+        cx: &mut Context<Self>,
+    ) -> E {
+        let token = p.token;
+        let unstage = p.staged;
+        let ready = self.diff_actions_ready();
+        let count = lines.len();
+        let noun = if count == 1 { "line" } else { "lines" };
+        let rows = lines.clone();
+        bar.child(
+            self.semantic_button(
+                SharedString::from(format!("{place}-lines-stage")),
+                format!(
+                    "{} {count} {noun}",
+                    if unstage { "Unstage" } else { "Stage" }
+                ),
+                if unstage {
+                    components::ButtonKind::Unstage
+                } else {
+                    components::ButtonKind::Stage
+                },
+                ControlSize::Compact,
+                cx,
+            )
+            .disabled_when(!ready)
+            .tooltip(if unstage {
+                "Move only the selected added and removed lines out of the index"
+            } else {
+                "Add only the selected added and removed lines to the index"
+            })
+            .on_click(cx.listener(move |v, _, w, cx| {
+                v.mutate(
+                    Action::Lines {
+                        token,
+                        rows: rows.clone(),
+                        unstage,
+                    },
+                    w,
+                    cx,
+                )
+            })),
+        )
+        .when(!unstage, |bar| {
+            bar.child(
+                self.semantic_button(
+                    SharedString::from(format!("{place}-lines-discard")),
+                    format!("Discard {count} {noun}…"),
+                    components::ButtonKind::Discard,
+                    ControlSize::Compact,
+                    cx,
+                )
+                .disabled_when(!ready)
+                .tooltip("Review discarding only the selected working-copy lines")
+                .on_click(cx.listener(move |v, _, w, cx| {
+                    v.review_discard(token, DiscardTarget::Lines(lines.clone()), w, cx)
+                })),
+            )
+        })
+    }
+
     fn review_discard(
         &mut self,
         token: u32,
-        index: usize,
+        target: DiscardTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1017,25 +1121,47 @@ impl GitCrab {
         let weak = cx.weak_entity();
         let cancel_focus = cx.focus_handle();
         let initial_focus = cancel_focus.clone();
+        let (title, what, confirm) = match &target {
+            DiscardTarget::Hunk(_) => (
+                "Discard working-copy hunk?".to_string(),
+                "the reviewed hunk".to_string(),
+                "Discard hunk".to_string(),
+            ),
+            DiscardTarget::Lines(lines) => {
+                let noun = if lines.len() == 1 { "line" } else { "lines" };
+                (
+                    format!("Discard {} working-copy {noun}?", lines.len()),
+                    format!("the {} selected {noun}", lines.len()),
+                    format!("Discard {noun}"),
+                )
+            }
+        };
         window.open_dialog(cx,move |dialog,_,_| {
             let weak=weak.clone();
             let cancel_focus=cancel_focus.clone();
-            dialog.title("Discard working-copy hunk?").confirm().p_4()
+            let target=target.clone();
+            let confirm=confirm.clone();
+            dialog.title(title.clone()).confirm().p_4()
                 .child(div().flex().flex_col().gap_2().child(repo.clone()).child(path.clone())
-                    .child("Permanently remove only the reviewed hunk from the working copy. Staged content stays in the index. Unsupported encodings or change types will be rejected.")
-                    .child("Enter cancels. Choose Discard hunk explicitly to remove these changes."))
+                    .child(format!("Permanently remove only {what} from the working copy. Staged content stays in the index. Unsupported encodings or change types will be rejected."))
+                    .child(format!("Enter cancels. Choose {confirm} explicitly to remove these changes.")))
                 .on_ok(|_,_,_| true)
                 .footer(move |_,cancel,w,cx| {
                     let cancel=div().track_focus(&cancel_focus).rounded(px(4.))
                         .focus(|s|s.border_2().border_color(rgb(semantic(Role::InteractionFocus))))
                         .child(cancel(w,cx)).into_any_element();
                     let weak=weak.clone();
+                    let target=target.clone();
                     let discard=components::style(
-                        Button::new("confirm-discard-hunk").label("Discard hunk").tab_stop(true),
+                        Button::new("confirm-discard-hunk").label(confirm.clone()).tab_stop(true),
                         components::ButtonKind::Discard,ControlSize::Regular,cx)
                         .on_click(move |_,w,cx| {
+                            let action = match &target {
+                                DiscardTarget::Hunk(index) => Action::DiscardHunk{token,index:*index},
+                                DiscardTarget::Lines(rows) => Action::DiscardLines{token,rows:rows.clone()},
+                            };
                             let _=weak.update(cx,|v,cx| {
-                                if v.state.epoch==epoch && !v.state.busy {v.mutate(Action::DiscardHunk{token,index},w,cx);}
+                                if v.state.epoch==epoch && !v.state.busy {v.mutate(action,w,cx);}
                             });
                             w.close_dialog(cx);
                         }).into_any_element();
@@ -1071,8 +1197,161 @@ impl GitCrab {
         };
         handle.set_offset(offset);
     }
+    /// A hunk header spanning the whole row in either layout. Its actions
+    /// come first so a long scope line or a narrow Split pane cannot hide them.
+    fn hunk_header_row(&self, i: usize, line: usize, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.state.patch.as_ref().unwrap();
+        let l = &p.content.lines[line];
+        let index = p.content.hunk_rows.binary_search(&line).ok();
+        let total = p.content.hunk_rows.len();
+        let (ranges, scope) = gitcrab_core::diff::hunk_header_parts(&l.text);
+        let conflict = self.state.snapshot.as_ref().is_some_and(|s| {
+            s.status
+                .iter()
+                .any(|f| f.path == p.path && f.is_unmerged())
+        });
+        let actions = index.filter(|&index| {
+            self.hunk_actions_allowed(p, conflict) && index < p.hunks.len()
+        });
+        let ready = self.diff_actions_ready();
+        let scale = self.preferences.code_size / 12.;
+        let advance = self.preferences.code_size * 0.65;
+        let mut row = div()
+            .id(("diff-line", i))
+            .w_full()
+            .when(!self.split_active, |row| {
+                row.min_w(px(
+                    (p.content.columns as f32 * advance + 160. * scale).max(600.)
+                ))
+            })
+            .h(px(self.diff_row_height()))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .overflow_hidden()
+            .bg(rgb(semantic(Role::DiffHunkBg)))
+            .when(line > 0, |row| {
+                row.border_t_1()
+                    .border_color(rgb(semantic(Role::BorderDivider)))
+            })
+            .text_size(type_size(cx, 12.))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(semantic(Role::TextSecondary)))
+                    .child(match index {
+                        Some(index) => format!("Hunk {} of {total}", index + 1),
+                        None => "Hunk".into(),
+                    }),
+            );
+        if let Some(index) = actions {
+            let token = p.token;
+            let unstage = p.staged;
+            let selected: Vec<usize> = self
+                .selected_changes()
+                .into_iter()
+                .filter(|&s| gitcrab_core::diff::hunk_of(&p.content, s) == Some(index))
+                .collect();
+            if !selected.is_empty() {
+                row = self.line_actions(row, p, selected, "hunk", cx);
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .w(px(1.))
+                        .h(px(14.))
+                        .mx_1()
+                        .bg(rgb(semantic(Role::BorderDivider))),
+                );
+            }
+            row = row.child(
+                self.semantic_button(
+                    ("hunk", i),
+                    if unstage {
+                        "Unstage hunk"
+                    } else {
+                        "Stage hunk"
+                    },
+                    if unstage {
+                        components::ButtonKind::Unstage
+                    } else {
+                        components::ButtonKind::Stage
+                    },
+                    ControlSize::DenseHunk,
+                    cx,
+                )
+                .disabled_when(!ready)
+                .on_click(cx.listener(move |v, _, w, cx| {
+                    v.mutate(
+                        Action::Hunk {
+                            token,
+                            index,
+                            unstage,
+                        },
+                        w,
+                        cx,
+                    )
+                })),
+            );
+            // Keep the permanent action apart from the common staging action.
+            if !unstage {
+                row = row
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(1.))
+                            .h(px(14.))
+                            .mx_1()
+                            .bg(rgb(semantic(Role::BorderDivider))),
+                    )
+                    .child(
+                        self.semantic_button(
+                            ("discard-hunk", i),
+                            "Discard hunk…",
+                            components::ButtonKind::Discard,
+                            ControlSize::DenseHunk,
+                            cx,
+                        )
+                        .disabled_when(!ready)
+                        .tooltip("Review discarding only this working-copy hunk")
+                        .on_click(cx.listener(move |v, _, w, cx| {
+                            v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
+                        })),
+                    );
+            }
+        }
+        row.child(
+            div()
+                .flex_none()
+                .font_family(CODE_FONT)
+                .text_size(px(self.preferences.code_size))
+                .text_color(rgb(semantic(Role::TextMuted)))
+                .child(format!("@@ {ranges} @@")),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .font_family(CODE_FONT)
+                .text_size(px(self.preferences.code_size))
+                .text_color(rgb(semantic(Role::TextSecondary)))
+                .child(scope.to_string()),
+        )
+        .into_any_element()
+    }
+
     fn diff_row(&self, i: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = self.state.patch.as_ref().unwrap();
+        let header = if self.split_active {
+            p.content.split[i].0
+        } else {
+            Some(i)
+        }
+        .filter(|&line| p.content.lines[line].text.starts_with("@@ "));
+        if let Some(line) = header {
+            return self.hunk_header_row(i, line, cx);
+        }
         let selected = self.selection.as_ref().is_some_and(|r| r.contains(&i));
         let found = self.diff_matches.binary_search(&i).is_ok();
         let current_match = self
@@ -1197,76 +1476,6 @@ impl GitCrab {
                             .flex_none()
                             .child(StyledText::new(text).with_highlights(highlights))
                     });
-                if l.kind == '@'
-                    && l.text.starts_with("@@ ")
-                    && p.id.is_none()
-                    && p.hunk_blocked.is_none()
-                    && (!split || side == 0)
-                {
-                    let index = p.hunks.iter().position(|h| h == &l.text);
-                    let token = p.token;
-                    let unstage = p.staged;
-                    if let Some(index) = index {
-                        cell = cell.child(
-                            self.semantic_button(
-                                ("hunk", i),
-                                if unstage {
-                                    "Unstage hunk"
-                                } else {
-                                    "Stage hunk"
-                                },
-                                if unstage {
-                                    components::ButtonKind::Unstage
-                                } else {
-                                    components::ButtonKind::Stage
-                                },
-                                ControlSize::DenseHunk,
-                                cx,
-                            )
-                            .disabled_when(self.state.busy)
-                            .on_click(cx.listener(
-                                move |v, _, w, cx| {
-                                    v.mutate(
-                                        Action::Hunk {
-                                            token,
-                                            index,
-                                            unstage,
-                                        },
-                                        w,
-                                        cx,
-                                    )
-                                },
-                            )),
-                        );
-                        // Keep the permanent action apart from the common staging action.
-                        if !unstage {
-                            cell = cell
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .w(px(1.))
-                                        .h(px(16.))
-                                        .mx(px(12.))
-                                        .bg(rgb(semantic(Role::BorderDivider))),
-                                )
-                                .child(
-                                    self.semantic_button(
-                                        ("discard-hunk", i),
-                                        "Discard hunk…",
-                                        components::ButtonKind::Discard,
-                                        ControlSize::DenseHunk,
-                                        cx,
-                                    )
-                                    .mr(px(8.))
-                                    .disabled_when(self.state.busy)
-                                    .tooltip("Review discarding only this working-copy hunk")
-                                    .on_click(cx.listener(
-                                        move |v, _, w, cx| v.review_discard(token, index, w, cx),
-                                    )),
-                                );
-                        }
-                    }
-                }
             }
             el = el.child(cell);
         }
@@ -1289,6 +1498,15 @@ impl GitCrab {
         }))
         .into_any_element()
     }
+}
+
+/// What a working-copy discard removes.
+#[derive(Clone)]
+enum DiscardTarget {
+    /// A zero-based hunk of the reviewed patch.
+    Hunk(usize),
+    /// Changed lines, as indices into the reviewed patch lines.
+    Lines(Vec<usize>),
 }
 
 fn short_id(id: &str) -> &str {

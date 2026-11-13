@@ -87,9 +87,9 @@ def main():
                     data = wait_until(lambda: read_json(ready), process, f"{mode} layout")
                     assert data["loaded"] == 1, data
                     if mode == "dialog":
-                        assert data["dialog_layer"], data
+                        assert data["branch_prompt"] and not data["dialog_layer"], data
                         subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"], check=True)
-                        wait_until(lambda: state_is(lambda s: not s["dialog"] and s["focused"]), process, "cancel focus restoration")
+                        wait_until(lambda: state_is(lambda s: not s["branch_prompt"] and not s["dialog"] and s["focused"]), process, "branch bar Escape and focus restoration")
                         subprocess.run(["xdotool", "key", "--clearmodifiers", "Down"], check=True)
                         wait_until(lambda: state_is(lambda s: s["selected"] == head.strip()), process, "keyboard history navigation")
                         assert "feature/review" not in git("branch")

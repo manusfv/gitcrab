@@ -228,6 +228,45 @@ pub fn copy_patch(
         .join("\n")
 }
 
+/// Added and removed lines shown in a range of displayed rows, as indices
+/// into [`Content::lines`] in patch order. Split rows contribute both cells.
+pub fn selected_changes(
+    content: &Content,
+    split: bool,
+    rows: std::ops::Range<usize>,
+) -> Vec<usize> {
+    let mut indices: Vec<usize> = if split {
+        rows.filter_map(|row| content.split.get(row))
+            .flat_map(|(before, after)| [*before, *after])
+            .flatten()
+            .collect()
+    } else {
+        rows.filter(|row| *row < content.lines.len()).collect()
+    };
+    indices.sort_unstable();
+    indices.dedup();
+    indices.retain(|&index| matches!(content.lines[index].kind, '+' | '-'));
+    indices
+}
+
+/// Zero-based hunk that contains a line of [`Content::lines`].
+pub fn hunk_of(content: &Content, line: usize) -> Option<usize> {
+    content
+        .hunk_rows
+        .partition_point(|&row| row <= line)
+        .checked_sub(1)
+}
+
+/// Splits a hunk header into its line ranges and the enclosing-scope text
+/// Git adds after the closing `@@`, such as a function signature.
+pub fn hunk_header_parts(header: &str) -> (&str, &str) {
+    let body = header.strip_prefix("@@ ").unwrap_or(header);
+    match body.split_once(" @@") {
+        Some((ranges, context)) => (ranges, context.trim()),
+        None => (body, ""),
+    }
+}
+
 /// Comparable identity of each displayed row, used to follow a selection
 /// when the patch is replaced.
 pub fn row_keys(content: &Content, split: bool) -> Vec<(Option<&str>, Option<&str>)> {
@@ -434,6 +473,20 @@ mod tests {
             "@@ -1,2 +1,2 @@\n shared\n-old\n+new"
         );
         assert_eq!(copy_patch(&lines, Some(&rows), 1..3), " shared\n-old\n+new");
+    }
+
+    #[test]
+    fn selected_changes_cover_both_split_cells_and_name_their_hunk() {
+        let content = prepare(parse(
+            "@@ -1,2 +1,2 @@ fn a\n keep\n-old\n+new\n@@ -9 +9 @@\n-x\n+y\n",
+        ));
+        assert_eq!(selected_changes(&content, false, 0..3), [2]);
+        // Split row 2 pairs "-old" with "+new".
+        assert_eq!(selected_changes(&content, true, 2..3), [2, 3]);
+        assert_eq!(hunk_of(&content, 3), Some(0));
+        assert_eq!(hunk_of(&content, 5), Some(1));
+        assert_eq!(hunk_header_parts("@@ -1,2 +1,2 @@ fn a"), ("-1,2 +1,2", "fn a"));
+        assert_eq!(hunk_header_parts("@@ -9 +9 @@"), ("-9 +9", ""));
     }
 
     #[test]

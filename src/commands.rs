@@ -36,6 +36,8 @@ pub struct CommandContext {
     /// HEAD names a branch with no commits yet.
     pub unborn: bool,
     pub stash_count: usize,
+    /// A tracked file differs from HEAD in the index or working tree.
+    pub tracked_changes: bool,
     /// The top Undo step, as checked with the latest snapshot.
     pub undo: crate::journal::StepState,
     /// The top Redo step, as checked with the latest snapshot.
@@ -116,19 +118,19 @@ impl Command {
         }
     }
 
-    /// Menu label, with an ellipsis for commands that open a review first.
+    /// Menu label, with an ellipsis for commands that ask for input first.
     pub fn menu_label(self) -> &'static str {
         match self {
             Self::Refresh => "Refresh repository",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::CreateBranch => "Create branch…",
-            Self::Checkout => "Checkout…",
-            Self::Merge => "Merge…",
-            Self::CherryPick => "Cherry-pick…",
-            Self::Revert => "Revert…",
-            Self::Stash => "Stash…",
-            Self::PopStash => "Pop latest stash…",
+            Self::Checkout => "Checkout",
+            Self::Merge => "Merge",
+            Self::CherryPick => "Cherry-pick",
+            Self::Revert => "Revert",
+            Self::Stash => "Stash",
+            Self::PopStash => "Pop latest stash",
             Self::Fetch => "Fetch",
             Self::Pull => "Pull",
             Self::Push => "Push",
@@ -181,6 +183,9 @@ impl Command {
         }
         if self == Self::PopStash && cx.stash_count == 0 {
             return Disabled("There are no stashes to apply.");
+        }
+        if self == Self::Stash && !cx.tracked_changes && !cx.unborn {
+            return Disabled(crate::git::NOTHING_TO_STASH);
         }
         // Undo and Redo depend only on their journal step's own preconditions.
         if let Some((state, empty)) = match self {
@@ -266,7 +271,7 @@ impl Command {
     }
 
     /// Tooltip text naming what the command acts on, such as
-    /// `Undo commit “Fix parser” · Ctrl+Z · Review before applying`.
+    /// `Undo commit “Fix parser” · Ctrl+Z`.
     pub fn describe_with_summary(self, cx: &CommandContext, summary: Option<&str>) -> String {
         let text = self.describe(cx);
         match summary {
@@ -289,7 +294,6 @@ impl Command {
             text.push_str(&format!(" · {key}"));
         }
         match availability {
-            Availability::Enabled if self.writes() => text.push_str(" · Review before applying"),
             Availability::Enabled => {}
             Availability::Disabled(reason) => text = format!("{text} unavailable. {reason}"),
         }
@@ -306,6 +310,7 @@ mod tests {
             repository: true,
             reviewable: true,
             stash_count: 1,
+            tracked_changes: true,
             ..Default::default()
         }
     }
@@ -322,6 +327,17 @@ mod tests {
         assert!(Command::PopStash
             .describe(&cx)
             .starts_with("Pop latest stash unavailable."));
+    }
+
+    #[test]
+    fn stash_is_disabled_without_tracked_changes() {
+        let mut cx = ready();
+        assert!(Command::Stash.availability(&cx).enabled());
+        cx.tracked_changes = false;
+        assert_eq!(
+            Command::Stash.availability(&cx).reason(),
+            Some(crate::git::NOTHING_TO_STASH)
+        );
     }
 
     #[test]
@@ -413,7 +429,7 @@ mod tests {
         assert!(Command::Undo.availability(&cx).enabled());
         assert_eq!(
             Command::Undo.describe_with_summary(&cx, Some("commit “Fix parser”")),
-            format!("Undo commit “Fix parser” · {shortcut} · Review before applying")
+            format!("Undo commit “Fix parser” · {shortcut}")
         );
         assert_eq!(
             Command::Redo.availability(&cx).reason(),
@@ -460,11 +476,11 @@ mod tests {
         assert!(Command::Pull.writes() && Command::Push.writes());
         assert_eq!(
             Command::Push.describe_with_upstream(&cx, Some("origin/main")),
-            "Push · Review before applying · Push 2 commits to origin/main"
+            "Push · Push 2 commits to origin/main"
         );
         assert_eq!(
             Command::Pull.describe_with_upstream(&cx, Some("origin/main")),
-            "Pull · Review before applying · Pull 3 commits from origin/main"
+            "Pull · Pull 3 commits from origin/main"
         );
         let no_upstream = CommandContext {
             upstream: false,

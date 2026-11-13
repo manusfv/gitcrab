@@ -31,8 +31,8 @@ The Rust core remains usable with `cargo test --locked --no-default-features --l
   Obsolete replies still release their worker lane and dispatch pending work.
   Native refresh triggers apply cancellation only when the controller
   accepts or queues a replacement refresh.
-- `native/view/operations.rs` owns operation dialogs. A worker resolves the
-  target before the final confirmation displays its object ID.
+- `native/view/operations.rs` owns one-click operations and the inline branch-name bar. A worker resolves and checks the
+  target, then the write starts and rechecks it before Git runs.
   `native/view/repository.rs` owns trust prompts and watcher lifecycle.
   `native/view/evidence.rs` contains diagnostic navigation.
 - `native/preferences.rs` owns the application appearance source and a

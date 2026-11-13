@@ -311,82 +311,28 @@ impl ProcessTree {
 }
 
 #[cfg(windows)]
-fn resume_suspended_child(child: &Child) -> io::Result<()> {
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::{
-        Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE},
-        System::{
-            Diagnostics::ToolHelp::{
-                CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
-                THREADENTRY32,
-            },
-            Threading::{
-                GetProcessIdOfThread, OpenThread, ResumeThread, THREAD_QUERY_LIMITED_INFORMATION,
-                THREAD_SUSPEND_RESUME,
-            },
-        },
-    };
+#[link(name = "ntdll", kind = "raw-dylib")]
+extern "system" {
+    /// Resumes every thread of a process. Exported by ntdll since Windows XP.
+    fn NtResumeProcess(process: windows_sys::Win32::Foundation::HANDLE) -> i32;
+}
 
-    // std::process::Child exposes the process handle. Find the initial thread in a snapshot.
-    // SAFETY: TH32CS_SNAPTHREAD takes a system-wide snapshot and ignores the process ID.
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snapshot == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
+#[cfg(windows)]
+fn resume_suspended_child(child: &Child) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    // A freshly created suspended process has exactly one thread. Resuming the
+    // process directly avoids a system-wide thread snapshot, which costs tens
+    // of milliseconds on every Git call and grows with the number of threads
+    // running on the machine.
+    // SAFETY: The child's handle is open and has PROCESS_ALL_ACCESS, which
+    // includes PROCESS_SUSPEND_RESUME.
+    let status = unsafe { NtResumeProcess(child.as_raw_handle()) };
+    if status < 0 {
+        return Err(io::Error::other(format!(
+            "Could not start Git's suspended process (NTSTATUS {status:#010x})."
+        )));
     }
-    // SAFETY: The successful call returned a new snapshot handle that we own.
-    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
-    let entry_size = std::mem::size_of::<THREADENTRY32>() as u32;
-    let mut entry = THREADENTRY32 {
-        dwSize: entry_size,
-        ..Default::default()
-    };
-    // SAFETY: The snapshot is open and entry is a writable THREADENTRY32 with its size set.
-    let mut found = unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) };
-    while found != 0 {
-        // The API can return a shorter entry. Read the IDs only when both were written.
-        if entry.dwSize >= std::mem::offset_of!(THREADENTRY32, tpBasePri) as u32
-            && entry.th32OwnerProcessID == child.id()
-        {
-            // SAFETY: OpenThread takes an ID from the snapshot and returns a new handle or null.
-            let thread = unsafe {
-                OpenThread(
-                    THREAD_QUERY_LIMITED_INFORMATION | THREAD_SUSPEND_RESUME,
-                    0,
-                    entry.th32ThreadID,
-                )
-            };
-            if thread.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: The successful call returned a new thread handle that we own.
-            let thread = unsafe { OwnedHandle::from_raw_handle(thread) };
-            // SAFETY: The handle is open and has the required query and resume rights.
-            return unsafe {
-                match GetProcessIdOfThread(thread.as_raw_handle()) {
-                    0 => Err(io::Error::last_os_error()),
-                    pid if pid == child.id() => match ResumeThread(thread.as_raw_handle()) {
-                        0 | 1 => Ok(()),
-                        u32::MAX => Err(io::Error::last_os_error()),
-                        _ => Err(io::Error::other("Git's initial thread is still suspended.")),
-                    },
-                    _ => Err(io::Error::other(
-                        "Git's initial thread no longer belongs to it.",
-                    )),
-                }
-            };
-        }
-        entry.dwSize = entry_size;
-        // SAFETY: The same snapshot is still open and entry's size was reset before reuse.
-        found = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) };
-    }
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Git's initial thread was not found.",
-        ));
-    }
-    Err(error)
+    Ok(())
 }
 
 #[cfg(test)]

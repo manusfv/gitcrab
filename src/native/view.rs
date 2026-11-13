@@ -4,7 +4,7 @@ mod evidence;
 mod history;
 mod inspector;
 mod operations;
-use operations::OperationDialog;
+use operations::{BranchPrompt, PendingRun};
 mod repository;
 mod review;
 mod settings;
@@ -249,7 +249,12 @@ pub struct GitCrab {
     search: Entity<InputState>,
     reference_search: Entity<InputState>,
     target: Entity<InputState>,
-    operation_dialog: Option<Entity<OperationDialog>>,
+    /// A one-click operation whose preflight review is in the worker.
+    pending_run: Option<PendingRun>,
+    /// The inline bar naming a new branch.
+    branch_prompt: Option<BranchPrompt>,
+    /// The branch to switch to once its creation succeeds.
+    switch_after_branch: Option<String>,
     split: bool,
     compact: bool,
     show_whitespace: bool,
@@ -302,6 +307,9 @@ pub struct GitCrab {
     watch_pending: bool,
     watch_warning: Option<String>,
     external_dirty: bool,
+    /// When the latest full or worktree refresh was sent to the worker. A watcher change
+    /// seen before then is already covered by that refresh.
+    full_refresh_sent: Option<std::time::Instant>,
     search_matches: Vec<String>,
     search_query: String,
     /// The References dialog is open over a narrow layout.
@@ -345,11 +353,15 @@ impl GitCrab {
         let diff_search = cx.new(|cx| InputState::new(window, cx).placeholder("Find in diff…"));
         let subscriptions = vec![
             cx.subscribe(&reference_search, |_, _, _: &InputEvent, cx| cx.notify()),
-            cx.subscribe(&target, |v, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    v.operation_target_changed(cx);
-                }
-            }),
+            cx.subscribe_in(
+                &target,
+                window,
+                |v, _, event: &InputEvent, w, cx| match event {
+                    InputEvent::Change => v.operation_target_changed(cx),
+                    InputEvent::PressEnter { secondary: false } => v.submit_branch_prompt(w, cx),
+                    _ => {}
+                },
+            ),
             cx.observe_in(&draft, window, |v, input, w, cx| {
                 if !input.read(cx).focus_handle(cx).is_focused(w) {
                     return;
@@ -429,7 +441,9 @@ impl GitCrab {
             search,
             reference_search,
             target,
-            operation_dialog: None,
+            pending_run: None,
+            branch_prompt: None,
+            switch_after_branch: None,
             split: preferences.split,
             compact: preferences.compact,
             show_whitespace: false,
@@ -479,6 +493,7 @@ impl GitCrab {
             watch_pending: false,
             watch_warning: None,
             external_dirty: false,
+            full_refresh_sent: None,
             search_matches: vec![],
             search_query: String::new(),
             references_open: false,
@@ -519,6 +534,15 @@ impl GitCrab {
         };
         let epoch = request.epoch;
         let sequence = request.sequence;
+        // A worktree refresh also re-reads references, HEAD and history
+        // metadata and reloads history when they changed, so it covers
+        // metadata changes too.
+        if matches!(
+            request.action,
+            Action::Refresh { .. } | Action::RefreshWorktree { .. } | Action::Open { .. }
+        ) {
+            self.full_refresh_sent = Some(std::time::Instant::now());
+        }
         match self.service.submit(request) {
             Ok(rx) => {
                 cx.spawn_in(window, async move |view, cx| {
@@ -593,6 +617,7 @@ impl GitCrab {
             ));
         }
         let request = (response.epoch, response.sequence);
+        let mut mutation_ok = None;
         let failure_kind = response.result.as_ref().err().map(|failure| failure.kind);
         let running = self
             .running
@@ -621,15 +646,7 @@ impl GitCrab {
             self.activity.truncate(50);
             self.unread_result = !self.active;
             self.own_write = true;
-            self.operation_finished(
-                request,
-                if failure.is_some() {
-                    Err(summary)
-                } else {
-                    Ok(summary)
-                },
-                cx,
-            );
+            mutation_ok = Some(failure.is_none());
         } else if failure_kind.is_some() {
             self.error_heading = match lane {
                 Lane::Snapshot if self.state.snapshot.is_none() => "Could not open the repository",
@@ -647,7 +664,7 @@ impl GitCrab {
         }
         if lane == Lane::OperationReview {
             if let Some(result) = self.state.operation_review.take() {
-                self.operation_resolved(request, result, cx);
+                self.operation_resolved(request, result, window, cx);
             }
         }
         if opening && !self.state.loading() {
@@ -717,6 +734,9 @@ impl GitCrab {
         if matches!(lane, Lane::Snapshot | Lane::Mutation) {
             let plan = self.state.take_watcher_refresh();
             self.apply_refresh(plan, window, cx);
+        }
+        if let Some(ok) = mutation_ok {
+            self.after_mutation(ok, window, cx);
         }
         #[cfg(feature = "native-evidence")]
         self.advance_evidence(lane, window, cx);
@@ -1029,7 +1049,10 @@ impl GitCrab {
         self.selection = None;
         if let Some((_, request)) = &job {
             let target = match &request.action {
-                Action::Hunk { .. } | Action::DiscardHunk { .. } => self
+                Action::Hunk { .. }
+                | Action::DiscardHunk { .. }
+                | Action::Lines { .. }
+                | Action::DiscardLines { .. } => self
                     .state
                     .patch
                     .as_ref()
@@ -1216,13 +1239,13 @@ impl GitCrab {
         let snapshot = self.state.snapshot.as_ref();
         CommandContext {
             repository: snapshot.is_some(),
-            busy: self.state.busy,
-            modal: self.settings_open
-                || self.operation_dialog.is_some()
-                || (window.has_active_dialog(cx) && !self.references_open),
+            busy: self.state.busy || self.pending_run.is_some(),
+            modal: self.settings_open || (window.has_active_dialog(cx) && !self.references_open),
             reviewable: snapshot.is_some_and(|s| s.reviewed.is_some()),
             unborn: snapshot.is_some_and(|s| s.head_id.is_empty()),
             stash_count: snapshot.map_or(0, |s| s.stash_count),
+            tracked_changes: snapshot
+                .is_some_and(|s| s.status.iter().any(|f| !matches!(f.index, '?' | '!'))),
             undo: snapshot.map_or(Default::default(), |s| {
                 s.journal.state(gitcrab_core::journal::Direction::Undo)
             }),
@@ -1312,7 +1335,10 @@ impl GitCrab {
                 self.refresh(&Refresh, window, cx);
                 return;
             }
-            Command::CreateBranch => Operation::CreateBranch,
+            Command::CreateBranch => {
+                self.prompt_branch(None, window, cx);
+                return;
+            }
             Command::Checkout => Operation::Checkout,
             Command::Merge => Operation::Merge,
             Command::CherryPick => Operation::CherryPick,
@@ -1330,7 +1356,15 @@ impl GitCrab {
             },
             Command::Push => Operation::Push,
         };
-        self.review(op, target, window, cx);
+        if op.takes_revision() && target.trim().is_empty() {
+            self.state.notice = format!(
+                "{} needs a branch or commit. Choose one in the history or the sidebar.",
+                op.label()
+            );
+            cx.notify();
+            return;
+        }
+        self.run_operation(op, target, window, cx);
     }
 
     /// Pulls with a mode chosen from the Pull menu, after the same checks as
@@ -1348,7 +1382,7 @@ impl GitCrab {
             return;
         }
         self.close_references(window, cx);
-        self.review(Operation::Pull { mode }, String::new(), window, cx);
+        self.run_operation(Operation::Pull { mode }, String::new(), window, cx);
     }
 
     /// Stops the running Fetch, Pull or Push and its helper processes.
@@ -1609,11 +1643,11 @@ impl GitCrab {
             window.close_dialog(cx);
             return;
         }
+        if self.branch_prompt_open() {
+            self.close_branch_prompt(window, cx);
+            return;
+        }
         if window.has_active_dialog(cx) {
-            if self.operation_dialog.is_some() {
-                // The operation dialog owns its Escape and dismissal actions.
-                return;
-            }
             window.close_all_dialogs(cx);
             self.references_open = false;
             cx.notify();
@@ -1644,11 +1678,7 @@ impl GitCrab {
         cx.notify();
     }
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.settings_open
-            || window.has_focused_input(cx)
-            || self.operation_dialog.is_some()
-            || self.state.diff_context.is_some()
-        {
+        if self.settings_open || window.has_focused_input(cx) || self.state.diff_context.is_some() {
             return;
         }
         if let Some(s) = &self.state.snapshot {
@@ -2706,6 +2736,7 @@ impl Render for GitCrab {
                         ),
                 )
             })
+            .children(self.render_branch_prompt(cx))
             .child(main_content)
             .child(
                 div()
@@ -2723,6 +2754,8 @@ impl Render for GitCrab {
                     .text_color(rgb(semantic(Role::TextMuted)))
                     .child(div().flex_1().truncate().child(if self.state.busy {
                         self.running_label()
+                    } else if let Some(pending) = self.pending_label() {
+                        pending
                     } else if self.state.loading() {
                         "Loading repository…".into()
                     } else if self.state.error {
@@ -2744,7 +2777,7 @@ impl Render for GitCrab {
                         |bar| {
                             bar.child(
                                 self.button("cancel-network", "Cancel")
-                                    .tooltip("Stop Git and its helper processes")
+                                    .tooltip("Stop Git while it contacts the remote. A pull that has started updating the branch finishes first.")
                                     .on_click(cx.listener(|v, _, _, cx| v.cancel_network(cx))),
                             )
                         },

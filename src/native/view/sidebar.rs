@@ -310,7 +310,7 @@ impl GitCrab {
                             tooltip: format!("{name} · {hint}"),
                             on_click: Rc::new(move |v, e, w, cx| {
                                 if e.click_count() == 2 {
-                                    v.review(Operation::Checkout, name.clone(), w, cx);
+                                    v.run_operation(Operation::Checkout, name.clone(), w, cx);
                                 } else {
                                     v.preview_ref(ReferenceKind::LocalBranch, &name, w, cx);
                                 }

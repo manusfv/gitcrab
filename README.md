@@ -26,8 +26,8 @@ Prebuilt executables will be published on [GitHub Releases](https://github.com/m
 ## What you can do
 
 - **Explore history.** Follow branches and tags through the commit graph, search loaded commits, and open a commit to inspect its metadata and changed files. Open multiple repositories in tabs and drag to reorder tabs or history columns.
-- **Review changes.** Switch between unified and side-by-side diffs, jump between hunks, and show whitespace when it matters. Review operations such as checkout, merge, cherry-pick, revert, and stash before applying them.
-- **Prepare a commit.** Open **Working changes**, select a file, and use **Stage hunk** on the change you want to include. Review the staged diff, write a summary and optional description, then commit.
+- **Review changes.** Switch between unified and side-by-side diffs, jump between hunks, and show whitespace when it matters. Checkout, merge, cherry-pick, revert, stash, pull and push run in one click, each checked against the repository first; everything but push can be reversed with Undo.
+- **Prepare a commit.** Open **Working changes**, select a file, and use **Stage hunk** on the change you want to include, or select rows and stage, unstage or discard just those lines. Review the staged diff, write a summary and optional description, then commit.
 - **Stage or unstage the whole worktree.** The bulk controls act on changes Git finds when the command runs, including files that arrived after the last refresh. A single-file action rechecks the displayed status and rename before updating the index.
 
 GitCrab opens trusted local repositories. Trusted Git configuration can start

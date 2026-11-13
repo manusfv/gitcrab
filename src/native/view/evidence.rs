@@ -39,7 +39,7 @@ impl GitCrab {
                 }
             } else {
                 if mode == "dialog" {
-                    self.review(Operation::CreateBranch, "feature/review".into(), window, cx);
+                    self.prompt_branch(None, window, cx);
                 }
                 self.evidence_phase = 3;
             }
@@ -66,6 +66,7 @@ impl GitCrab {
                 "busy": self.state.busy,
                 "notice": self.state.notice,
                 "dialog": window.has_active_dialog(cx),
+                "branch_prompt": self.branch_prompt_open(),
                 "focused": self.focus.is_focused(window),
                 "selected": self.state.selected,
             });
@@ -78,7 +79,7 @@ impl GitCrab {
         }
         if self.evidence_phase == 3 {
             self.evidence_phase = 4;
-            let data = serde_json::json!({"loaded":self.state.graph.rows.len(),"view":std::env::var("GITCRAB_CAPTURE_VIEW").unwrap_or_else(|_|"history".into()),"width":f32::from(window.viewport_size().width),"height":f32::from(window.viewport_size().height),"scale":window.scale_factor(),"worker_ms":self.state.worker_ms,"queue_ms":self.state.queue_ms,"diff_rows":self.state.patch.as_ref().map(|p|p.content.lines.len()),"dialog_layer":window.has_active_dialog(cx),"renderer":"GPUI 0.2.2 native","present_time_measured":false});
+            let data = serde_json::json!({"loaded":self.state.graph.rows.len(),"view":std::env::var("GITCRAB_CAPTURE_VIEW").unwrap_or_else(|_|"history".into()),"width":f32::from(window.viewport_size().width),"height":f32::from(window.viewport_size().height),"scale":window.scale_factor(),"worker_ms":self.state.worker_ms,"queue_ms":self.state.queue_ms,"diff_rows":self.state.patch.as_ref().map(|p|p.content.lines.len()),"dialog_layer":window.has_active_dialog(cx),"branch_prompt":self.branch_prompt_open(),"renderer":"GPUI 0.2.2 native","present_time_measured":false});
             let path = std::env::var("GITCRAB_NATIVE_READY").unwrap();
             window.on_next_frame(move |_, _| {
                 let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());

@@ -72,6 +72,16 @@ pub enum Action {
     },
     /// Reverses a zero-based hunk from the current unstaged patch in the working file.
     DiscardHunk { token: u32, index: usize },
+    /// Stages or unstages only the selected changed lines of the patch
+    /// identified by `token`. `rows` index its displayed lines.
+    Lines {
+        token: u32,
+        rows: Vec<usize>,
+        unstage: bool,
+    },
+    /// Reverses only the selected changed lines of the current unstaged
+    /// patch in the working file.
+    DiscardLines { token: u32, rows: Vec<usize> },
     /// Resolves an operation's target against the reviewed destination before confirmation.
     ReviewOperation {
         op: Operation,
@@ -80,6 +90,14 @@ pub enum Action {
     },
     /// Runs the confirmed operation after revalidating its target and destination.
     Operation { reviewed: ReviewedOperation },
+    /// Resolves a local operation against `destination` and runs it in the
+    /// same worker request, so a one-click operation reads its target once.
+    /// Pull, Push, Undo and Redo use [`Self::ReviewOperation`] first.
+    RunOperation {
+        op: Operation,
+        target: String,
+        destination: crate::git::WriteIdentity,
+    },
     /// Fetches every remote with pruning. Runs off the worker and can be cancelled.
     Fetch,
 }
@@ -110,7 +128,11 @@ impl Action {
             Self::Hunk { unstage: true, .. } => "Unstage hunk",
             Self::Commit { .. } => "Commit",
             Self::DiscardHunk { .. } => "Discard hunk",
+            Self::Lines { unstage: false, .. } => "Stage lines",
+            Self::Lines { unstage: true, .. } => "Unstage lines",
+            Self::DiscardLines { .. } => "Discard lines",
             Self::Operation { reviewed } => reviewed.title(),
+            Self::RunOperation { op, .. } => op.label(),
             Self::Fetch => "Fetch",
             Self::Open { .. } => "Open repository",
             Self::Refresh { .. } | Self::RefreshWorktree { .. } => "Refresh",
@@ -129,6 +151,7 @@ impl Action {
             Self::StageAll { .. } => Some("whole worktree".into()),
             Self::Commit { message, .. } => message.lines().next().map(str::to_owned),
             Self::Fetch => Some("all remotes".into()),
+            Self::RunOperation { target, .. } if !target.trim().is_empty() => Some(target.clone()),
             Self::Operation { reviewed } if reviewed.network.is_some() => reviewed.refs(),
             Self::Operation {
                 reviewed:
@@ -200,7 +223,8 @@ pub enum Operation {
     Revert,
     /// Stashes tracked changes with an optional message.
     Stash,
-    /// Applies the reviewed stash and keeps the stash entry.
+    /// Applies the reviewed stash, then removes its entry from the stash list.
+    /// A conflicting apply keeps the entry.
     PopStash,
     /// Pulls the checked-out branch's upstream with the chosen integration.
     Pull {
@@ -229,22 +253,13 @@ pub struct ReviewedOperation {
     pub checkout_ref: Option<String>,
     /// Subject and committer date of the resolved target, for people to verify.
     #[serde(default)]
-    pub target_summary: Option<TargetSummary>,
+    pub target_summary: Option<crate::git::CommitSummary>,
     /// Branch, remote and refs a Pull or Push was reviewed against.
     #[serde(default)]
     pub network: Option<crate::git::NetworkTarget>,
     /// The journal step an Undo or Redo was reviewed against.
     #[serde(default)]
     pub journal: Option<crate::journal::Step>,
-}
-
-/// Human-readable identity of a resolved commit or stash.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TargetSummary {
-    pub subject: String,
-    /// Committer date in Git's ISO-like format.
-    pub date: String,
-    pub parents: usize,
 }
 
 /// Explains why Cherry-pick and Revert are unavailable for merge commits.
@@ -266,11 +281,29 @@ impl ReviewedOperation {
         if op.journal_direction().is_some() {
             return Err("Undo and Redo are reviewed against the tab's journal.".into());
         }
-        if git.write_identity()? != destination {
+        // Reading HEAD and the index does not depend on the target, so it runs
+        // beside the target lookups. A changed identity is reported first.
+        let (identity, resolved) = std::thread::scope(|scope| {
+            let identity = scope.spawn(|| git.write_identity());
+            let resolved = Self::resolve(git, op, target, destination.clone());
+            (identity.join(), resolved)
+        });
+        if identity.map_err(|_| "HEAD and index read failed")?? != destination {
             return Err(
-                "HEAD or index changed. Close the dialog, refresh, and review again.".into(),
+                "HEAD or index changed since the repository was last read. Wait for the refresh, then try again.".into(),
             );
         }
+        resolved
+    }
+
+    /// Resolves the target of `op` against the repository, without checking
+    /// that HEAD and the index still match `destination`.
+    fn resolve(
+        git: &Git,
+        op: Operation,
+        target: String,
+        destination: crate::git::WriteIdentity,
+    ) -> Result<Self, String> {
         let checkout_ref = if matches!(op, Operation::Checkout) {
             let full = if target.starts_with("refs/heads/") {
                 target.clone()
@@ -288,6 +321,9 @@ impl ReviewedOperation {
         } else {
             None
         };
+        if matches!(op, Operation::Stash) && !git.has_tracked_changes()? {
+            return Err(crate::git::NOTHING_TO_STASH.into());
+        }
         let network = match &op {
             Operation::Pull { .. } => Some(git.pull_target(&destination)?),
             Operation::Push => Some(git.push_target(&destination)?),
@@ -308,7 +344,7 @@ impl ReviewedOperation {
             Operation::Stash | Operation::Undo | Operation::Redo => None,
         };
         let target_summary = match &target_id {
-            Some(id) => Some(summarize_commit(git, id)?),
+            Some(id) => Some(git.commit_summary(id)?),
             None => None,
         };
         if matches!(op, Operation::CherryPick | Operation::Revert)
@@ -445,8 +481,14 @@ impl ReviewedOperation {
             self.destination.clone(),
         )?;
         if current.target_id != self.target_id || current.checkout_ref != self.checkout_ref {
-            return Err("The target moved. Close the dialog, refresh, and review again.".into());
+            return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
         }
+        self.run_captured(git)
+    }
+
+    /// Runs an operation whose capture was just taken in this worker request,
+    /// so it needs no second revalidation.
+    fn run_captured(&self, git: &Git) -> Result<(), WriteError> {
         let id = self.target_id.as_deref().unwrap_or_default();
         let result = match self.op {
             Operation::Pull { .. } | Operation::Push => {
@@ -458,17 +500,7 @@ impl ReviewedOperation {
             Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
                 git.create_branch_at(&self.target, id)
             }
-            Operation::Checkout => {
-                if let Some(branch) = self
-                    .checkout_ref
-                    .as_deref()
-                    .and_then(|name| name.strip_prefix("refs/heads/"))
-                {
-                    git.write(&["switch", "--", branch]).map(|_| ())
-                } else {
-                    git.write(&["switch", "--detach", id]).map(|_| ())
-                }
-            }
+            Operation::Checkout => git.switch_to(self.checkout_ref.as_deref(), id),
             Operation::Merge => git.merge(id),
             Operation::CherryPick => git.cherry_pick(id),
             Operation::Revert => git.revert(id),
@@ -476,8 +508,8 @@ impl ReviewedOperation {
             // Apply the reviewed stash object, then drop its entry only after a
             // clean apply. Like `git stash pop`, conflicts keep the stash.
             Operation::PopStash => git
-                .write(&["stash", "apply", id])
-                .and_then(|_| git.drop_stash_object(id)),
+                .stash_apply(id, false)
+                .and_then(|()| git.drop_stash_object(id)),
         };
         result.map_err(|error| operation_failure(git, error))
     }
@@ -499,7 +531,7 @@ impl ReviewedOperation {
             self.destination.clone(),
         )?;
         if current.target_id != self.target_id || current.network != self.network {
-            return Err("The target moved. Close the dialog, refresh, and review again.".into());
+            return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
         }
         let network = self
             .network
@@ -516,17 +548,6 @@ impl ReviewedOperation {
             _ => Err("Only Pull and Push run as network operations.".into()),
         }
     }
-}
-
-fn summarize_commit(git: &Git, id: &str) -> Result<TargetSummary, String> {
-    let output = git.run(&["show", "-s", "--no-notes", "--format=%P%x00%s%x00%ci", id])?;
-    let mut fields = output.trim_end_matches('\n').splitn(3, '\0');
-    let parents = fields.next().unwrap_or_default().split_whitespace().count();
-    Ok(TargetSummary {
-        subject: fields.next().unwrap_or_default().to_owned(),
-        date: fields.next().unwrap_or_default().to_owned(),
-        parents,
-    })
 }
 
 fn operation_failure(git: &Git, error: WriteError) -> WriteError {
@@ -1031,8 +1052,11 @@ impl Session {
                 | Action::MarkResolved { .. }
                 | Action::Hunk { .. }
                 | Action::DiscardHunk { .. }
+                | Action::Lines { .. }
+                | Action::DiscardLines { .. }
                 | Action::Commit { .. }
                 | Action::Operation { .. }
+                | Action::RunOperation { .. }
         );
         let result = if mutation && self.network_busy.load(Ordering::Acquire) {
             // Pull and Push run beside the worker; writes wait for them.
@@ -1065,9 +1089,17 @@ impl Session {
     }
     fn snapshot(&mut self, limit: usize, mode: crate::git::HistoryRead) -> Result<Reply, String> {
         let g = self.repo.as_ref().ok_or("Open a local repository first")?;
-        let (mut snapshot, graph, _changed) =
-            g.snapshot_cached(limit.clamp(1, 100_000), mode, &mut self.history)?;
-        snapshot.journal = self.journal.lock().unwrap().status(g);
+        let journal = &self.journal;
+        let history = &mut self.history;
+        // The journal check reads the repository on its own, so it runs beside
+        // the snapshot rather than after it.
+        let (snapshot, journal) = std::thread::scope(|scope| {
+            let journal = scope.spawn(|| journal.lock().unwrap().status(g));
+            let snapshot = g.snapshot_cached(limit.clamp(1, 100_000), mode, history);
+            (snapshot, journal.join())
+        });
+        let (mut snapshot, graph, _changed) = snapshot?;
+        snapshot.journal = journal.map_err(|_| "Undo history check failed")?;
         #[cfg(test)]
         if _changed {
             self.history_layouts += 1;
@@ -1235,11 +1267,16 @@ impl Session {
                 if patch.token != token || patch.staged != unstage {
                     return Err("Diff changed. Reopen the file and retry.".into());
                 }
-                if g.diff(None, &patch.path, patch.staged)? != patch.source {
+                // The conflict check runs beside the diff comparison.
+                let (diff, unmerged) = std::thread::scope(|scope| {
+                    let unmerged = scope.spawn(|| g.reject_unmerged_paths(&[&patch.path]));
+                    (g.diff(None, &patch.path, patch.staged), unmerged.join())
+                });
+                if diff? != patch.source {
                     return Err("Diff changed since review. Reopen the file and retry.".into());
                 }
                 let hunk = patch.hunks.get(index).ok_or("Hunk no longer exists")?;
-                g.reject_unmerged_paths(&[&patch.path])?;
+                unmerged.map_err(|_| WriteError::from("Git conflict check failed"))??;
                 g.apply_hunk(&hunk.materialize(&patch.source), unstage)?;
                 Reply::Done {
                     message: format!(
@@ -1271,6 +1308,63 @@ impl Session {
                     message: format!(
                         "Discarded working-copy hunk in {}. Index and HEAD verified unchanged.",
                         patch.path
+                    ),
+                    committed_draft: None,
+                }
+            }
+            Action::Lines {
+                token,
+                rows,
+                unstage,
+            } => {
+                let patch = self
+                    .patch
+                    .as_ref()
+                    .ok_or("Reopen the diff before staging these lines")?;
+                if patch.token != token || patch.staged != unstage {
+                    return Err("Diff changed. Reopen the file and retry.".into());
+                }
+                if g.diff(None, &patch.path, patch.staged)? != patch.source {
+                    return Err("Diff changed since review. Reopen the file and retry.".into());
+                }
+                let keep = if unstage {
+                    crate::hunk_edit::Keep::After
+                } else {
+                    crate::hunk_edit::Keep::Before
+                };
+                let partial = crate::hunk_edit::select_lines(&patch.source, &rows, keep)?;
+                g.reject_unmerged_paths(&[&patch.path])?;
+                g.apply_hunk(&partial, unstage)?;
+                Reply::Done {
+                    message: format!(
+                        "{} selected lines in {}",
+                        if unstage { "Unstaged" } else { "Staged" },
+                        crate::git::display_path(&patch.path)
+                    ),
+                    committed_draft: None,
+                }
+            }
+            Action::DiscardLines { token, rows } => {
+                let patch = self
+                    .patch
+                    .as_ref()
+                    .ok_or("Reopen the diff before discarding")?;
+                if patch.token != token || patch.staged {
+                    return Err("Discard requires a current working-copy diff".into());
+                }
+                if g.diff(None, &patch.path, false)? != patch.source {
+                    return Err("Working file changed since review. Reopen the diff.".into());
+                }
+                let partial = crate::hunk_edit::select_lines(
+                    &patch.source,
+                    &rows,
+                    crate::hunk_edit::Keep::After,
+                )?;
+                g.discard_hunk(&patch.path, &partial)?;
+                Reply::Done {
+                    message: format!(
+                        "Discarded selected working-copy lines in {}. Index and HEAD verified unchanged.",
+                        crate::git::display_path(&patch.path)
                     ),
                     committed_draft: None,
                 }
@@ -1315,26 +1409,25 @@ impl Session {
                     committed_draft: None,
                 }
             }
+            Action::RunOperation {
+                op,
+                target,
+                destination,
+            } => {
+                if op.is_network() || op.journal_direction().is_some() {
+                    return Err("Review this operation before running it.".into());
+                }
+                // The capture is this write's revalidation: it checks HEAD and
+                // the index against `destination` and resolves the target now.
+                let reviewed = ReviewedOperation::capture(g, op, target, destination)?;
+                let before = crate::journal::Before::capture(g, &reviewed);
+                reviewed.run_captured(g)?;
+                self.operation_done(g, &reviewed, before)
+            }
             Action::Operation { reviewed } => {
                 let before = crate::journal::Before::capture(g, &reviewed);
                 reviewed.execute(g)?;
-                let note = self
-                    .journal
-                    .lock()
-                    .unwrap()
-                    .record_operation(g, &reviewed, before);
-                let message = if matches!(reviewed.op, Operation::PopStash) {
-                    "Stash popped. The stash entry was removed."
-                } else {
-                    "Operation completed"
-                };
-                Reply::Done {
-                    message: match note {
-                        Some(note) => format!("{}. {note}", message.trim_end_matches('.')),
-                        None => message.into(),
-                    },
-                    committed_draft: None,
-                }
+                self.operation_done(g, &reviewed, before)
             }
             Action::Fetch => return Err("Fetch runs as a network operation.".into()),
             Action::Open { .. }
@@ -1344,6 +1437,32 @@ impl Session {
         };
         self.patch = None;
         Ok(reply)
+    }
+
+    /// Records a completed local operation in the journal and words its result.
+    fn operation_done(
+        &self,
+        g: &Git,
+        reviewed: &ReviewedOperation,
+        before: Result<crate::journal::Before, String>,
+    ) -> Reply {
+        let note = self
+            .journal
+            .lock()
+            .unwrap()
+            .record_operation(g, reviewed, before);
+        let message = if matches!(reviewed.op, Operation::PopStash) {
+            "Stash popped. The stash entry was removed."
+        } else {
+            "Operation completed"
+        };
+        Reply::Done {
+            message: match note {
+                Some(note) => format!("{}. {note}", message.trim_end_matches('.')),
+                None => message.into(),
+            },
+            committed_draft: None,
+        }
     }
 
     /// Prepares a Fetch, Pull or Push to run on its own thread with the
@@ -1861,6 +1980,46 @@ mod tests {
             std::fs::read(git.path.join("tracked.txt")).unwrap(),
             b"base\n"
         );
+    }
+
+    #[test]
+    fn local_operations_resolve_and_run_in_one_request() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("tracked.txt", "base\n");
+        git.stage("tracked.txt").unwrap();
+        git.commit("base").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let mut run = |op, target: &str, destination| {
+            session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 1,
+                    action: Action::RunOperation {
+                        op,
+                        target: target.into(),
+                        destination,
+                    },
+                })
+                .result
+        };
+        let destination = git.write_identity().unwrap();
+        assert!(run(Operation::CreateBranch, "topic", destination.clone()).is_ok());
+        assert!(git.ref_exists("refs/heads/topic").unwrap());
+        // The capture still rejects a HEAD or index that moved since the snapshot.
+        fixture.write("tracked.txt", "staged\n");
+        git.stage("tracked.txt").unwrap();
+        let moved = run(Operation::Checkout, "topic", destination.clone());
+        assert!(moved.is_err_and(|failure| failure.message.contains("changed")));
+        assert!(git.write_identity().unwrap().symbolic_head.ends_with("/main"));
+        // Network and journal operations keep their separate review.
+        let current = git.write_identity().unwrap();
+        assert!(run(Operation::Push, "", current.clone()).is_err());
+        assert!(run(Operation::Undo, "", current).is_err());
     }
 
     #[test]

@@ -488,10 +488,15 @@ impl Journal {
                 blocked: check(git, &entry.change, direction).unwrap_or(Some(Blocker::Unchecked)),
             })
         };
-        JournalStatus {
-            undo: preview(Direction::Undo),
-            redo: preview(Direction::Redo),
-        }
+        // Each check is a few Git calls of its own, so the two run side by side.
+        std::thread::scope(|scope| {
+            let redo = scope.spawn(|| preview(Direction::Redo));
+            let undo = preview(Direction::Undo);
+            JournalStatus {
+                undo,
+                redo: redo.join().unwrap_or(None),
+            }
+        })
     }
 
     /// Resolves the top step for the review dialog, after checking that the
@@ -504,7 +509,7 @@ impl Journal {
     ) -> Result<ReviewedOperation, String> {
         if git.write_identity()? != destination {
             return Err(
-                "HEAD or index changed. Close the dialog, refresh, and review again.".into(),
+                "HEAD or index changed since the repository was last read. Wait for the refresh, then try again.".into(),
             );
         }
         let entry = self.top(direction).ok_or(match direction {
@@ -542,11 +547,11 @@ impl Journal {
             .ok_or("Review Undo or Redo again.")?;
         if git.write_identity()? != reviewed.destination {
             return Err(
-                "HEAD or index changed. Close the dialog, refresh, and review again.".into(),
+                "HEAD or index changed since the repository was last read. Wait for the refresh, then try again.".into(),
             );
         }
         if self.top(step.direction) != Some(&step.entry) {
-            return Err("Undo history changed. Close the dialog and review again.".into());
+            return Err("Undo history changed. Wait for the refresh, then try again.".into());
         }
         if let Some(blocker) = check(git, &step.entry.change, step.direction)? {
             return Err(blocker.reason().into());
@@ -842,10 +847,7 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
             } else {
                 (to_ref, to_id)
             };
-            match there_ref.strip_prefix("refs/heads/") {
-                Some(branch) => git.write(&["switch", "--", branch])?,
-                None => git.write(&["switch", "--detach", there_id])?,
-            };
+            git.switch_to(Some(there_ref), there_id)?;
             verify_head(git, there_ref, there_id)?;
         }
         Change::CreateBranch { name, id } => {

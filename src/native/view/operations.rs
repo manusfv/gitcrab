@@ -1,609 +1,339 @@
+//! One-click Git operations.
+//!
+//! Push, Pull, Checkout, Stash, Pop, Undo, Redo, Merge, Cherry-pick and Revert
+//! run as soon as they are chosen. The worker still resolves and checks the
+//! target first (the same [`ReviewedOperation`] preflight a confirmation used
+//! to show), and the write rechecks HEAD, the index and the target before Git
+//! runs. Progress and results appear in the status bar, failures in the error
+//! banner, and Undo reverses every recorded step, so nothing waits on a dialog.
+//!
+//! Creating a branch needs a name, which the inline prompt bar below the
+//! toolbar asks for without blocking the rest of the window.
+
 use super::*;
 
 type OperationRequest = (u32, u32);
 
-/// Dialog state keyed by repository epoch and sequence while a request is active.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a single dialog per window; boxing would only add indirection"
-)]
-pub(super) enum OperationDialog {
-    Editing { error: Option<String> },
-    Resolving(OperationRequest),
-    Ready(ReviewedOperation),
-    Executing(OperationRequest),
-    Finished(String),
+/// An operation whose preflight review is in the worker. When it resolves,
+/// the write starts at once.
+pub(super) struct PendingRun {
+    request: OperationRequest,
+    label: &'static str,
+    /// Switch to the new branch once a Create branch at HEAD has succeeded.
+    then_switch: bool,
 }
 
-impl OperationDialog {
-    fn resolving(&self) -> bool {
-        matches!(self, Self::Resolving(_))
-    }
-
-    fn edit(&mut self) -> bool {
-        if matches!(self, Self::Executing(_) | Self::Finished(_)) {
-            return false;
-        }
-        *self = Self::Editing { error: None };
-        true
-    }
-
-    fn resolved(&mut self, request: OperationRequest, result: Result<ReviewedOperation, String>) {
-        if matches!(self, Self::Resolving(owner) if *owner == request) {
-            *self = match result {
-                Ok(reviewed) => Self::Ready(reviewed),
-                Err(error) => Self::Editing { error: Some(error) },
-            };
-        }
-    }
-
-    fn finished(&mut self, request: OperationRequest, result: Result<String, String>) {
-        if matches!(self, Self::Executing(owner) if *owner == request) {
-            *self = match result {
-                Ok(message) => Self::Finished(message),
-                Err(error) => Self::Editing { error: Some(error) },
-            };
-        }
-    }
+/// The inline bar asking for a new branch's name.
+pub(super) struct BranchPrompt {
+    /// Commit to start from, or `None` for HEAD.
+    start: Option<String>,
+    error: Option<String>,
 }
 
 impl GitCrab {
-    /// Opens target review against the current snapshot's HEAD and index.
-    pub(super) fn review(
+    /// Runs an operation immediately: the worker reviews the target against
+    /// the loaded snapshot's HEAD and index, then the write starts.
+    pub(super) fn run_operation(
         &mut self,
         op: Operation,
         target: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(snapshot) = self.state.snapshot.as_ref() else {
-            return;
-        };
-        if self.state.busy || self.operation_dialog.is_some() {
-            return;
-        }
-        let Some(destination) = snapshot.reviewed.clone() else {
-            self.state.notice = "Refresh the repository before reviewing an operation.".into();
-            cx.notify();
-            return;
-        };
-        let head = snapshot.head_label();
-        self.target.update(cx, |s, cx| {
-            s.set_placeholder(op.placeholder(), window, cx);
-            s.set_value(target, window, cx);
-        });
-        let target = self.target.clone();
-        let model = cx.new(|_| OperationDialog::Editing { error: None });
-        self.operation_dialog = Some(model.clone());
-        let view = cx.weak_entity();
-        let cancel = view.clone();
-        let epoch = self.state.epoch;
-        let repo = self.state.path.clone();
-        let pop_stash = matches!(op, Operation::PopStash);
-        // Undo and Redo act on the journal's top entry, so the review starts at once.
-        let journal = op.journal_direction().is_some();
-        // Pull and Push act on the checked-out branch, so they also start at once.
-        let network = op.is_network();
-        let journal_review = (journal || network).then(|| (op.clone(), destination.clone()));
-        // Before the review resolves, name the refs from the snapshot.
-        let snapshot_refs = snapshot.remote.network_upstream().map(|upstream| {
-            let branch = snapshot.checked_out_branch().unwrap_or_default();
-            match op {
-                Operation::Push => format!("{branch} → {}", upstream.name),
-                _ => format!("{} → {branch}", upstream.name),
-            }
-        });
-        let label = op.label();
-        // Values already visible in the app, offered so the user need not type them.
-        let current = snapshot.checked_out_branch().map(str::to_owned);
-        let choices: Vec<(String, String)> = if op.takes_revision() {
-            let mut choices: Vec<(String, String)> = snapshot
-                .branches
-                .iter()
-                .filter(|branch| current.as_deref() != Some(branch.name.as_str()))
-                .map(|branch| (branch.name.clone(), branch.name.clone()))
-                .collect();
-            if let Some(id) = self.state.selected.clone() {
-                let subject = snapshot
-                    .commits
-                    .iter()
-                    .find(|c| c.id == id)
-                    .map(|c| c.subject.clone())
-                    .unwrap_or_default();
-                choices.insert(
-                    0,
-                    (
-                        format!("Selected commit {} · {subject}", &id[..id.len().min(8)]),
-                        id,
-                    ),
-                );
-            }
-            choices
-        } else {
-            vec![]
-        };
-        let latest_stash = snapshot.latest_stash.clone();
-        let head_name = head.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let view = view.clone();
-            let cancel = cancel.clone();
-            let target = target.clone();
-            let op = op.clone();
-            let target_value = target.read(cx).value();
-            let validation = op.validate_target(target_value.as_ref()).err();
-            let phase = model.read(cx);
-            // Blank input is explained when the user tries to continue, not on open.
-            let typed = !target_value.trim().is_empty();
-            let issue = match phase {
-                OperationDialog::Editing { error } => {
-                    error.clone().or(validation.filter(|_| typed))
-                }
-                _ => None,
-            };
-            let executing = matches!(phase, OperationDialog::Executing(_));
-            let finished = matches!(phase, OperationDialog::Finished(_));
-            let resolving = phase.resolving();
-            let reviewed = match phase {
-                OperationDialog::Ready(reviewed) if reviewed.target == target_value.as_ref() => {
-                    Some(reviewed)
-                }
-                _ => None,
-            };
-            let status = match phase {
-                OperationDialog::Resolving(_) => Some("Resolving the target…".into()),
-                OperationDialog::Executing(_) => Some(
-                    "Git is running. If you dismiss this dialog, see Activity for the result."
-                        .into(),
-                ),
-                OperationDialog::Finished(message) => Some(message.clone()),
-                _ => None,
-            };
-            let submit_label = match reviewed {
-                Some(reviewed) => reviewed.title(),
-                None if journal || network => "Review",
-                None => "Review target",
-            };
-            let title = reviewed.map_or(label, |reviewed| reviewed.title());
-            let consequence = reviewed.map(|reviewed| reviewed.describe(&head_name));
-            let refs = reviewed
-                .and_then(ReviewedOperation::refs)
-                .or_else(|| snapshot_refs.clone());
-            let target_id = reviewed.and_then(|reviewed| reviewed.target_id.clone());
-            let resolved = reviewed.and_then(|reviewed| {
-                let summary = reviewed.target_summary.as_ref()?;
-                Some(format!(
-                    "{} · {} · {}",
-                    reviewed.target_id.as_deref().unwrap_or_default(),
-                    summary.subject,
-                    display_date(&summary.date)
-                ))
-            });
-            let choices = choices.clone();
-            let stash_identity = latest_stash
-                .as_ref()
-                .filter(|_| pop_stash)
-                .map(|stash| format!(
-                    "stash@{{0}} · {} · {}",
-                    stash.message,
-                    display_date(&stash.date)
-                ));
-            let submit = view.clone();
-            let submit_op = op.clone();
-            let submit_destination = destination.clone();
-            let ok_destination = destination.clone();
-            let submit_model = model.clone();
-            let ok_model = model.clone();
-            let cancel_model = model.clone();
-            dialog
-                .title(title)
-                .confirm()
-                .footer(move |_, cancel, w, cx| {
-                    let mut buttons = vec![cancel(w, cx)];
-                    if executing && network {
-                        // Dismiss leaves Git running; this stops it.
-                        let stop = submit.clone();
-                        buttons.push(
-                            components::basic(
-                                Button::new("operation-cancel-network").label(format!(
-                                    "Cancel {}",
-                                    if matches!(submit_op, Operation::Push) {
-                                        "push"
-                                    } else {
-                                        "pull"
-                                    }
-                                )),
-                                components::ButtonKind::Secondary,
-                                ControlSize::Regular,
-                            )
-                            .on_click(move |_, _, cx| {
-                                let _ = stop.update(cx, |v, cx| v.cancel_network(cx));
-                            })
-                            .into_any_element(),
-                        );
-                    }
-                    if !executing && !finished {
-                        buttons.push(
-                            components::basic(
-                                Button::new("operation-submit").label(submit_label),
-                                components::ButtonKind::Primary,
-                                ControlSize::Regular,
-                            )
-                            .disabled_when(resolving)
-                                .on_click({
-                                    let submit = submit.clone();
-                                    let op = submit_op.clone();
-                                    let destination = submit_destination.clone();
-                                    let model = submit_model.clone();
-                                    move |_, w, cx| {
-                                        let _ = submit.update(cx, |v, cx| {
-                                            v.confirm_operation(
-                                                &model,
-                                                op.clone(),
-                                                epoch,
-                                                destination.clone(),
-                                                w,
-                                                cx,
-                                            );
-                                        });
-                                    }
-                                })
-                                .into_any_element(),
-                        );
-                    }
-                    buttons
-                })
-                .button_props(
-                    gpui_component::dialog::DialogButtonProps::default()
-                        .ok_text(submit_label)
-                        .cancel_text(if executing {
-                            "Dismiss"
-                        } else if finished {
-                            "Close"
-                        } else {
-                            "Cancel"
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .child(
-                            div()
-                                .p_3()
-                                .rounded(px(6.))
-                                .bg(rgb(semantic(Role::SurfaceCanvas)))
-                                .border_1()
-                                .border_color(rgb(semantic(Role::BorderDivider)))
-                                .child(
-                                    div()
-                                        .text_size(type_size(cx, 12.))
-                                        .text_color(rgb(semantic(Role::TextSecondary)))
-                                        .child("REPOSITORY"),
-                                )
-                                .child(
-                                    div()
-                                        .mt_1()
-                                        .text_size(type_size(cx, 12.))
-                                        .child(repo.clone()),
-                                )
-                                .child(div().mt_2().child(badge(
-                                    format!(
-                                        "Current HEAD · {head} · {}",
-                                        &destination.head[..destination.head.len().min(12)]
-                                    ),
-                                    semantic(Role::ActionPrimary),
-                                ))),
-                        )
-                        .child(div().font_weight(FontWeight::MEDIUM).child(match op {
-                            Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
-                                "New branch name"
-                            }
-                            Operation::Stash => "Stash message (optional)",
-                            Operation::PopStash => "Latest stash",
-                            Operation::Undo | Operation::Redo => "Most recent action in this tab",
-                            Operation::Pull { .. } | Operation::Push => "Source → destination",
-                            _ => "Target branch or commit",
-                        }))
-                        .when_some(refs, |e, refs| {
-                            e.child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(refs),
-                            )
-                        })
-                        .when_some(stash_identity, |e, identity| {
-                            e.child(div().text_size(type_size(cx, 12.)).child(identity))
-                        })
-                        .when(!matches!(op, Operation::PopStash | Operation::Undo | Operation::Redo) && !network, |e| {
-                            e.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(Input::new(&target).disabled(executing || finished)),
-                                    )
-                                    .when(!choices.is_empty() && !executing && !finished, |row| {
-                                        let target = target.clone();
-                                        let choices = choices.clone();
-                                        row.child(
-                                            Button::new("operation-pick")
-                                                .label("Choose…")
-                                                .outline()
-                                                .small()
-                                                .h(px(CONTROL_HEIGHT))
-                                                .tooltip("Pick a branch or the selected commit, or type any revision")
-                                                .dropdown_menu(move |mut menu, _, _| {
-                                                    for (label, value) in &choices {
-                                                        let target = target.clone();
-                                                        let value = value.clone();
-                                                        menu = menu.item(
-                                                            PopupMenuItem::new(label.clone())
-                                                                .on_click(move |_, w, cx| {
-                                                                    target.update(cx, |s, cx| {
-                                                                        s.set_value(
-                                                                            value.clone(),
-                                                                            w,
-                                                                            cx,
-                                                                        )
-                                                                    });
-                                                                }),
-                                                        );
-                                                    }
-                                                    menu
-                                                }),
-                                        )
-                                    }),
-                            )
-                        })
-                        .when_some(consequence, |e, consequence| {
-                            e.child(
-                                div()
-                                    .p_2()
-                                    .rounded(px(6.))
-                                    .bg(rgb(semantic(Role::StatusInfoBg)))
-                                    .text_color(rgb(semantic(Role::TextDefault)))
-                                    .child(consequence),
-                            )
-                        })
-                        .when_some(resolved.or(target_id.map(|id| id.to_string())), |e, id| {
-                            e.child(
-                                div()
-                                    .text_size(type_size(cx, 12.))
-                                    .text_color(rgb(semantic(Role::TextSecondary)))
-                                    .child(format!("Reviewed object · {id}")),
-                            )
-                        })
-                        .when_some(
-                            match &op {
-                                Operation::CreateBranchAt { start } => Some(start.clone()),
-                                _ => None,
-                            },
-                            |e, start| e.child(format!("Starting at {}", start)),
-                        )
-                        .child(
-                            div()
-                                .text_size(type_size(cx, 12.))
-                                .text_color(rgb(semantic(Role::TextMuted)))
-                                .child(op.help()),
-                        )
-                        .when_some(issue, |e, issue| {
-                            e.child(
-                                div()
-                                    .text_color(rgb(semantic(Role::StatusErrorFg)))
-                                    .child(issue),
-                            )
-                        })
-                        .when_some(status, |e, status| e.child(status)),
-                )
-                .on_ok(move |_, w, cx| {
-                    view.update(cx, |v, cx| {
-                        if finished {
-                            return v.dismiss_operation(&ok_model, cx);
-                        }
-                        v.confirm_operation(
-                            &ok_model,
-                            op.clone(),
-                            epoch,
-                            ok_destination.clone(),
-                            w,
-                            cx,
-                        );
-                        false
-                    })
-                    .unwrap_or(true)
-                })
-                .on_cancel(move |_, _, cx| {
-                    cancel
-                        .update(cx, |v, cx| v.dismiss_operation(&cancel_model, cx))
-                        .unwrap_or(true)
-                })
-        });
-        // Popping a stash has no editable target, so keep focus in the dialog.
-        if !pop_stash && !journal && !network {
-            self.target.update(cx, |s, cx| s.focus(window, cx));
-        }
-        if let (Some((op, destination)), Some(model)) =
-            (journal_review, self.operation_dialog.clone())
-        {
-            self.confirm_operation(&model, op, epoch, destination, window, cx);
-        }
-        cx.notify();
-    }
-    fn cancel_resolution(&mut self) {
-        self.state.cancel_operation_review();
-        self.service.cancel_read(ReadKind::OperationReview);
+        self.start_operation(op, target, false, window, cx);
     }
 
-    fn dismiss_operation(
+    fn start_operation(
         &mut self,
-        model: &Entity<OperationDialog>,
+        op: Operation,
+        target: String,
+        then_switch: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.operation_dialog.as_ref() != Some(model) {
+        let Some(snapshot) = self.state.snapshot.as_ref() else {
+            return false;
+        };
+        if self.state.busy || self.pending_run.is_some() {
+            self.state.notice = "A Git operation is running. Wait for it to finish.".into();
+            cx.notify();
             return false;
         }
-        // Escape and the footer share this dismissal path. Only a read
-        // resolution is cancelled. The tab still records executing writes.
-        if model.read(cx).resolving() {
-            self.cancel_resolution();
+        let Some(destination) = snapshot.reviewed.clone() else {
+            self.state.notice = "Refresh the repository before running an operation.".into();
+            cx.notify();
+            return false;
+        };
+        if let Err(error) = op.validate_target(&target) {
+            self.state.notice = format!("{} unavailable. {error}", op.label());
+            cx.notify();
+            return false;
         }
-        self.operation_dialog = None;
+        let label = op.label();
+        if !op.is_network() && op.journal_direction().is_none() {
+            // Local operations resolve and run in one worker request; the
+            // worker checks HEAD and the index against `destination` first.
+            self.switch_after_branch = then_switch
+                .then(|| target.clone())
+                .filter(|_| matches!(op, Operation::CreateBranch));
+            self.state.dismiss_notice();
+            let job = self.state.mutate(Action::RunOperation {
+                op,
+                target,
+                destination,
+            });
+            self.dispatch_mutation(job, window, cx);
+            cx.notify();
+            return true;
+        }
+        let (sequence, job) = self.state.review_operation(op, target, destination);
+        self.pending_run = Some(PendingRun {
+            request: (self.state.epoch, sequence),
+            label,
+            then_switch,
+        });
+        self.state.dismiss_notice();
+        self.dispatch(job, window, cx);
         cx.notify();
         true
     }
 
+    /// Status bar text while the preflight review runs.
+    pub(super) fn pending_label(&self) -> Option<String> {
+        self.pending_run
+            .as_ref()
+            .map(|pending| format!("{}…", pending.label))
+    }
+
+    /// Drops a review that can no longer start its write, such as after the
+    /// tab opened another repository.
+    pub(super) fn cancel_pending_run(&mut self) {
+        if self.pending_run.take().is_some() {
+            self.state.cancel_operation_review();
+            self.service.cancel_read(ReadKind::OperationReview);
+        }
+    }
+
+    /// Starts the write for a resolved review, or reports why it cannot run.
+    pub(super) fn operation_resolved(
+        &mut self,
+        request: OperationRequest,
+        result: Result<ReviewedOperation, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self
+            .pending_run
+            .take_if(|pending| pending.request == request)
+        else {
+            return;
+        };
+        let reviewed = match result {
+            Ok(reviewed) if self.state.epoch == request.0 => reviewed,
+            Ok(_) => return,
+            Err(error) => {
+                self.error_heading = format!("{} did not run", pending.label);
+                self.state.notice = error;
+                self.state.error = true;
+                cx.notify();
+                return;
+            }
+        };
+        self.switch_after_branch = pending
+            .then_switch
+            .then(|| reviewed.target.clone())
+            .filter(|_| matches!(reviewed.op, Operation::CreateBranch));
+        let job = self.state.mutate(Action::Operation { reviewed });
+        self.dispatch_mutation(job, window, cx);
+    }
+
+    /// Follows a successful Create branch at HEAD by switching to it, which
+    /// changes no files because the branch points at HEAD.
+    pub(super) fn after_mutation(&mut self, ok: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(branch) = self.switch_after_branch.take().filter(|_| ok) {
+            self.start_operation(Operation::Checkout, branch, false, window, cx);
+        }
+    }
+
+    /// Opens the inline bar that names a new branch at `start`, or at HEAD.
+    pub(super) fn prompt_branch(
+        &mut self,
+        start: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.snapshot.is_none() {
+            return;
+        }
+        self.branch_prompt = Some(BranchPrompt { start, error: None });
+        self.target.update(cx, |s, cx| {
+            s.set_placeholder("New branch name", window, cx);
+            s.set_value("", window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn close_branch_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.branch_prompt.take().is_some() {
+            self.focus.focus(window);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn branch_prompt_open(&self) -> bool {
+        self.branch_prompt.is_some()
+    }
+
+    /// Clears a shown name error once the user edits the name.
     pub(super) fn operation_target_changed(&mut self, cx: &mut Context<Self>) {
-        if let Some(model) = self.operation_dialog.clone() {
-            let resolving = model.read(cx).resolving();
-            if model.update(cx, |state, cx| {
-                let edited = state.edit();
-                if edited {
-                    cx.notify();
-                }
-                edited
-            }) {
-                if resolving {
-                    self.cancel_resolution();
-                }
+        if let Some(prompt) = self.branch_prompt.as_mut() {
+            if prompt.error.take().is_some() {
                 cx.notify();
             }
         }
     }
 
-    pub(super) fn operation_resolved(
-        &mut self,
-        request: OperationRequest,
-        result: Result<ReviewedOperation, String>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(model) = &self.operation_dialog {
-            model.update(cx, |state, cx| {
-                state.resolved(request, result);
-                cx.notify();
-            });
-        }
-    }
-
-    pub(super) fn operation_finished(
-        &mut self,
-        request: OperationRequest,
-        result: Result<String, String>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(model) = &self.operation_dialog {
-            model.update(cx, |state, cx| {
-                state.finished(request, result);
-                cx.notify();
-            });
-        }
-    }
-    fn confirm_operation(
-        &mut self,
-        model: &Entity<OperationDialog>,
-        op: Operation,
-        epoch: u32,
-        destination: gitcrab_core::git::WriteIdentity,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.operation_dialog.as_ref() != Some(model) || self.state.busy {
+    /// Creates the branch named in the prompt. At HEAD it also switches to it.
+    pub(super) fn submit_branch_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.branch_prompt.as_mut() else {
             return;
-        }
-        if self.state.epoch != epoch {
-            model.update(cx, |state, cx| {
-                *state = OperationDialog::Editing {
-                    error: Some("Repository changed. Open a new review.".into()),
-                };
-                cx.notify();
-            });
-            return;
-        }
-        let target = self.target.read(cx).value().to_string();
-        if let Err(error) = op.validate_target(&target) {
-            // Explain the problem now that the user tried to continue.
-            model.update(cx, |state, cx| {
-                if matches!(state, OperationDialog::Editing { .. }) {
-                    *state = OperationDialog::Editing { error: Some(error) };
-                    cx.notify();
-                }
-            });
-            return;
-        }
-        let reviewed = match model.read(cx) {
-            OperationDialog::Ready(reviewed) if reviewed.target == target => Some(reviewed.clone()),
-            OperationDialog::Ready(_) | OperationDialog::Editing { .. } => None,
-            _ => return,
         };
-        let (phase, job) = if let Some(reviewed) = reviewed {
-            let Some(job) = self.state.mutate(Action::Operation { reviewed }) else {
-                return;
-            };
-            (
-                OperationDialog::Executing((job.1.epoch, job.1.sequence)),
-                Some(job),
-            )
-        } else {
-            let (sequence, job) = self.state.review_operation(op, target, destination);
-            (OperationDialog::Resolving((epoch, sequence)), job)
+        let name = self.target.read(cx).value().trim().to_string();
+        let (op, then_switch) = match &prompt.start {
+            Some(start) => (
+                Operation::CreateBranchAt {
+                    start: start.clone(),
+                },
+                false,
+            ),
+            None => (Operation::CreateBranch, true),
         };
-        let executing = matches!(phase, OperationDialog::Executing(_));
-        model.update(cx, |state, cx| {
-            *state = phase;
+        if let Err(error) = op.validate_target(&name) {
+            prompt.error = Some(if name.is_empty() {
+                "Type a name for the branch.".into()
+            } else {
+                error
+            });
             cx.notify();
+            return;
+        }
+        // Git refs are files, so `a` and `a/b` cannot both exist.
+        let clash = self.state.snapshot.as_ref().and_then(|s| {
+            s.branches.iter().find_map(|b| {
+                if b.name == name {
+                    Some(format!("A branch named {name} already exists."))
+                } else if name.starts_with(&format!("{}/", b.name))
+                    || b.name.starts_with(&format!("{name}/"))
+                {
+                    Some(format!(
+                        "{name} cannot sit beside the existing branch {}. Choose another name.",
+                        b.name
+                    ))
+                } else {
+                    None
+                }
+            })
         });
-        if executing {
-            self.dispatch_mutation(job, window, cx);
-        } else {
-            self.dispatch(job, window, cx);
+        if let Some(error) = clash {
+            prompt.error = Some(error);
+            cx.notify();
+            return;
+        }
+        if self.start_operation(op, name, then_switch, window, cx) {
+            self.close_branch_prompt(window, cx);
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::OperationDialog;
-
-    #[test]
-    fn editing_during_resolution_rejects_its_late_feedback() {
-        let mut dialog = OperationDialog::Resolving((1, 1));
-        assert!(dialog.resolving());
-        assert!(dialog.edit());
-        dialog.resolved((1, 1), Err("obsolete target".into()));
-        assert!(matches!(dialog, OperationDialog::Editing { error: None }));
-
-        dialog = OperationDialog::Resolving((1, 2));
-        dialog.resolved((1, 1), Err("obsolete target".into()));
-        assert!(matches!(dialog, OperationDialog::Resolving((1, 2))));
-        dialog.resolved((1, 2), Err("current target failed".into()));
-        assert!(
-            matches!(dialog, OperationDialog::Editing { error: Some(error) } if error == "current target failed")
-        );
-    }
-
-    #[test]
-    fn executing_ignores_edits_and_only_its_owner_can_finish_it() {
-        let mut dialog = OperationDialog::Executing((2, 1));
-        assert!(!dialog.edit());
-        dialog.finished((1, 1), Ok("obsolete write".into()));
-        assert!(matches!(dialog, OperationDialog::Executing((2, 1))));
-        dialog.finished((2, 1), Ok("current write finished".into()));
-        assert!(!dialog.edit());
-        assert!(
-            matches!(dialog, OperationDialog::Finished(message) if message == "current write finished")
-        );
-    }
-
-    #[test]
-    fn dismissing_a_write_leaves_a_later_dialog_unaffected() {
-        let executing = OperationDialog::Executing((1, 3));
-        assert!(!executing.resolving());
-        let mut next_dialog = OperationDialog::Resolving((1, 4));
-        next_dialog.finished((1, 3), Err("previous write failed".into()));
-        assert!(matches!(next_dialog, OperationDialog::Resolving((1, 4))));
+    /// The non-modal bar asking for a new branch's name, shown below the toolbar.
+    pub(super) fn render_branch_prompt(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let prompt = self.branch_prompt.as_ref()?;
+        let snapshot = self.state.snapshot.as_ref()?;
+        let short = |id: &str| id.chars().take(8).collect::<String>();
+        let place = match &prompt.start {
+            Some(start) => {
+                let subject = snapshot
+                    .commits
+                    .iter()
+                    .find(|c| &c.id == start)
+                    .map(|c| format!(" · {}", c.subject))
+                    .unwrap_or_default();
+                format!("New branch at {}{subject}", short(start))
+            }
+            None => format!(
+                "New branch at {} ({}) · switches to it",
+                snapshot.head_label(),
+                short(&snapshot.head_id)
+            ),
+        };
+        let busy = self.state.busy || self.pending_run.is_some();
+        Some(
+            div()
+                .id("branch-prompt")
+                .flex_none()
+                .mx_2()
+                .mt_2()
+                .px_3()
+                .py_2()
+                .rounded(px(6.))
+                .bg(rgb(semantic(Role::SurfacePanel)))
+                .border_1()
+                .border_color(rgb(semantic(Role::ActionPrimary)))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .on_key_down(cx.listener(|v, event: &KeyDownEvent, w, cx| {
+                    if event.keystroke.key == "escape" {
+                        v.close_branch_prompt(w, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(icon("branch-plus").size(px(GLYPH_SIZE)))
+                        .child(
+                            div()
+                                .flex_none()
+                                .max_w(px(360.))
+                                .truncate()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(place),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(160.))
+                                .max_w(px(420.))
+                                .child(Input::new(&self.target).small()),
+                        )
+                        .child(
+                            components::basic(
+                                Button::new("branch-prompt-create").label("Create"),
+                                components::ButtonKind::Primary,
+                                ControlSize::Compact,
+                            )
+                            .disabled(busy)
+                            .tooltip("Create the branch · Enter")
+                            .on_click(cx.listener(|v, _, w, cx| v.submit_branch_prompt(w, cx))),
+                        )
+                        .child(
+                            self.button("branch-prompt-cancel", "Cancel")
+                                .tooltip("Close without creating a branch · Esc")
+                                .on_click(cx.listener(|v, _, w, cx| v.close_branch_prompt(w, cx))),
+                        ),
+                )
+                .when_some(prompt.error.clone(), |el, error| {
+                    el.child(
+                        div()
+                            .text_size(type_size(cx, 12.))
+                            .text_color(rgb(semantic(Role::StatusErrorFg)))
+                            .child(error),
+                    )
+                })
+                .into_any_element(),
+        )
     }
 }

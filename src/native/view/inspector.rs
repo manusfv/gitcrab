@@ -1121,16 +1121,16 @@ impl GitCrab {
                                 .disabled_when(self.state.busy)
                                 .tooltip("Create a branch at HEAD, then switch to it before committing")
                                 .on_click(cx.listener(|v, _, w, cx| {
-                                    v.review(Operation::CreateBranch, String::new(), w, cx)
+                                    v.prompt_branch(None, w, cx)
                                 })),
                         )
                         .children(branches_at_head.into_iter().enumerate().map(|(i, name)| {
                             let target = name.clone();
-                            self.action_button(("detached-switch", i), format!("Switch to {name}…"))
+                            self.action_button(("detached-switch", i), format!("Switch to {name}"))
                                 .disabled_when(self.state.busy)
                                 .tooltip("Switch to this branch, which points at the current commit")
                                 .on_click(cx.listener(move |v, _, w, cx| {
-                                    v.review(Operation::Checkout, target.clone(), w, cx)
+                                    v.run_operation(Operation::Checkout, target.clone(), w, cx)
                                 }))
                         })),
                 )

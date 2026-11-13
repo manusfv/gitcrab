@@ -176,6 +176,9 @@ impl GitCrab {
             return;
         }
         self.open_failure = None;
+        self.cancel_pending_run();
+        self.branch_prompt = None;
+        self.switch_after_branch = None;
         for kind in [
             ReadKind::Snapshot,
             ReadKind::Details,
@@ -247,6 +250,17 @@ impl GitCrab {
                     if let Some(error) = error {
                         v.watcher = None;
                         v.watch_warning = Some(format!("Live refresh interrupted: {error}. Retrying after refresh."));
+                    }
+                    // A full refresh sent after the change, or the one every
+                    // write ends with, reads it already. Skipping it avoids a
+                    // second full refresh after each of GitCrab's own writes.
+                    let covered = !interrupted
+                        && v.active
+                        && w.is_window_active()
+                        && (v.state.busy
+                            || v.full_refresh_sent.is_some_and(|sent| sent > event_time));
+                    if covered {
+                        return true;
                     }
                     if v.active && !v.state.busy && w.is_window_active() {
                         #[cfg(feature="native-evidence")]
