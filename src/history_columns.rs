@@ -219,6 +219,40 @@ impl HistoryColumns {
         self.columns.iter().filter(|entry| entry.visible)
     }
 
+    /// Width of the message cell that is on screen, in logical pixels, or `None`
+    /// before the history viewport has been measured.
+    ///
+    /// The table is `max(sum of visible widths, viewport)` wide, with the message
+    /// taking any slack. A layout wider than the `viewport` scrolls horizontally;
+    /// `scrolled` is how far it is scrolled right. The result is cut at the
+    /// viewport's right edge but not its left, so it can exceed the visible part
+    /// when the message is scrolled partly out on the left.
+    pub fn visible_message_width(&self, viewport: f32, scrolled: f32) -> Option<f32> {
+        if !(viewport.is_finite() && viewport > 0.) {
+            return None;
+        }
+        let scrolled = if scrolled.is_finite() {
+            scrolled.max(0.)
+        } else {
+            0.
+        };
+        let mut seen = false;
+        let (before, after) =
+            self.visible()
+                .fold((0., 0.), |(before, after), entry| match entry.column {
+                    HistoryColumn::Message => {
+                        seen = true;
+                        (before, after)
+                    }
+                    _ if seen => (before, after + entry.width),
+                    _ => (before + entry.width, after),
+                });
+        let table = self.visible().map(|entry| entry.width).sum::<f32>();
+        let message_right = table.max(viewport) - after;
+        let visible_right = viewport + scrolled;
+        Some((message_right.min(visible_right) - before).max(0.))
+    }
+
     /// Toggles an existing column's visibility. The message column stays visible.
     pub fn toggle(&mut self, column: HistoryColumn) {
         if column != HistoryColumn::Message {
@@ -264,6 +298,30 @@ impl HistoryColumns {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_message_width_is_cut_at_the_viewport_edge() {
+        // References 124, Graph 148, Message 475: a 747px table.
+        let mut layout = HistoryColumns::default();
+        for entry in &mut layout.columns {
+            (entry.width, entry.visible) = match entry.column {
+                HistoryColumn::References => (124., true),
+                HistoryColumn::Graph => (148., true),
+                HistoryColumn::Message => (475., true),
+                _ => (entry.width, false),
+            };
+        }
+        assert_eq!(layout.visible_message_width(0., 0.), None);
+        // A wider viewport gives the message the slack.
+        assert_eq!(layout.visible_message_width(900., 0.), Some(628.));
+        // An overflowing layout loses what is cut off, until scrolled into view.
+        assert_eq!(layout.visible_message_width(709., 0.), Some(437.));
+        assert_eq!(layout.visible_message_width(709., 38.), Some(475.));
+        // A column to the right of the message keeps its space.
+        layout.toggle(HistoryColumn::Sha);
+        layout.resize(HistoryColumn::Sha, 90.);
+        assert_eq!(layout.visible_message_width(1000., 0.), Some(638.));
+    }
 
     #[test]
     fn layout_survives_round_trip_with_hidden_reordered_and_resized_columns() {

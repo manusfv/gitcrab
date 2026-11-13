@@ -4,6 +4,38 @@ mod columns;
 
 const HISTORY_CELL_INSET: Rems = Rems(0.5);
 
+/// Narrowest the WIP summary editor gets when the history pane is cramped.
+const WIP_EDITOR_MIN_WIDTH: f32 = 48.;
+/// Width of the WIP summary editor while its text is short or empty.
+const WIP_EDITOR_DEFAULT_WIDTH: f32 = 120.;
+/// Right padding of the WIP editor. The input also keeps a 10px margin right
+/// of the caret (gpui-component's `RIGHT_MARGIN`), so together they match the
+/// 12px left padding.
+const WIP_EDITOR_PAD_RIGHT: f32 = 2.;
+const WIP_EDITOR_PAD_LEFT: f32 = 12.;
+const WIP_EDITOR_CARET_MARGIN: f32 = 10.;
+/// Left and right border of the input.
+const WIP_EDITOR_BORDER: f32 = 2.;
+
+/// Width the WIP editor needs to show `text_width` of text without the input
+/// scrolling it: padding, border and caret margin, plus 1px against rounding.
+/// Short text uses [`WIP_EDITOR_DEFAULT_WIDTH`]; the cell's cap and the badges
+/// can still shrink it to [`WIP_EDITOR_MIN_WIDTH`].
+fn wip_editor_width(text_width: f32) -> f32 {
+    let text = if text_width.is_finite() {
+        text_width.max(0.).ceil()
+    } else {
+        0.
+    };
+    (text
+        + WIP_EDITOR_PAD_LEFT
+        + WIP_EDITOR_PAD_RIGHT
+        + WIP_EDITOR_BORDER
+        + WIP_EDITOR_CARET_MARGIN
+        + 1.)
+        .max(WIP_EDITOR_DEFAULT_WIDTH)
+}
+
 use gitcrab_core::presentation::{classify_decoration, DecorationKind};
 
 /// A reference printed beside a commit, with the ref it previews when activated.
@@ -307,23 +339,45 @@ impl GitCrab {
             )
             .into_any_element()
     }
-    fn history_row(
-        &self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn history_row(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
             .max(self.preferences.font_size * 20. / 13. + 8.);
         let lane_count = self.state.graph.lanes;
         if index == 0 {
             // A saved layout can be wider than the pane; cap the message cell to the
             // part on screen so the editor shrinks before the badges are cut off.
-            let overflow = self.history_table_width() - self.history_available;
+            // Measured from the scroll viewport's last painted bounds, which track
+            // window and pane resizes exactly (unlike the computed pane widths).
+            let scroll = self.history_horizontal_scroll.clone();
+            let viewport = f32::from(scroll.bounds().size.width);
+            let scrolled = -f32::from(scroll.offset().x);
             let inset = f32::from(HISTORY_CELL_INSET.to_pixels(window.rem_size()));
-            let wip_visible_cap = |width: f32| {
-                (self.history_available > 0. && overflow > 0.)
-                    .then(|| (width - overflow - 2. * inset).max(48.))
+            let wip_visible_cap = self
+                .history_layout
+                .visible_message_width(viewport, scrolled)
+                .map(|width| (width - 2. * inset).max(WIP_EDITOR_MIN_WIDTH));
+            // The editor starts at the width of its text (or placeholder) and grows
+            // as the summary is typed; the cap above and the badges bound it.
+            let wip_width = {
+                let input = self.wip_summary.read(cx);
+                let text = match input.value() {
+                    value if value.is_empty() => SharedString::from("// WIP"),
+                    value => value,
+                };
+                let font_size = type_size(cx, 12.);
+                let run = TextRun {
+                    len: text.len(),
+                    // The input renders in the theme font, not the window default.
+                    font: font(gpui_component::Theme::global(cx).font_family.clone()),
+                    color: Hsla::default(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window
+                    .text_system()
+                    .shape_line(text, font_size, &[run], None);
+                wip_editor_width(f32::from(shaped.width))
             };
             let has_head = self
                 .state
@@ -392,28 +446,51 @@ impl GitCrab {
                             .w_full()
                             .min_w_0()
                             .overflow_hidden()
-                            .when_some(wip_visible_cap(entry.width), |el, cap| {
-                                el.max_w(px(cap))
+                            .when_some(wip_visible_cap, |el, cap| el.max_w(px(cap)))
+                            // The cap uses the previous frame's viewport. If that
+                            // changed (a resize), draw once more with the new size.
+                            .child({
+                                let scroll = scroll.clone();
+                                let used = (viewport, scrolled);
+                                canvas(
+                                    |_, _, _| (),
+                                    move |_, _, w, _| {
+                                        let now = (
+                                            f32::from(scroll.bounds().size.width),
+                                            -f32::from(scroll.offset().x),
+                                        );
+                                        if now != used {
+                                            w.refresh();
+                                        }
+                                    },
+                                )
+                                .absolute()
+                                .size_0()
                             })
                             // Inline summary editor, mirrored with the composer's
                             // Commit summary field (see the draft observers in view.rs).
                             .child(
                                 div()
                                     .id("wip-summary")
-                                    // Grows into the free space; the badges are
-                                    // flex_none, so the input yields first.
-                                    .flex_1()
-                                    .min_w(px(48.))
+                                    // Sized to its text; shrinks before the
+                                    // flex_none badges when space runs out.
+                                    .flex_shrink()
+                                    .w(px(wip_width))
+                                    .min_w(px(WIP_EDITOR_MIN_WIDTH))
                                     .overflow_hidden()
                                     .child(
                                         Input::new(&self.wip_summary)
                                             .disabled(self.settings_open)
                                             .py_0()
+                                            // The input's 10px caret margin supplies
+                                            // the rest, matching the 12px left inset.
+                                            .pr(px(WIP_EDITOR_PAD_RIGHT))
                                             .h(px((height - 10.).max(18.)))
                                             .text_size(type_size(cx, 12.)),
                                     )
                                     .tooltip(|w, cx| {
-                                        Tooltip::new("Working changes · commit summary").build(w, cx)
+                                        Tooltip::new("Working changes · commit summary")
+                                            .build(w, cx)
                                     }),
                             )
                             .when(
@@ -896,5 +973,18 @@ impl GitCrab {
             menu
         })
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{wip_editor_width, WIP_EDITOR_DEFAULT_WIDTH};
+
+    #[test]
+    fn wip_editor_fits_its_text_without_scrolling() {
+        assert_eq!(wip_editor_width(40.), WIP_EDITOR_DEFAULT_WIDTH);
+        // 12px left + 2px right padding, 2px border, the input's 10px caret
+        // margin and 1px slack; any less and the first glyph gets clipped.
+        assert_eq!(wip_editor_width(300.2), 301. + 27.);
     }
 }
