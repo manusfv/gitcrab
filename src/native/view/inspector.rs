@@ -1104,7 +1104,7 @@ impl GitCrab {
                 el.child(
                     div()
                         .mx(px(INSPECTOR_INSET))
-                        .mb_1()
+                        .mt(px(8.))
                         .flex()
                         .flex_wrap()
                         .items_center()
@@ -1139,6 +1139,9 @@ impl GitCrab {
                 div()
                     .id("commit-box")
                     .mx(px(INSPECTOR_INSET))
+                    // Same gap as between the box and the commit button below, so the
+                    // box doesn't butt up against the "Commit" header.
+                    .mt(px(8.))
                     .flex_none()
                     .min_w_0()
                     .flex()
