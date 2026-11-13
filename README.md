@@ -19,15 +19,23 @@
 
 Prebuilt executables will be published on [GitHub Releases](https://github.com/manusfv/gitcrab/releases). Until then, you can [build GitCrab from source](#build-from-source).
 
-1. Install [Git](https://git-scm.com/downloads) so GitCrab can work with your repositories.
+1. Install [Git 2.43 or newer](https://git-scm.com/downloads) so GitCrab can work with your repositories.
 2. When release builds are available, download the asset that matches your operating system and processor architecture.
-3. Launch GitCrab and choose a local repository. GitCrab reopens that repository on your next launch.
+3. Launch GitCrab, choose a local repository, and confirm that you trust its Git configuration and metadata. GitCrab remembers your approval across restarts and asks again if the resolved repository paths change. It offers to reopen the last repository on your next launch.
 
 ## What you can do
 
 - **Explore history.** Follow branches and tags through the commit graph, search loaded commits, and open a commit to inspect its metadata and changed files. Open multiple repositories in tabs and drag to reorder tabs or history columns.
 - **Review changes.** Switch between unified and side-by-side diffs, jump between hunks, and show whitespace when it matters. Review operations such as checkout, merge, cherry-pick, revert, and stash before applying them.
 - **Prepare a commit.** Open **Working changes**, select a file, and use **Stage hunk** on the change you want to include. Review the staged diff, write a summary and optional description, then commit.
+- **Stage or unstage the whole worktree.** The bulk controls act on changes Git finds when the command runs, including files that arrived after the last refresh. A single-file action rechecks the displayed status and rename before updating the index.
+
+GitCrab opens trusted local repositories. Trusted Git configuration can start
+programs such as hooks, filters, and signing tools. Use a trusted Git installation
+on PATH, or set `GITCRAB_GIT` to an absolute executable path. The runner ignores
+inherited `GIT_*` variables and reads normal system, user, and repository config.
+Commit drafts stay in memory in their tab. Closing a tab or quitting with
+drafts asks before discarding them.
 
 ### Split diff
 
@@ -43,18 +51,19 @@ Prebuilt executables will be published on [GitHub Releases](https://github.com/m
 | Select the previous or next history row | `↑` / `↓` | `↑` / `↓` |
 | Refresh the repository | `F5` | `F5` |
 | Commit staged changes | `Ctrl+Enter` | `Cmd+Enter` |
+| Stage or unstage the selected working file | `Alt+S` | `Option+S` |
 | Select all or copy diff lines | `Ctrl+A` / `Ctrl+C` | `Cmd+A` / `Cmd+C` |
 
 ## Project status
 
-GitCrab is under active development and focuses on local repositories. Fetch, pull, push, remote management, and an integrated conflict editor are future work. Staging supports whole files and hunks.
+GitCrab is under active development. It fetches, pulls (fast-forward, merge or rebase) and pushes through your installed Git, using your credential helper and SSH agent; it never force-pushes. Remote management, clone, and an integrated conflict editor are future work. Staging supports whole files and hunks.
 
 <details>
 <summary>Current technical limits</summary>
 
-- Side-by-side diffs align changes by position. Large patches stay in memory while the interface renders only visible rows.
+- Side-by-side diffs align changes by position. Patches over 8 MiB, 50,000 lines, or 8,192 bytes on a line are handled with whole-file actions.
 - Hunk discard is limited to supported UTF-8 worktree changes with LF line endings.
-- Git commands and hooks run to completion without cancellation or timeouts.
+- Write commands, their hooks, and signing tools run to completion. Reads have deadlines and cancellation.
 - Screen readers, IME and dead-key input, Wayland interaction, and multi-monitor DPI transitions need further validation.
 
 </details>
@@ -67,7 +76,7 @@ Bug reports and focused pull requests are welcome. Include your OS, the GitCrab 
 
 ### Build from source
 
-You’ll need [stable Rust](https://www.rust-lang.org/tools/install), [Git](https://git-scm.com/downloads), and the native build tools for your platform.
+Use [Rust 1.99.1](https://www.rust-lang.org/tools/install), [Git 2.43 or newer](https://git-scm.com/downloads), and the native build tools for your platform.
 
 <details>
 <summary>Platform prerequisites</summary>
@@ -106,8 +115,24 @@ To open a specific local repository, append `-- "/path/to/repository"` to the `c
 ```sh
 cargo fmt --all -- --check
 cargo test --locked --no-default-features --lib
+cargo test --locked --all-features --bin gitcrab
 cargo build --locked --release --bin gitcrab
 ```
+
+The clean-checkout CI matrix pins Rust 1.99.1 and runs these checks on Windows
+MSVC, Linux x64, Apple Silicon, and Intel macOS. Core tests create isolated
+repositories using the Git on PATH. Set `GITCRAB_TEST_GIT` to an absolute
+executable path to test a specific Git installation.
+
+The [architecture notes](docs/architecture.md) describe which module owns
+each part of the state and its effects, and
+native qualification covers the renderer
+smoke test. The behavior decisions define repository trust,
+confirmation lifetime, bulk staging scope, and draft recovery.
+
+CI injects the verified checkout revision into its release binary. Other builds
+identify themselves as `local build` or `source archive`. Builds with
+`native-evidence` add a diagnostics label.
 
 The release executable is `target/release/gitcrab.exe` on Windows and `target/release/gitcrab` on Linux and macOS. Git is also required at runtime. The optional `native-evidence` feature enables deterministic view selection and readiness markers for renderer diagnostics.
 
