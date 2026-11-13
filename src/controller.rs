@@ -284,6 +284,8 @@ impl Controller {
             self.invalidate(l);
         }
         self.snapshot = None;
+        // Writes waiting for a refresh belong to the repository being left.
+        self.queued.clear();
         self.predicted_from = None;
         self.pending_paths.clear();
         self.graph = Graph::default();
@@ -648,6 +650,23 @@ impl Controller {
             }
             return None;
         }
+        // Writes waiting for a refresh keep their order: a whole-file write
+        // clicked meanwhile joins them instead of running first.
+        if !self.queued.is_empty()
+            && matches!(
+                action,
+                Action::StageFile { .. } | Action::StageAll { .. } | Action::MarkResolved { .. }
+            )
+        {
+            self.predict(&action);
+            self.queued.push_back(action);
+            return None;
+        }
+        self.start_write(action)
+    }
+
+    /// Starts `action` now. Callers have checked that no write is running.
+    fn start_write(&mut self, action: Action) -> Option<(Lane, Request)> {
         self.submitted_revision =
             matches!(action, Action::Commit { .. }).then_some(self.draft_revision);
         self.resolving = match &action {
@@ -921,7 +940,7 @@ impl Controller {
                     // Writes queued behind a commit start once its refresh lands.
                     if !self.busy {
                         if let Some(next) = self.next_queued() {
-                            jobs.extend(self.mutate(next));
+                            jobs.extend(self.start_write(next));
                             self.repredict_queued();
                         }
                     }
@@ -1143,17 +1162,20 @@ impl Controller {
             }
             // The reply carried the new working changes; a refresh would
             // only read them again. A retired refresh still runs in full.
-            let fresh = std::mem::take(&mut self.worktree_fresh)
-                && index_only
-                && !replaced
-                && self.requested_limit.is_none();
+            let status_fresh = std::mem::take(&mut self.worktree_fresh);
+            let fresh = status_fresh && index_only && !replaced && self.requested_limit.is_none();
             // A failed write leaves the writes waiting behind it unasked for.
             // After a commit they wait for its refresh, so each reviews its
-            // file as the commit left it.
+            // file as the commit left it. A whole-file write waits for the
+            // refresh too when this write did not return the working changes,
+            // as after a hunk write: the status loaded before it no longer
+            // matches the file, and the write would be refused.
             let next = if !current || failed {
                 self.queued.clear();
                 None
-            } else if index_only {
+            } else if index_only
+                && (status_fresh || !matches!(self.queued.front(), Some(Action::StageFile { .. })))
+            {
                 self.next_queued()
             } else {
                 None
@@ -1162,7 +1184,7 @@ impl Controller {
                 // The next write starts at once. The last one in line
                 // refreshes as needed, so this one does not.
                 self.refresh_after_write |= replaced;
-                jobs.extend(self.mutate(next));
+                jobs.extend(self.start_write(next));
                 self.repredict_queued();
             } else if current && (refresh || replaced) && !fresh {
                 // A write to the index or worktree cannot change history, so
@@ -2070,6 +2092,154 @@ mod tests {
             ),
         );
         assert!(jobs.is_empty() && !c.busy && c.pending_paths.is_empty());
+    }
+    /// Opens b's unstaged diff with two hunks, stages the first hunk and
+    /// queues "stage file b" behind it. Returns the hunk write's request.
+    fn hunk_write_with_file_stage_queued(c: &mut Controller) -> Request {
+        let (_, read) = c.diff("b".into(), false).unwrap();
+        let shown = |token, hunks: usize| Reply::Diff {
+            id: None,
+            path: "b".into(),
+            staged: false,
+            original_path: None,
+            content: diff::prepare(vec![]),
+            hunks: vec!["@@ -1 +1 @@".into(); hunks],
+            hunk_blocked: None,
+            token,
+            preview: Default::default(),
+        };
+        c.complete(Lane::Diff, reply(&read, Ok(shown(read.sequence, 2))));
+        let (_, write) = c
+            .mutate(Action::Hunk {
+                token: read.sequence,
+                index: 0,
+                unstage: false,
+            })
+            .unwrap();
+        assert!(c
+            .mutate(Action::StageFile {
+                reviewed: change("b", ' ', 'M'),
+                unstage: false,
+            })
+            .is_none());
+        assert_eq!(c.queued_writes(), 1);
+        write
+    }
+    #[test]
+    fn a_file_stage_queued_behind_a_hunk_write_waits_for_the_new_status() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: reviewed_snapshot(vec![change("b", ' ', 'M'), change("c", ' ', 'M')]),
+            ..Default::default()
+        };
+        let write = hunk_write_with_file_stage_queued(&mut c);
+        // The hunk write returns only b's diff, so b's status as loaded
+        // (" M") is out of date: the stage waits for the refresh.
+        let jobs = c.complete(
+            Lane::Mutation,
+            reply(
+                &write,
+                Ok(Reply::IndexDone {
+                    message: "Staged hunk in b".into(),
+                    worktree: None,
+                    diff: None,
+                }),
+            ),
+        );
+        let [(Lane::Snapshot, refresh)] = &jobs[..] else {
+            panic!("expected only the refresh, got {jobs:?}");
+        };
+        assert!(!c.busy);
+        // A file clicked meanwhile keeps its place behind the waiting one.
+        assert!(c
+            .mutate(Action::StageFile {
+                reviewed: change("c", ' ', 'M'),
+                unstage: false,
+            })
+            .is_none());
+        assert_eq!(c.queued_writes(), 2);
+        let jobs = c.complete(
+            Lane::Snapshot,
+            reply(
+                refresh,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot: reviewed_snapshot(vec![change("b", 'M', 'M'), change("c", ' ', 'M')])
+                        .unwrap(),
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        // b now stages with the entry Git reports after the hunk write.
+        let [(Lane::Mutation, next)] = &jobs[..] else {
+            panic!("expected the queued write to start, got {jobs:?}");
+        };
+        assert!(matches!(
+            &next.action,
+            Action::StageFile { reviewed, unstage: false } if *reviewed == change("b", 'M', 'M')
+        ));
+        assert_eq!(c.queued_writes(), 1);
+    }
+    #[test]
+    fn opening_another_repository_drops_the_writes_waiting_for_a_refresh() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: reviewed_snapshot(vec![change("b", ' ', 'M')]),
+            ..Default::default()
+        };
+        let write = hunk_write_with_file_stage_queued(&mut c);
+        let jobs = c.complete(
+            Lane::Mutation,
+            reply(
+                &write,
+                Ok(Reply::IndexDone {
+                    message: "Staged hunk in b".into(),
+                    worktree: None,
+                    diff: None,
+                }),
+            ),
+        );
+        let [(Lane::Snapshot, refresh)] = &jobs[..] else {
+            panic!("expected the refresh, got {jobs:?}");
+        };
+        assert_eq!(c.queued_writes(), 1);
+        // The open waits for the refresh in flight, but the queue is gone.
+        assert!(c
+            .open_trusted(crate::platform::RepositoryLocation {
+                worktree: "other".into(),
+                git_dir: "other/.git".into(),
+                common_dir: "other/.git".into(),
+            })
+            .is_none());
+        assert_eq!(c.queued_writes(), 0);
+        let jobs = c.complete(
+            Lane::Snapshot,
+            reply(
+                refresh,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot: reviewed_snapshot(vec![change("b", 'M', 'M')]).unwrap(),
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        let [(Lane::Snapshot, open)] = &jobs[..] else {
+            panic!("expected the held open to start, got {jobs:?}");
+        };
+        assert!(matches!(open.action, Action::Open { .. }));
+        // The other repository's b is not staged when it loads.
+        let jobs = c.complete(
+            Lane::Snapshot,
+            reply(
+                open,
+                Ok(Reply::Snapshot {
+                    path: "other".into(),
+                    snapshot: reviewed_snapshot(vec![change("b", ' ', 'M')]).unwrap(),
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        assert!(jobs.iter().all(|(lane, _)| *lane != Lane::Mutation));
     }
     #[test]
     fn a_failed_index_write_drops_the_writes_waiting_behind_it() {

@@ -176,6 +176,10 @@ impl GitCrab {
             return;
         }
         self.open_failure = None;
+        // A commit, fetch or operation chosen during a write in the previous
+        // repository must not run in the one being opened.
+        self.after_writes = None;
+        self.pending_change = None;
         self.cancel_pending_run();
         self.branch_prompt = None;
         self.switch_after_branch = None;
