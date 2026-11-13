@@ -28,6 +28,50 @@ fn separator(path: &str) -> char {
     }
 }
 
+/// Whether a path follows Windows rules: a drive letter, a UNC prefix or
+/// backslashes. Windows paths compare without regard to case.
+fn is_windows_path(path: &str) -> bool {
+    path.contains('\\') || path.as_bytes().get(1) == Some(&b':')
+}
+
+/// The folders of a readable path in the form used to compare it.
+fn path_key(path: &str) -> Vec<String> {
+    let windows = is_windows_path(path);
+    components(path)
+        .into_iter()
+        .map(|c| {
+            if windows {
+                c.to_lowercase()
+            } else {
+                c.to_owned()
+            }
+        })
+        .collect()
+}
+
+/// Whether two paths name the same folder, ignoring verbatim prefixes,
+/// separator style, trailing separators and, for Windows paths, case.
+pub fn same_path(a: &str, b: &str) -> bool {
+    path_key(&display_path(a)) == path_key(&display_path(b))
+}
+
+/// Puts paths in readable form and drops later spellings of a path already listed.
+pub fn unique_paths(paths: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen: Vec<Vec<String>> = vec![];
+    paths
+        .into_iter()
+        .map(|path| display_path(&path))
+        .filter(|path| {
+            let key = path_key(path);
+            let new = !seen.contains(&key);
+            if new {
+                seen.push(key);
+            }
+            new
+        })
+        .collect()
+}
+
 /// Names a repository path in a list where several entries may share a folder name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PathLabel {
@@ -41,26 +85,28 @@ pub struct PathLabel {
 
 /// Labels each path with its shortest unique trailing suffix.
 ///
-/// Identical entries keep their full display path as the suffix.
+/// Paths are compared as [`same_path`] does, so spellings of one folder, such
+/// as the same repository open in two tabs, share its folder name. A path that
+/// is a trailing part of another, longer path keeps its full display path.
 pub fn path_labels(paths: &[String]) -> Vec<PathLabel> {
     let shown: Vec<String> = paths.iter().map(|p| display_path(p)).collect();
     let parts: Vec<Vec<&str>> = shown.iter().map(|p| components(p)).collect();
+    let keys: Vec<Vec<String>> = shown.iter().map(|p| path_key(p)).collect();
     shown
         .iter()
         .enumerate()
         .map(|(index, path)| {
             let own = &parts[index];
+            let key = &keys[index];
             let name = own.last().copied().unwrap_or(path.as_str()).to_owned();
-            let tail = |k: usize| &own[own.len().saturating_sub(k)..];
+            let start = |k: usize| own.len().saturating_sub(k);
             let suffix = (1..=own.len().max(1))
                 .find(|&k| {
-                    parts
-                        .iter()
-                        .enumerate()
-                        .filter(|(other, _)| *other != index)
-                        .all(|(_, p)| !p.ends_with(tail(k)))
+                    keys.iter()
+                        .filter(|other| *other != key)
+                        .all(|other| !other.ends_with(&key[start(k)..]))
                 })
-                .map(|k| tail(k).join(&separator(path).to_string()))
+                .map(|k| own[start(k)..].join(&separator(path).to_string()))
                 .unwrap_or_else(|| path.clone());
             let location = path
                 .trim_end_matches(['/', '\\'])
@@ -378,6 +424,51 @@ mod tests {
         assert_eq!(labels[0].suffix, "/a/repo");
         assert_eq!(labels[3].suffix, r"D:\repo");
         assert_eq!(labels[3].location, r"D:\");
+    }
+
+    #[test]
+    fn spellings_of_one_folder_share_its_name() {
+        let paths = vec![
+            r"C:\Temp\audit\reference".to_string(),
+            r"\\?\C:\Temp\audit\reference".to_string(),
+            "C:/Temp/audit/reference/".to_string(),
+            r"c:\temp\AUDIT\reference".to_string(),
+            r"C:\Users\me\gitcrab".to_string(),
+            r"C:\Users\me\work\gitcrab".to_string(),
+        ];
+        let labels = path_labels(&paths);
+        for label in &labels[..4] {
+            assert_eq!(label.suffix, "reference");
+        }
+        assert_eq!(labels[4].suffix, r"me\gitcrab");
+        assert_eq!(labels[5].suffix, r"work\gitcrab");
+        // Unix paths stay case-sensitive.
+        let labels = path_labels(&["/a/Repo".to_string(), "/b/repo".to_string()]);
+        assert_eq!(labels[0].suffix, "Repo");
+    }
+
+    #[test]
+    fn unique_paths_keeps_the_first_spelling_in_readable_form() {
+        let paths = [
+            r"\\?\C:\Projects\gitcrab",
+            r"C:\Temp\reference",
+            r"C:\projects\GitCrab\",
+            "C:/Temp/reference",
+            "/home/me/Repo",
+            "/home/me/repo",
+        ]
+        .map(String::from);
+        assert_eq!(
+            unique_paths(paths),
+            [
+                r"C:\Projects\gitcrab",
+                r"C:\Temp\reference",
+                "/home/me/Repo",
+                "/home/me/repo"
+            ]
+        );
+        assert!(same_path(r"\\?\C:\Repo", "c:/repo/"));
+        assert!(!same_path("/Repo", "/repo"));
     }
 
     #[test]

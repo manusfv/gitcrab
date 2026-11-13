@@ -2156,18 +2156,28 @@ impl GitCrab {
                                                     .overflow_hidden()
                                                     .child(
                                                         div()
+                                                            .flex_1()
                                                             .min_w_0()
                                                             .flex()
                                                             .flex_col()
-                                                            .items_start()
+                                                            // Not `truncate()`: gpui keeps the first
+                                                            // measure of no-wrap text, taken here before
+                                                            // the width is known, so it would clip without
+                                                            // an ellipsis. A one-line clamp re-measures.
                                                             .child(
                                                                 div()
-                                                                    .truncate()
+                                                                    .w_full()
+                                                                    .overflow_hidden()
+                                                                    .text_ellipsis()
+                                                                    .line_clamp(1)
                                                                     .child(label.suffix),
                                                             )
                                                             .child(
                                                                 div()
-                                                                    .truncate()
+                                                                    .w_full()
+                                                                    .overflow_hidden()
+                                                                    .text_ellipsis()
+                                                                    .line_clamp(1)
                                                                     .text_size(scaled(11.))
                                                                     .text_role(Role::TextMuted)
                                                                     .child(label.location),
@@ -2416,7 +2426,7 @@ impl Render for GitCrab {
         let recent_paths = Preferences::current(cx)
             .recent
             .iter()
-            .filter(|path| *path != &self.state.path)
+            .filter(|path| !gitcrab_core::presentation::same_path(path, &self.state.path))
             .cloned()
             .collect::<Vec<_>>();
         let recent = recent_paths

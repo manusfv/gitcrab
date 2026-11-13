@@ -13,7 +13,10 @@ Changes:
   retain the arrow cursor. Explicit `Styled::cursor_default()` overrides remain
   supported for native tab controls. `Button::interaction_highlight(false)` lets
   tab labels suppress hover and press feedback while retaining tooltips and
-  keyboard focus. Close buttons retain their hover and press feedback.
+  keyboard focus. Close buttons retain their hover and press feedback. The
+  row holding a button's icon, label and children may shrink below its
+  content (`min_w_0`), so a width-limited button's children can truncate
+  instead of being clipped at its edge.
 - `src/menu/menu_item.rs`: enabled menu entries request the pointer cursor.
   Disabled entries and noninteractive menu labels retain the arrow cursor.
 

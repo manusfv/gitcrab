@@ -180,12 +180,13 @@ impl Preferences {
     /// Promotes a repository to the top of the recent list and queues a save.
     /// Returns `Ok(None)` if it is already first.
     pub fn add_recent(path: &str, cx: &mut App) -> Result<Option<PersistenceResult>, String> {
-        let path = &gitcrab_core::presentation::display_path(path);
+        use gitcrab_core::presentation::{display_path, same_path};
+        let path = &display_path(path);
         let mut shared = Self::current(cx);
         if shared.recent.first().is_some_and(|recent| recent == path) {
             return Ok(None);
         }
-        shared.recent.retain(|recent| recent != path);
+        shared.recent.retain(|recent| !same_path(recent, path));
         shared.recent.insert(0, path.to_owned());
         shared.recent.truncate(10);
         cx.set_global(SharedPreferences(shared.clone()));
@@ -350,6 +351,8 @@ impl Preferences {
         } else {
             13.
         };
+        // Lists saved by older versions may hold several spellings of one folder.
+        p.recent = gitcrab_core::presentation::unique_paths(std::mem::take(&mut p.recent));
         p.recent.truncate(10);
         p.history_columns.normalize();
         p
