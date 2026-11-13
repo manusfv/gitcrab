@@ -107,7 +107,11 @@ pub fn reversed_worktree(hunk: &Hunk, current: &[u8]) -> Result<Vec<u8>, String>
             .get(edit.offset_line)
             .ok_or("Working file changed. Review a fresh diff before discarding.")?;
         let end = offset + edit.before.len();
-        if end > limit || !text.get(offset..).is_some_and(|s| s.starts_with(&edit.before)) {
+        if end > limit
+            || !text
+                .get(offset..)
+                .is_some_and(|s| s.starts_with(&edit.before))
+        {
             return Err("Working file changed. Review a fresh diff before discarding.".into());
         }
         result.splice(offset..end, edit.after.bytes());
@@ -307,7 +311,8 @@ pub fn select_lines(patch: &str, rows: &[usize], keep: Keep) -> Result<Hunk, Str
         let old_count = kept.iter().filter(|(k, _, _)| *k != '+').count();
         let new_count = kept.iter().filter(|(k, _, _)| *k != '-').count();
         // The kept side keeps its range; the other side starts at the same line.
-        let first_line = |(start, count): (usize, usize)| if count == 0 { start + 1 } else { start };
+        let first_line =
+            |(start, count): (usize, usize)| if count == 0 { start + 1 } else { start };
         let start = |count: usize, line: usize| if count == 0 { line - 1 } else { line };
         let (old_start, new_start) = match keep {
             Keep::Before => (old.0, start(new_count, first_line(old))),
@@ -359,9 +364,9 @@ mod tests {
         let patch = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@ fn x\n keep\n-old1\n-old2\n+new1\n+new2\n tail\n";
         // Display rows: 0 header, 1 keep, 2 -old1, 3 -old2, 4 +new1, 5 +new2, 6 tail.
         let staged = select_lines(patch, &[2, 4], Keep::Before).unwrap();
-        assert!(staged.patch.ends_with(
-            "@@ -1,4 +1,4 @@ fn x\n keep\n-old1\n+new1\n old2\n tail\n"
-        ));
+        assert!(staged
+            .patch
+            .ends_with("@@ -1,4 +1,4 @@ fn x\n keep\n-old1\n+new1\n old2\n tail\n"));
         let unstaged = select_lines(patch, &[3, 5], Keep::After).unwrap();
         assert!(unstaged
             .patch

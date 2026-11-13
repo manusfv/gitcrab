@@ -485,7 +485,10 @@ mod tests {
         assert_eq!(selected_changes(&content, true, 2..3), [2, 3]);
         assert_eq!(hunk_of(&content, 3), Some(0));
         assert_eq!(hunk_of(&content, 5), Some(1));
-        assert_eq!(hunk_header_parts("@@ -1,2 +1,2 @@ fn a"), ("-1,2 +1,2", "fn a"));
+        assert_eq!(
+            hunk_header_parts("@@ -1,2 +1,2 @@ fn a"),
+            ("-1,2 +1,2", "fn a")
+        );
         assert_eq!(hunk_header_parts("@@ -9 +9 @@"), ("-9 +9", ""));
     }
 
