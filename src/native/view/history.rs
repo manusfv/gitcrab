@@ -209,6 +209,9 @@ impl GitCrab {
                                             .unwrap_or_default()
                                         })
                                         .track_scroll(self.history_scroll.clone())
+                                        // Size from a commit row, not the WIP row: its
+                                        // text input reports an unbounded content width.
+                                        .with_width_from_item(Some(1))
                                         .map(|mut el| {
                                             el.style().restrict_scroll_to_axis = Some(true);
                                             el
@@ -307,13 +310,21 @@ impl GitCrab {
     fn history_row(
         &self,
         index: usize,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
             .max(self.preferences.font_size * 20. / 13. + 8.);
         let lane_count = self.state.graph.lanes;
         if index == 0 {
+            // A saved layout can be wider than the pane; cap the message cell to the
+            // part on screen so the editor shrinks before the badges are cut off.
+            let overflow = self.history_table_width() - self.history_available;
+            let inset = f32::from(HISTORY_CELL_INSET.to_pixels(window.rem_size()));
+            let wip_visible_cap = |width: f32| {
+                (self.history_available > 0. && overflow > 0.)
+                    .then(|| (width - overflow - 2. * inset).max(48.))
+            };
             let has_head = self
                 .state
                 .snapshot
@@ -380,11 +391,30 @@ impl GitCrab {
                             .gap_2()
                             .w_full()
                             .min_w_0()
+                            .overflow_hidden()
+                            .when_some(wip_visible_cap(entry.width), |el, cap| {
+                                el.max_w(px(cap))
+                            })
+                            // Inline summary editor, mirrored with the composer's
+                            // Commit summary field (see the draft observers in view.rs).
                             .child(
                                 div()
-                                    .flex_none()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Working changes"),
+                                    .id("wip-summary")
+                                    // Grows into the free space; the badges are
+                                    // flex_none, so the input yields first.
+                                    .flex_1()
+                                    .min_w(px(48.))
+                                    .overflow_hidden()
+                                    .child(
+                                        Input::new(&self.wip_summary)
+                                            .disabled(self.settings_open)
+                                            .py_0()
+                                            .h(px((height - 10.).max(18.)))
+                                            .text_size(type_size(cx, 12.)),
+                                    )
+                                    .tooltip(|w, cx| {
+                                        Tooltip::new("Working changes · commit summary").build(w, cx)
+                                    }),
                             )
                             .when(
                                 self.state
@@ -428,6 +458,7 @@ impl GitCrab {
                                     .filter(|(count, _)| *count > 0)
                                     .map(|(count, (mark, name, role))| {
                                         badge_fixed(format!("{mark} {count}"), semantic(role), 44.)
+                                            .flex_none()
                                             .id(SharedString::from(format!("wip-{name}")))
                                             .tooltip(move |w, cx| {
                                                 Tooltip::new(format!("{count} {name} paths"))
