@@ -2,9 +2,12 @@
 
 The Rust core remains usable with `cargo test --locked --no-default-features --lib`.
 
-- `git.rs` owns Git arguments, machine patches, repository identity, and write
+- `git/` owns Git arguments, machine patches, repository identity, and write
   preflight/verification. Write errors carry a phase. Read results never grant
-  permission to write through a stale confirmation.
+  permission to write through a stale confirmation. No other module passes Git
+  arguments. `git/mod.rs` builds and runs commands; `model.rs` holds parsed
+  repository types, `read.rs` snapshots and diffs, `write.rs` index and ref
+  writes, and `network.rs` fetch, pull and push.
 - `process.rs` owns child handles, pipe draining, capture limits, cancellation,
   and read deadlines. Unix readers run in a process group. Windows readers use a
   kill-on-close job. Mutations run to completion and their tabs stay open.
