@@ -1,10 +1,10 @@
-//! P01/P02: native controls retain gpui-component interaction/focus behavior.
+//! Shared styling for native controls built on gpui-component buttons.
 pub mod rail;
 use super::theme::*;
 use gpui::{prelude::*, *};
 use gpui_component::{
-    button::{Button, ButtonCustomVariant, ButtonVariants},
-    Sizable,
+    button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants},
+    Disableable, Sizable,
 };
 
 #[derive(Clone, Copy)]
@@ -16,6 +16,7 @@ pub enum ControlSize {
     TabClose,
     FileAction,
 }
+/// Applies the dimensions and typography for a button's placement.
 pub fn sized(button: Button, size: ControlSize) -> Button {
     use ControlSize::*;
     let (h, padding, font) = match size {
@@ -41,23 +42,99 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
         .text_size(rems(font / 13.))
         .rounded(px(3.))
 }
-pub fn semantic_action(button: Button, size: ControlSize, destructive: bool, cx: &App) -> Button {
-    let (fg, bg) = if destructive {
-        (Role::ActionUnstageFg, Role::ActionUnstageBg)
-    } else {
-        (Role::ActionStageFg, Role::ActionStageBg)
+/// The role a button plays, which selects its palette everywhere it appears.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    /// The main call to action of a surface, such as Commit.
+    Primary,
+    /// An ordinary outlined action.
+    Secondary,
+    /// A borderless action that blends into its toolbar.
+    Ghost,
+    /// Adds changes to the next commit.
+    Stage,
+    /// Moves changes out of the next commit and keeps them in the working copy.
+    Unstage,
+    /// Permanently removes working-copy content or records an unusual resolution.
+    Discard,
+}
+
+/// Applies the palette for a role that needs no theme access.
+///
+/// Staging roles fall back to Secondary here; use [`style`] for those.
+pub fn basic(button: Button, kind: ButtonKind, size: ControlSize) -> Button {
+    let button = sized(button, size);
+    match kind {
+        ButtonKind::Primary => button
+            .primary()
+            .text_color(rgb(semantic(Role::SurfaceChrome))),
+        ButtonKind::Ghost => button.ghost(),
+        _ => button.with_variant(ButtonVariant::Secondary).outline(),
+    }
+}
+
+/// Disabled behavior shared by every button.
+pub trait ButtonExt: Sized {
+    /// Sets the disabled state. When disabled the button gets the shared
+    /// unavailable look: muted text, flat muted fill, no hover highlight and a
+    /// not-allowed cursor.
+    fn disabled_when(self, disabled: bool) -> Self;
+}
+
+impl ButtonExt for Button {
+    fn disabled_when(self, disabled: bool) -> Self {
+        let button = Disableable::disabled(self, disabled);
+        if !disabled {
+            return button;
+        }
+        button
+            .bg(rgb(semantic(Role::SurfaceDisabled)))
+            .text_color(rgb(semantic(Role::TextDisabled)))
+            .border_color(rgb(semantic(Role::BorderDivider)))
+            .cursor_not_allowed()
+    }
+}
+
+/// Applies sizing and the palette of a button's role.
+///
+/// Stage uses an accent fill, Unstage a neutral outline so it reads as
+/// reversible, and Discard the warning palette for permanent changes. Every
+/// button of the same role and size is identical.
+pub fn style(button: Button, kind: ButtonKind, size: ControlSize, cx: &App) -> Button {
+    let (fg, bg, border, hover) = match kind {
+        ButtonKind::Stage => (
+            Role::ActionStageFg,
+            Role::ActionStageBg,
+            Role::ActionStageFg,
+            Role::ActionStageBg,
+        ),
+        ButtonKind::Unstage => (
+            Role::TextDefault,
+            Role::SurfaceOverlay,
+            Role::BorderControl,
+            Role::InteractionPressed,
+        ),
+        ButtonKind::Discard => (
+            Role::ActionDiscardFg,
+            Role::ActionDiscardBg,
+            Role::ActionDiscardFg,
+            Role::ActionDiscardBg,
+        ),
+        _ => return basic(button, kind, size),
     };
     sized(button, size).custom(
         ButtonCustomVariant::new(cx)
             .foreground(rgb(semantic(fg)).into())
             .color(rgb(semantic(bg)).into())
-            .border(rgb(semantic(fg)).into())
-            .hover(rgb(semantic(bg)).into())
+            .border(rgb(semantic(border)).into())
+            .hover(rgb(semantic(hover)).into())
             .active(rgb(semantic(bg)).into()),
     )
 }
 
-/// The focus scope contains the stock Button; opacity never removes its target.
+/// Reveals a file action on row hover or keyboard focus, or keeps it always visible.
+///
+/// Opacity preserves the button's layout and focus target when it is hidden.
 pub fn file_action(
     button: Button,
     focus: &FocusHandle,
@@ -82,21 +159,35 @@ pub fn file_action(
                     ControlSize::FileAction
                 },
             )
-            .w(rems(if persistent { 28. / 13. } else { 18. / 13. })),
+            .w(rems(if persistent {
+                geometry::SIZE_FILE_ACTION_COARSE_TARGET / 13.
+            } else {
+                geometry::SIZE_FILE_ACTION_TARGET / 13.
+            })),
         )
 }
 
+/// A toolbar action: an icon above a small label, or the icon alone when
+/// `labelled` is false. A `caret` marks an action that offers a menu.
+///
+/// A disabled action is greyed out, shows a not-allowed cursor and keeps its
+/// tooltip, so the reason it cannot run stays discoverable.
 pub fn toolbar_command(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     glyph: &str,
+    disabled: bool,
+    labelled: bool,
+    caret: bool,
 ) -> Button {
     let label = label.into();
     Button::new(id)
         .ghost()
         .tab_stop(true)
+        .disabled(disabled)
+        .when(disabled, |button| button.cursor_not_allowed().opacity(0.7))
         .h(rems(42. / 13.))
-        .min_w(rems(46. / 13.))
+        .min_w(rems(if labelled { 46. } else { 32. } / 13.))
         .px_1()
         .child(
             div()
@@ -104,33 +195,45 @@ pub fn toolbar_command(
                 .flex_col()
                 .items_center()
                 .gap_1()
-                .child(icon(glyph).size(px(16.)))
-                .child(div().text_size(rems(11. / 13.)).child(label)),
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(icon(glyph).size(px(16.)))
+                        .when(caret, |row| row.child(icon("down").size(px(10.)))),
+                )
+                .when(labelled, |column| {
+                    column.child(div().text_size(rems(11. / 13.)).child(label))
+                }),
         )
 }
 pub fn selector(
     id: impl Into<ElementId>,
-    kicker: &str,
+    kicker: Option<&str>,
     value: impl Into<SharedString>,
     glyph: &str,
+    width: Pixels,
+    height: Pixels,
 ) -> Button {
     Button::new(id)
         .ghost()
         .tab_stop(true)
-        .h(rems(42. / 13.))
-        .w(rems(176. / 13.))
+        .h(height)
+        .w(width)
         .min_w_0()
-        .px(rems(10. / 13.))
+        .flex_none()
+        .px(px(8.))
         .child(
             div()
                 // Button wraps children in an intrinsic-width label. Give this
                 // row a definite width so the text and caret can spread out.
-                .w(rems(154. / 13.))
+                .w(width - px(16.))
                 .min_w_0()
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(rems(16. / 13.))
+                .gap_2()
                 .child(icon(glyph).size(px(16.)).flex_none())
                 .child(
                     div()
@@ -139,17 +242,19 @@ pub fn selector(
                         .flex()
                         .flex_col()
                         .items_start()
-                        .child(
-                            div()
-                                .text_size(rems(11. / 13.))
-                                .text_color(rgb(semantic(Role::TextMuted)))
-                                .child(kicker.to_owned()),
-                        )
+                        .when_some(kicker, |label, kicker| {
+                            label.child(
+                                div()
+                                    .text_size(rems(11. / 13.))
+                                    .text_color(rgb(semantic(Role::TextMuted)))
+                                    .child(kicker.to_owned()),
+                            )
+                        })
                         .child(
                             div()
                                 .w_full()
                                 .truncate()
-                                .text_size(rems(13. / 13.))
+                                .text_size(rems(1.))
                                 .child(value.into()),
                         ),
                 )

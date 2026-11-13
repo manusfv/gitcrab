@@ -1,6 +1,7 @@
-//! Persistent column layout, independent of the native renderer.
+//! Persistent layout settings for the history table.
 use serde::{Deserialize, Serialize};
 
+/// A configurable column in the commit history table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryColumn {
@@ -13,6 +14,7 @@ pub enum HistoryColumn {
 }
 
 impl HistoryColumn {
+    /// All columns in their default layout order.
     pub const ALL: [Self; 6] = [
         Self::References,
         Self::Graph,
@@ -22,6 +24,7 @@ impl HistoryColumn {
         Self::Date,
     ];
 
+    /// Returns the heading shown in the history table.
     pub fn label(self) -> &'static str {
         match self {
             Self::References => "Branch / tag",
@@ -33,6 +36,7 @@ impl HistoryColumn {
         }
     }
 
+    /// Returns the smallest supported width in logical pixels.
     pub const fn minimum_width(self) -> f32 {
         match self {
             Self::References => 80.,
@@ -56,17 +60,23 @@ impl HistoryColumn {
     }
 }
 
+/// Saved width and visibility for a single history column.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColumnLayout {
     pub column: HistoryColumn,
+    /// Width in logical pixels, retained even when the column is hidden.
     pub width: f32,
     pub visible: bool,
 }
 
+/// Ordered layout of the history table, including hidden columns.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistoryColumns {
     pub columns: Vec<ColumnLayout>,
+    /// Set once the user resizes, reorders or toggles a column. Until then,
+    /// [`HistoryColumns::adapted`] fits the defaults to the available width.
+    pub customized: bool,
 }
 
 impl Default for HistoryColumns {
@@ -80,11 +90,104 @@ impl Default for HistoryColumns {
                     visible: !matches!(column, HistoryColumn::Author | HistoryColumn::Date),
                 })
                 .collect(),
+            customized: false,
         }
     }
 }
 
 impl HistoryColumns {
+    /// Returns the layout to display in `available` logical pixels at a text `scale`.
+    ///
+    /// A customized layout is shown as saved. Otherwise text columns grow with
+    /// the text size, Author and Date appear when they fit, SHA yields its
+    /// space first, and the message shrinks toward its minimum. The message
+    /// takes any remaining space when displayed.
+    pub fn adapted(&self, available: f32, scale: f32) -> Self {
+        if self.customized || !available.is_finite() || available <= 0. {
+            return self.clone();
+        }
+        let scale = if scale.is_finite() {
+            scale.clamp(1., 2.5)
+        } else {
+            1.
+        };
+        let mut layout = self.clone();
+        for entry in &mut layout.columns {
+            if entry.column != HistoryColumn::Graph {
+                entry.width = (entry.width * scale).min(1600.);
+            }
+        }
+        let total = |l: &Self| l.visible().map(|e| e.width).sum::<f32>();
+        for column in [HistoryColumn::Author, HistoryColumn::Date] {
+            if let Some(index) = layout.columns.iter().position(|e| e.column == column) {
+                let width = layout.columns[index].width;
+                if !layout.columns[index].visible && total(&layout) + width <= available {
+                    layout.columns[index].visible = true;
+                }
+            }
+        }
+        if total(&layout) > available {
+            if let Some(sha) = layout
+                .columns
+                .iter_mut()
+                .find(|e| e.column == HistoryColumn::Sha)
+            {
+                sha.visible = false;
+            }
+        }
+        let overflow = total(&layout) - available;
+        if overflow > 0. {
+            if let Some(message) = layout
+                .columns
+                .iter_mut()
+                .find(|e| e.column == HistoryColumn::Message)
+            {
+                message.width =
+                    (message.width - overflow).max(HistoryColumn::Message.minimum_width());
+            }
+        }
+        layout
+    }
+
+    /// Moves a visible column one visible position left (`-1`) or right (`1`).
+    /// Returns `false` at either end or for a hidden column.
+    pub fn move_visible(&mut self, column: HistoryColumn, delta: isize) -> bool {
+        let order: Vec<_> = self.visible().map(|e| e.column).collect();
+        let Some(index) = order.iter().position(|c| *c == column) else {
+            return false;
+        };
+        let Some(target) = index
+            .checked_add_signed(delta)
+            .and_then(|i| order.get(i))
+            .copied()
+        else {
+            return false;
+        };
+        if target == column {
+            return false;
+        }
+        self.move_to(column, target, delta > 0);
+        self.customized = true;
+        true
+    }
+
+    /// Changes a column's width by `delta` pixels, within its limits.
+    pub fn resize_by(&mut self, column: HistoryColumn, delta: f32) {
+        if let Some(width) = self
+            .columns
+            .iter()
+            .find(|e| e.column == column)
+            .map(|e| e.width)
+        {
+            self.resize(column, width + delta);
+            self.customized = true;
+        }
+    }
+
+    /// Repairs a saved layout before use.
+    ///
+    /// Keeps the first occurrence of each column, appends missing columns with
+    /// their defaults, repairs invalid widths and ensures the message is visible.
     pub fn normalize(&mut self) {
         let mut seen = Vec::new();
         self.columns.retain(|entry| {
@@ -111,18 +214,23 @@ impl HistoryColumns {
         }
     }
 
+    /// Iterates over visible columns in display order.
     pub fn visible(&self) -> impl Iterator<Item = &ColumnLayout> {
         self.columns.iter().filter(|entry| entry.visible)
     }
 
+    /// Toggles an existing column's visibility. The message column stays visible.
     pub fn toggle(&mut self, column: HistoryColumn) {
         if column != HistoryColumn::Message {
             if let Some(entry) = self.columns.iter_mut().find(|entry| entry.column == column) {
                 entry.visible = !entry.visible;
+                self.customized = true;
             }
         }
     }
 
+    /// Sets the width of an existing column, clamped to its minimum and 1600 pixels.
+    /// Non-finite widths are ignored.
     pub fn resize(&mut self, column: HistoryColumn, width: f32) {
         if width.is_finite() {
             if let Some(entry) = self.columns.iter_mut().find(|entry| entry.column == column) {
@@ -131,6 +239,8 @@ impl HistoryColumns {
         }
     }
 
+    /// Moves a column before `target`, or after it when `after` is `true`.
+    /// Either column may be hidden. Both must be present for the move to take effect.
     pub fn move_to(&mut self, column: HistoryColumn, target: HistoryColumn, after: bool) {
         if column == target {
             return;
@@ -209,6 +319,7 @@ mod tests {
                     visible: false,
                 },
             ],
+            customized: false,
         };
         layout.normalize();
         assert_eq!(layout.columns.len(), 6);
@@ -219,6 +330,65 @@ mod tests {
         assert!(layout.columns[0].visible);
         layout.resize(HistoryColumn::Sha, f32::INFINITY);
         assert_eq!(layout.columns[1].width, 80.);
+    }
+
+    #[test]
+    fn defaults_adapt_to_width_and_text_size_until_customized() {
+        let layout = HistoryColumns::default();
+        let wide = layout.adapted(1400., 1.);
+        assert!(wide.visible().any(|e| e.column == HistoryColumn::Author));
+        assert!(wide.visible().any(|e| e.column == HistoryColumn::Date));
+        let narrow = layout.adapted(560., 1.);
+        assert!(!narrow.visible().any(|e| e.column == HistoryColumn::Author));
+        assert!(!narrow.visible().any(|e| e.column == HistoryColumn::Sha));
+        let message = |l: &HistoryColumns| {
+            l.columns
+                .iter()
+                .find(|e| e.column == HistoryColumn::Message)
+                .unwrap()
+                .width
+        };
+        assert!(message(&narrow) >= HistoryColumn::Message.minimum_width());
+        let large = layout.adapted(2000., 2.);
+        let refs = large
+            .columns
+            .iter()
+            .find(|e| e.column == HistoryColumn::References)
+            .unwrap();
+        assert_eq!(refs.width, 260.);
+        let mut custom = layout.clone();
+        custom.toggle(HistoryColumn::Sha);
+        assert!(custom.customized);
+        assert_eq!(custom.adapted(2000., 2.), custom);
+    }
+
+    #[test]
+    fn keyboard_moves_follow_visible_order() {
+        let mut layout = HistoryColumns::default();
+        assert!(!layout.move_visible(HistoryColumn::References, -1));
+        assert!(layout.move_visible(HistoryColumn::References, 1));
+        assert_eq!(
+            layout.visible().map(|e| e.column).collect::<Vec<_>>(),
+            [
+                HistoryColumn::Graph,
+                HistoryColumn::References,
+                HistoryColumn::Message,
+                HistoryColumn::Sha
+            ]
+        );
+        assert!(!layout.move_visible(HistoryColumn::Author, 1));
+        assert!(!layout.move_visible(HistoryColumn::Sha, 1));
+        layout.resize_by(HistoryColumn::Sha, -100.);
+        assert_eq!(
+            layout
+                .columns
+                .iter()
+                .find(|e| e.column == HistoryColumn::Sha)
+                .unwrap()
+                .width,
+            HistoryColumn::Sha.minimum_width()
+        );
+        assert!(layout.customized);
     }
 
     #[test]

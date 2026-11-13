@@ -4,6 +4,7 @@ use std::borrow::Cow;
 const LOGO_LIGHT: &str = "gitcrab-light.svg";
 const LOGO_DARK: &str = "gitcrab-dark.svg";
 
+/// Selects the embedded logo variant for the background it will be drawn on.
 pub fn logo(on_light_surface: bool) -> gpui::Img {
     gpui::img(gpui::ImageSource::Resource(gpui::Resource::Embedded(
         if on_light_surface {
@@ -15,6 +16,7 @@ pub fn logo(on_light_surface: bool) -> gpui::Img {
     )))
 }
 
+/// Asset source for GitCrab's embedded logos and icons.
 pub struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -25,6 +27,7 @@ impl AssetSource for Assets {
             LOGO_DARK => Some(Cow::Borrowed(include_bytes!(
                 "../../icons/gitcrab-dark.svg"
             ))),
+            "icons/eye.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/eye.svg"))),
             "icons/branch.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../icons/native/branch.svg"
             ))),
@@ -75,6 +78,8 @@ impl AssetSource for Assets {
             ))),
             "icons/pull.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/pull.svg"))),
             "icons/push.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/push.svg"))),
+            "icons/undo.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/undo.svg"))),
+            "icons/redo.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/redo.svg"))),
             "icons/pop.svg" => Some(Cow::Borrowed(include_bytes!("../../icons/native/pop.svg"))),
             "icons/terminal.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../icons/native/terminal.svg"

@@ -4,6 +4,7 @@ use gpui::{prelude::*, *};
 use gpui_component::Theme;
 use std::sync::atomic::{AtomicBool, Ordering};
 static VALIDATION_LIGHT: AtomicBool = AtomicBool::new(false);
+/// Returns the packed RGB color for a role in the active native palette.
 pub fn semantic(role: Role) -> u32 {
     gitcrab_core::appearance::resolve(
         if VALIDATION_LIGHT.load(Ordering::Relaxed) {
@@ -58,6 +59,7 @@ pub const CONTROL_RADIUS: f32 = 4.;
 pub const GLYPH_SIZE: f32 = 16.;
 pub const SECTION_INSET: f32 = 12.;
 pub const SEAM: f32 = 1.;
+/// Scales a size specified for the default 13-pixel font to the current font size.
 pub fn type_size(cx: &App, base: f32) -> Pixels {
     px(f32::from(Theme::global(cx).font_size) * base / 13.)
 }
@@ -82,6 +84,7 @@ pub fn toggle_validation_palette(cx: &mut App) {
     install(cx);
     cx.refresh_windows();
 }
+/// Installs GitCrab's colors into the component theme while preserving the font size.
 pub fn install(cx: &mut App) {
     let font_size = Theme::global(cx).font_size;
     gpui_component::Theme::change(
@@ -250,19 +253,6 @@ pub fn segmented_group() -> Div {
         .bg(rgb(semantic(Role::SurfaceChrome)))
 }
 
-pub fn heading(s: impl Into<SharedString>) -> Div {
-    div()
-        .h(px(30.))
-        .flex_none()
-        .px_3()
-        .flex()
-        .items_center()
-        .text_color(rgb(semantic(Role::TextSecondary)))
-        .text_size(rems(12. / 13.))
-        .font_weight(FontWeight::MEDIUM)
-        .child(s.into())
-}
-
 pub fn icon(name: &str) -> gpui_component::Icon {
     gpui_component::Icon::default().path(SharedString::from(format!("icons/{name}.svg")))
 }
@@ -277,7 +267,19 @@ pub fn badge(label: impl Into<SharedString>, color: u32) -> Div {
         .text_color(rgb(color))
         .text_size(rems(12. / 13.))
         .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
         .child(label.into())
+}
+
+/// A badge with a fixed width so a column of them lines up regardless of the
+/// label length.
+pub fn badge_fixed(label: impl Into<SharedString>, color: u32, width: f32) -> Div {
+    badge(label, color)
+        .w(px(width))
+        .flex()
+        .justify_center()
+        .overflow_hidden()
+        .whitespace_nowrap()
 }
 
 pub fn separator() -> Div {

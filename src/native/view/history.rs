@@ -4,6 +4,91 @@ mod columns;
 
 const HISTORY_CELL_INSET: Rems = Rems(0.5);
 
+use gitcrab_core::presentation::{classify_decoration, DecorationKind};
+
+/// A reference printed beside a commit, with the ref it previews when activated.
+#[derive(Clone)]
+pub(super) struct Decoration {
+    kind: DecorationKind,
+    name: String,
+    target: Option<(ReferenceKind, String)>,
+}
+
+impl Decoration {
+    /// Names the reference with its type, for tooltips and the `+N` list.
+    fn label(&self) -> String {
+        match (self.kind, self.target.as_ref().map(|t| t.0)) {
+            (DecorationKind::HeadBranch, _) => format!("{} · HEAD, checked out", self.name),
+            (DecorationKind::Head, _) => "HEAD · detached".into(),
+            (DecorationKind::Tag, _) => format!("Tag {}", self.name),
+            (_, Some(ReferenceKind::Remote)) => format!("Remote {}", self.name),
+            _ => format!("Branch {}", self.name),
+        }
+    }
+
+    /// A type marker drawn before the name so tags, remotes and HEAD stay distinct.
+    fn marker(&self, cx: &App) -> Option<AnyElement> {
+        let glyph = |name: &str| {
+            icon(name)
+                .size(type_size(cx, 12.))
+                .flex_none()
+                .text_color(rgb(semantic(Role::TextSecondary)))
+                .into_any_element()
+        };
+        match (self.kind, self.target.as_ref().map(|t| t.0)) {
+            (DecorationKind::HeadBranch, _) => Some(
+                div()
+                    .flex_none()
+                    .px(px(3.))
+                    .rounded(px(3.))
+                    .bg(rgb(semantic(Role::ActionPrimary)))
+                    .text_color(rgb(semantic(Role::TextOnPrimary)))
+                    .text_size(type_size(cx, 10.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("HEAD")
+                    .into_any_element(),
+            ),
+            (DecorationKind::Tag, _) => Some(glyph("tag")),
+            (_, Some(ReferenceKind::Remote)) => Some(glyph("remote")),
+            _ => None,
+        }
+    }
+}
+
+/// Resolves a commit's `--decorate` labels against the loaded references.
+fn decorations(snapshot: &gitcrab_core::git::RepoSnapshot, refs: &[String]) -> Vec<Decoration> {
+    refs.iter()
+        .map(|label| {
+            let (kind, name) = classify_decoration(label);
+            let target = match kind {
+                DecorationKind::Head => None,
+                DecorationKind::HeadBranch => Some((ReferenceKind::LocalBranch, name.to_owned())),
+                DecorationKind::Tag => snapshot
+                    .tags
+                    .iter()
+                    .find(|tag| tag.label == name)
+                    .map(|tag| (ReferenceKind::Tag, tag.full_name.clone())),
+                DecorationKind::Branch => {
+                    if snapshot.branches.iter().any(|branch| branch.name == name) {
+                        Some((ReferenceKind::LocalBranch, name.to_owned()))
+                    } else {
+                        snapshot
+                            .remote_refs
+                            .iter()
+                            .find(|remote| remote.label == name)
+                            .map(|remote| (ReferenceKind::Remote, remote.full_name.clone()))
+                    }
+                }
+            };
+            Decoration {
+                kind,
+                name: name.to_owned(),
+                target,
+            }
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 enum ReferenceSide {
     Left,
@@ -53,10 +138,41 @@ impl GitCrab {
         )
     }
 
+    /// Previews a decoration's reference, or selects its commit for a detached HEAD.
+    fn activate_decoration(
+        &mut self,
+        decoration: &Decoration,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match &decoration.target {
+            Some((kind, name)) => {
+                if self.single_pane {
+                    self.constrained_inspector = true;
+                }
+                self.preview_ref(*kind, name, window, cx);
+            }
+            None => self.activate_commit(id, window, cx),
+        }
+    }
+
     pub(super) fn history(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.prepare_column_drag(window, cx);
+        self.history_layout = self
+            .preferences
+            .history_columns
+            .adapted(self.history_available, self.preferences.font_size / 13.);
         let count = self.state.graph.rows.len();
         let weak = cx.weak_entity();
+        let unborn = self
+            .state
+            .snapshot
+            .as_ref()
+            .filter(|s| s.commits.is_empty() && s.head_id.is_empty())
+            .map(|s| s.head.clone());
+        let row_height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
+            .max(self.preferences.font_size * 20. / 13. + 8.);
         panel()
             .bg(rgb(semantic(Role::SurfaceCanvas)))
             .child(
@@ -97,9 +213,38 @@ impl GitCrab {
                                             el.style().restrict_scroll_to_axis = Some(true);
                                             el
                                         })
-                                        .flex_1()
-                                        .min_h_0(),
-                                    ),
+                                        .map(|list| {
+                                            if unborn.is_some() {
+                                                list.flex_none().h(px(row_height))
+                                            } else {
+                                                list.flex_1().min_h_0()
+                                            }
+                                        }),
+                                    )
+                                    .when_some(unborn, |table, branch| {
+                                        table.child(
+                                            div()
+                                                .flex_1()
+                                                .flex()
+                                                .flex_col()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap_2()
+                                                .p_4()
+                                                .child(
+                                                    div()
+                                                        .text_size(type_size(cx, 16.))
+                                                        .child("No commits yet"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_color(rgb(semantic(Role::TextMuted)))
+                                                        .child(format!(
+                                                            "{branch} has no commits. Stage files in Working changes and commit them to start its history."
+                                                        )),
+                                                ),
+                                        )
+                                    }),
                             ),
                     )
                     .child(
@@ -109,7 +254,28 @@ impl GitCrab {
                             )
                             .id("history-horizontal-scrollbar"),
                         ),
-                    ),
+                    )
+                    .child({
+                        // A visible, keyboard-reachable route to column settings.
+                        let weak = cx.weak_entity();
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right(px(8.))
+                            .h(type_size(cx, 28.))
+                            .flex()
+                            .items_center()
+                            .bg(rgb(semantic(Role::SurfaceChrome)))
+                            .child(
+                                self.button("history-columns", "Columns")
+                                    .icon(icon("down"))
+                                    .h(type_size(cx, 24.))
+                                    .tooltip("Show, order and size history columns")
+                                    .dropdown_menu(move |menu, w, cx| {
+                                        Self::columns_menu(weak.clone(), menu, w, cx)
+                                    }),
+                            )
+                    }),
             )
             .when(self.state.limit == 100_000 && count == 100_000, |e| {
                 e.child(
@@ -128,10 +294,10 @@ impl GitCrab {
                             "more",
                             format!("Load 500 more commits · {count} shown"),
                         )
-                        .disabled(self.state.loading())
+                        .disabled_when(self.state.loading())
                         .on_click(cx.listener(|v, _, w, cx| {
-                            v.state.limit = (v.state.limit + 500).min(100_000);
-                            v.refresh(&Refresh, w, cx);
+                            let plan = v.state.load_more();
+                            v.apply_refresh(plan, w, cx);
                         })),
                     )
                 },
@@ -174,7 +340,7 @@ impl GitCrab {
                         semantic(Role::InteractionHover)
                     }))
                 })
-                .children(self.preferences.history_columns.visible().map(|entry| {
+                .children(self.history_layout.visible().map(|entry| {
                     let cell = match entry.column {
                         HistoryColumn::Graph => (canvas(
                             |_, _, _| (),
@@ -213,13 +379,42 @@ impl GitCrab {
                             .items_center()
                             .gap_2()
                             .w_full()
+                            .min_w_0()
                             .child(
-                                div().flex_1().min_w(px(96.)).max_w(px(180.)).child(
-                                    Input::new(&self.wip_summary)
-                                        .disabled(self.settings_open)
-                                        .h(type_size(cx, 24.))
-                                        .text_size(type_size(cx, 12.)),
-                                ),
+                                div()
+                                    .flex_none()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Working changes"),
+                            )
+                            .when(
+                                self.state
+                                    .snapshot
+                                    .as_ref()
+                                    .is_some_and(|s| s.status.is_empty()),
+                                |row| {
+                                    row.child(
+                                        div()
+                                            .text_size(type_size(cx, 12.))
+                                            .text_color(rgb(semantic(Role::TextMuted)))
+                                            .child("No changes"),
+                                    )
+                                },
+                            )
+                            .when_some(
+                                self.state
+                                    .snapshot
+                                    .as_ref()
+                                    .map(|s| s.conflict_count())
+                                    .filter(|count| *count > 0),
+                                |row, count| {
+                                    row.child(badge(
+                                        format!(
+                                            "{count} {}",
+                                            if count == 1 { "conflict" } else { "conflicts" }
+                                        ),
+                                        semantic(Role::StatusConflictFg),
+                                    ))
+                                },
                             )
                             .children(self.state.snapshot.as_ref().into_iter().flat_map(|s| {
                                 s.change_counts()
@@ -230,8 +425,9 @@ impl GitCrab {
                                         ("−", "Deleted", Role::StatusErrorFg),
                                         ("R", "Renamed", Role::StatusInfoFg),
                                     ])
+                                    .filter(|(count, _)| *count > 0)
                                     .map(|(count, (mark, name, role))| {
-                                        badge(format!("{mark} {count}"), semantic(role))
+                                        badge_fixed(format!("{mark} {count}"), semantic(role), 44.)
                                             .id(SharedString::from(format!("wip-{name}")))
                                             .tooltip(move |w, cx| {
                                                 Tooltip::new(format!("{count} {name} paths"))
@@ -263,50 +459,41 @@ impl GitCrab {
         let id = c.id.clone();
         let target = c.id.clone();
         let selected = self.state.selected.as_ref() == Some(&c.id);
-        let search = self.search.read(cx).value().to_lowercase();
-        let matched = search.is_empty()
-            || c.subject.to_lowercase().contains(&search)
-            || c.id.contains(&search)
-            || c.author.to_lowercase().contains(&search);
+        let matched = c.matches_search(&self.search_query);
         let row = self.state.graph.rows[i].clone();
+        let outgoing = self.state.graph.edges_at(i);
         let next_lane = self.state.graph.rows.get(i + 1).map(|row| row.lane);
         let mut incoming = i
             .checked_sub(1)
-            .map(|p| self.state.graph.rows[p].edges.clone())
+            .map(|p| self.state.graph.edges_at(p))
             .unwrap_or_default();
         if i == 0 && !snap.head_id.is_empty() {
             incoming.push(gitcrab_core::graph::Edge {
                 from_lane: 0,
                 to_lane: 0,
                 color: 0,
-                parent: snap.head_id.clone(),
             });
         }
 
-        let full_refs = c.refs.join(" · ");
-        let ref_count = c.refs.iter().filter(|r| r.as_str() != "HEAD").count();
-        let refs = c
-            .refs
+        let decorations = decorations(snap, &c.refs);
+        let primary = decorations
             .iter()
-            .find(|r| {
-                self.state
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|s| s.head_id == c.id && &s.head == *r)
-            })
+            .position(|d| d.kind == DecorationKind::HeadBranch)
             .or_else(|| {
-                c.refs
+                decorations
                     .iter()
-                    .find(|r| r.as_str() != "HEAD" && !r.starts_with("HEAD ->"))
+                    .position(|d| d.kind != DecorationKind::Head)
             })
-            .or(c.refs.first())
-            .cloned()
-            .unwrap_or_default();
-        let refs = refs
-            .trim_start_matches("tag: ")
-            .trim_start_matches("HEAD -> ")
-            .to_string();
-        let columns = &self.preferences.history_columns;
+            .or((!decorations.is_empty()).then_some(0));
+        let full_refs = decorations
+            .iter()
+            .map(Decoration::label)
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let others = decorations.len().saturating_sub(1);
+        let primary = primary.map(|index| decorations[index].clone());
+        let refs = primary.as_ref().map(|d| d.name.clone()).unwrap_or_default();
+        let columns = &self.history_layout;
         let reference_side = if refs.is_empty() {
             None
         } else {
@@ -343,7 +530,7 @@ impl GitCrab {
             } else {
                 semantic(Role::TextMuted)
             }))
-            .children(self.preferences.history_columns.visible().map(|entry| {
+            .children(self.history_layout.visible().map(|entry| {
                 let row = row.clone();
                 let incoming = incoming.clone();
                 let refs = refs.clone();
@@ -359,9 +546,12 @@ impl GitCrab {
                         .overflow_hidden()
                         .text_size(type_size(cx, 12.))
                         .text_color(rgb(semantic(Role::TextDefault)))
-                        .when(!refs.is_empty(), |e| {
+                        .when_some(primary.clone(), |e, primary| {
+                            let marker = primary.marker(cx);
+                            let label = primary.label();
                             e.child(
                                 self.button(("ref-detail", i), "")
+                                    .children(marker)
                                     .child(
                                         div()
                                             .flex_1()
@@ -377,30 +567,54 @@ impl GitCrab {
                                     .px_1()
                                     .h(px(REF_BADGE_HEIGHT))
                                     .bg(branch_tint(color, REF_TINT))
-                                    .tooltip(full_refs.clone())
+                                    .tooltip(format!("{label} · Click to preview"))
                                     .on_click(cx.listener({
                                         let id = c.id.clone();
-                                        move |v, _, w, cx| v.select(Some(id.clone()), w, cx)
+                                        move |v, _, w, cx| {
+                                            v.activate_decoration(&primary, id.clone(), w, cx)
+                                        }
                                     })),
                             )
                         })
-                        .when(ref_count > 1, |e| {
+                        .when(others > 0, |e| {
+                            let weak = cx.weak_entity();
+                            let entries = decorations.clone();
+                            let id = c.id.clone();
                             e.child(
-                                div()
+                                self.button(("ref-more", i), format!("+{others}"))
                                     .flex_none()
-                                    .whitespace_nowrap()
                                     .h(px(REF_BADGE_HEIGHT))
-                                    .flex()
-                                    .items_center()
                                     .px(px(4.))
-                                    .rounded(px(CONTROL_RADIUS))
                                     .bg(branch_tint(color, REF_TINT))
-                                    .child(format!("+{}", ref_count - 1)),
+                                    .tooltip(format!("{others} more · Open the list of references"))
+                                    .dropdown_menu(move |mut menu, _, _| {
+                                        for entry in &entries {
+                                            let weak = weak.clone();
+                                            let entry_for_click = entry.clone();
+                                            let id = id.clone();
+                                            menu = menu.item(
+                                                PopupMenuItem::new(entry.label()).on_click(
+                                                    move |_, w, cx| {
+                                                        let _ = weak.update(cx, |v, cx| {
+                                                            v.activate_decoration(
+                                                                &entry_for_click,
+                                                                id.clone(),
+                                                                w,
+                                                                cx,
+                                                            )
+                                                        });
+                                                    },
+                                                ),
+                                            );
+                                        }
+                                        menu
+                                    }),
                             )
                         })
                         .tooltip(move |w, cx| Tooltip::new(full_refs.clone()).build(w, cx)))
                     .into_any_element(),
                     HistoryColumn::Graph => {
+                        let outgoing = outgoing.clone();
                         (div().relative().w_full().h(px(height)).flex_none().child(
                             canvas(
                                 move |_, _, _| (),
@@ -439,7 +653,7 @@ impl GitCrab {
                                         .iter()
                                         .map(|edge| (edge, true, Some(row.lane)))
                                         .chain(
-                                            row.edges.iter().map(|edge| (edge, false, next_lane)),
+                                            outgoing.iter().map(|edge| (edge, false, next_lane)),
                                         );
                                     let mut corners = Vec::new();
                                     for (edge, above, lower_lane) in edges {
@@ -510,14 +724,20 @@ impl GitCrab {
                         ))
                         .into_any_element()
                     }
-                    HistoryColumn::Message => (div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .when(selected, |e| e.font_weight(FontWeight::MEDIUM))
-                        .py(px(3.))
-                        .child(c.subject.clone()))
-                    .into_any_element(),
+                    HistoryColumn::Message => {
+                        let subject = c.subject.clone();
+                        (div()
+                            .id(("subject", i))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .when(selected, |e| e.font_weight(FontWeight::MEDIUM))
+                            .py(px(3.))
+                            .child(c.subject.clone())
+                            // The full subject stays available when the column clips it.
+                            .tooltip(move |w, cx| Tooltip::new(subject.clone()).build(w, cx)))
+                        .into_any_element()
+                    }
                     HistoryColumn::Sha => (div()
                         .w_full()
                         .flex_none()
@@ -576,7 +796,7 @@ impl GitCrab {
                     .child(cell)
                     .into_any_element()
             }))
-            .on_click(cx.listener(move |v, _, w, cx| v.select(Some(id.clone()), w, cx)));
+            .on_click(cx.listener(move |v, _, w, cx| v.activate_commit(id.clone(), w, cx)));
         if c.id == snap.head_id {
             // Paint the marker over the row so it cannot shift the lane origin.
             el = el.relative().child(
@@ -590,7 +810,9 @@ impl GitCrab {
             );
         }
         let view = cx.entity();
-        el.context_menu(move |mut menu, _, _| {
+        let parents = c.parents.len();
+        el.context_menu(move |mut menu, w, cx| {
+            let commands = view.update(cx, |v, cx| v.command_context(w, cx));
             let sha = target.clone();
             menu = menu
                 .item(
@@ -617,23 +839,27 @@ impl GitCrab {
                     }),
                 )
                 .separator();
-            for (op, label) in [
-                (Operation::Checkout, "Checkout…"),
-                (Operation::Merge, "Merge…"),
-                (Operation::CherryPick, "Cherry-pick…"),
-                (Operation::Revert, "Revert…"),
+            // The shared command model decides availability, including merge commits.
+            for command in [
+                Command::Checkout,
+                Command::Merge,
+                Command::CherryPick,
+                Command::Revert,
             ] {
                 let view = view.clone();
                 let target = target.clone();
+                let availability = command.availability_for_commit(&commands, parents);
+                let short = target.chars().take(8).collect::<String>();
+                let label = match availability.reason() {
+                    Some(reason) => format!("{} {short} — {reason}", command.label()),
+                    None => format!("{} {short}…", command.label()),
+                };
                 menu = menu.item(
-                    PopupMenuItem::new(format!(
-                        "{} {}",
-                        label.trim_end_matches('…'),
-                        target.chars().take(8).collect::<String>()
-                    ))
-                    .on_click(move |_, w, cx| {
-                        view.update(cx, |v, cx| v.review(op.clone(), target.clone(), w, cx))
-                    }),
+                    PopupMenuItem::new(label)
+                        .disabled(!availability.enabled())
+                        .on_click(move |_, w, cx| {
+                            view.update(cx, |v, cx| v.run_command(command, target.clone(), w, cx))
+                        }),
                 );
             }
             menu

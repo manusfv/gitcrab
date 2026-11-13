@@ -1,22 +1,65 @@
-//! Original streaming lane assignment; independent of the reference app implementation.
-//! Input order is Git's child-before-parent date order. Coordinates and rendering are UI concerns.
+//! Lane assignment for Git history in child-before-parent order.
+
 use crate::git::Commit;
 
+/// Commit rows and the lane segments that connect them.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct Graph {
+    /// One row per commit in the order supplied to [`layout_with_head`].
     pub rows: Vec<GraphRow>,
+    /// Maximum number of lanes needed across the loaded history.
     pub lanes: usize,
+    pass_through: Vec<Vec<PassRange>>,
 }
+
+impl Graph {
+    /// Returns the segments from `row` to the next row, including passing lanes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row` is outside [`Self::rows`].
+    pub fn edges_at(&self, row: usize) -> Vec<Edge> {
+        let data = &self.rows[row];
+        let mut edges = data.joins.clone();
+        for (lane, ranges) in self.pass_through.iter().enumerate() {
+            let index = ranges.partition_point(|range| range.end <= row);
+            if let Some(range) = ranges.get(index).filter(|range| range.start <= row) {
+                edges.push(Edge {
+                    from_lane: lane,
+                    to_lane: lane,
+                    color: range.color,
+                });
+            }
+        }
+        edges.sort_unstable_by_key(|edge| edge.from_lane);
+        edges.extend_from_slice(&data.edges);
+        edges
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct PassRange {
+    start: usize,
+    end: usize,
+    color: usize,
+}
+/// A commit node in the history graph.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct GraphRow {
+    /// Zero-based lane occupied by the node.
     pub lane: usize,
+    /// Color index to map onto the renderer's lane palette.
     pub color: usize,
-    /// Segments from this row's center to the next row's center.
-    pub edges: Vec<Edge>,
+    // Segments originating at this row's commit.
+    edges: Vec<Edge>,
+    // Passing lanes that meet the next row's commit.
+    joins: Vec<Edge>,
 }
 impl GraphRow {
-    /// A junction connects multiple paths above or below this commit. Count
-    /// only this node's segments; other lanes can pass through the same row.
+    /// Reports whether multiple paths meet at this node from either direction.
+    ///
+    /// Pass the preceding row's edges as `incoming`, or an empty slice for
+    /// the first row.
     pub fn is_junction(&self, incoming: &[Edge]) -> bool {
         incoming
             .iter()
@@ -31,14 +74,35 @@ impl GraphRow {
                 > 1
     }
 }
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+/// A segment between two adjacent rows, addressed by zero-based lanes.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Edge {
     pub from_lane: usize,
     pub to_lane: usize,
+    /// Color index to map onto the renderer's lane palette.
     pub color: usize,
-    pub parent: String,
 }
 
+#[derive(Clone, Copy)]
+struct Lane<'a> {
+    target: &'a str,
+    color: usize,
+    pass_start: usize,
+}
+
+fn close_pass(ranges: &mut [Vec<PassRange>], lane: usize, active: Lane<'_>, end: usize) {
+    if active.pass_start < end {
+        ranges[lane].push(PassRange {
+            start: active.pass_start,
+            end,
+            color: active.color,
+        });
+    }
+}
+
+/// Lays out commits in child-before-parent order, finding HEAD by its `HEAD` label.
+///
+/// Use [`layout_with_head`] when the HEAD commit may be outside the loaded history.
 pub fn layout(commits: &[Commit]) -> Graph {
     let head = commits
         .iter()
@@ -46,20 +110,28 @@ pub fn layout(commits: &[Commit]) -> Graph {
     layout_with_head(commits, head.map(|commit| commit.id.as_str()))
 }
 
-/// Reserve HEAD's lane even if a newer disconnected history appears first.
-/// Supply the full repository HEAD identity to retain this reservation when
-/// HEAD itself falls outside the current loaded page.
+/// Lays out commits in child-before-parent order, reserving lane zero for `head`.
+///
+/// Supply the full HEAD object ID to reserve its lane even when HEAD falls
+/// outside the loaded history. An absent or empty ID leaves lane zero available.
 pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
-    let mut lanes: Vec<Option<(String, usize)>> = head
+    let mut lanes: Vec<Option<Lane<'_>>> = head
         .filter(|id| !id.is_empty())
-        .map(|id| vec![Some((id.to_string(), 0))])
+        .map(|id| {
+            vec![Some(Lane {
+                target: id,
+                color: 0,
+                pass_start: 0,
+            })]
+        })
         .unwrap_or_default();
     let mut next_color = lanes.len();
     let mut graph = Graph::default();
-    for commit in commits {
+    let mut previous_targets = Vec::new();
+    for (row_index, commit) in commits.iter().enumerate() {
         let lane = if let Some(i) = lanes
             .iter()
-            .position(|x| x.as_ref().is_some_and(|(id, _)| id == &commit.id))
+            .position(|active| active.is_some_and(|active| active.target == commit.id))
         {
             i
         } else {
@@ -70,22 +142,35 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
             if i == lanes.len() {
                 lanes.push(None);
             }
-            lanes[i] = Some((commit.id.clone(), next_color));
+            lanes[i] = Some(Lane {
+                target: &commit.id,
+                color: next_color,
+                pass_start: row_index + 1,
+            });
             next_color += 1;
             i
         };
-        let color = lanes[lane].as_ref().unwrap().1;
+        let color = lanes[lane].unwrap().color;
         if let Some(previous) = graph.rows.last_mut() {
-            for edge in &mut previous.edges {
-                if edge.parent == commit.id {
+            for (edge, target) in previous.edges.iter_mut().zip(&previous_targets) {
+                if *target == commit.id {
                     edge.to_lane = lane;
                 }
             }
         }
-        let before = lanes.clone();
-        // Several lanes can approach this commit. Free all of them below it.
-        for occupant in &mut lanes {
-            if occupant.as_ref().is_some_and(|(id, _)| id == &commit.id) {
+        for (index, occupant) in lanes.iter_mut().enumerate() {
+            if let Some(active) = occupant.filter(|active| active.target == commit.id) {
+                if let Some(previous_row) = row_index
+                    .checked_sub(1)
+                    .filter(|row| active.pass_start <= *row)
+                {
+                    close_pass(&mut graph.pass_through, index, active, previous_row);
+                    graph.rows[previous_row].joins.push(Edge {
+                        from_lane: index,
+                        to_lane: lane,
+                        color: active.color,
+                    });
+                }
                 *occupant = None;
             }
         }
@@ -93,7 +178,7 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
         for (index, parent) in commit.parents.iter().enumerate() {
             let dest = if let Some(i) = lanes
                 .iter()
-                .position(|x| x.as_ref().is_some_and(|(id, _)| id == parent))
+                .position(|active| active.is_some_and(|active| active.target == parent))
             {
                 i
             } else {
@@ -115,45 +200,52 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
                     next_color += 1;
                     c
                 };
-                lanes[i] = Some((parent.clone(), parent_color));
+                lanes[i] = Some(Lane {
+                    target: parent,
+                    color: parent_color,
+                    pass_start: row_index + 1,
+                });
                 i
             };
             if index == 0 && dest < lane {
                 // Keep a branch to the right of its shared parent until that
                 // parent arrives. The leftmost lane remains the parent's lane.
-                lanes[lane] = Some((parent.clone(), color));
+                lanes[lane] = Some(Lane {
+                    target: parent,
+                    color,
+                    pass_start: row_index + 1,
+                });
                 parent_lanes.push(lane);
             } else {
                 parent_lanes.push(dest);
             }
         }
-        let mut edges = Vec::new();
-        for (i, occupant) in before.iter().enumerate() {
-            if let Some((id, c)) = occupant {
-                if id == &commit.id {
-                    continue;
-                }
-                edges.push(Edge {
-                    from_lane: i,
-                    to_lane: i,
-                    color: *c,
-                    parent: id.clone(),
-                });
-            }
-        }
+        let mut edges = Vec::with_capacity(parent_lanes.len());
+        previous_targets.clear();
         for dest in parent_lanes {
-            let (id, c) = lanes[dest].as_ref().unwrap();
+            let active = lanes[dest].unwrap();
+            previous_targets.push(active.target);
             edges.push(Edge {
                 from_lane: lane,
                 to_lane: dest,
-                color: *c,
-                parent: id.clone(),
+                color: active.color,
             });
         }
         graph.lanes = graph.lanes.max(lanes.len()).max(lane + 1);
-        graph.rows.push(GraphRow { lane, color, edges });
+        graph.pass_through.resize_with(graph.lanes, Vec::new);
+        graph.rows.push(GraphRow {
+            lane,
+            color,
+            edges,
+            joins: Vec::new(),
+        });
         while lanes.last().is_some_and(Option::is_none) {
             lanes.pop();
+        }
+    }
+    for (index, active) in lanes.into_iter().enumerate() {
+        if let Some(active) = active {
+            close_pass(&mut graph.pass_through, index, active, commits.len());
         }
     }
     graph
@@ -170,17 +262,75 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "repeatable graph allocation and timing fixture"]
+    fn benchmark_graph_layout() {
+        for (shape, width) in [
+            ("linear", 1000),
+            ("wide", 250),
+            ("wide", 500),
+            ("wide", 1000),
+        ] {
+            let commits = (0..=width)
+                .map(|i| {
+                    let parents = if i == width {
+                        vec![]
+                    } else if shape == "linear" {
+                        vec![format!("{:040x}", i + 1)]
+                    } else {
+                        vec![format!("{width:040x}")]
+                    };
+                    Commit {
+                        id: format!("{i:040x}"),
+                        parents,
+                        ..Default::default()
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut samples = vec![];
+            for _ in 0..11 {
+                let start = std::time::Instant::now();
+                let graph = layout(std::hint::black_box(&commits));
+                samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                std::hint::black_box(graph);
+            }
+            samples.sort_by(f64::total_cmp);
+            let graph = layout(&commits);
+            let stored_edges = graph
+                .rows
+                .iter()
+                .map(|row| row.edges.len() + row.joins.len())
+                .sum::<usize>();
+            let ranges = graph.pass_through.iter().map(Vec::len).sum::<usize>();
+            let bytes = stored_edges * std::mem::size_of::<Edge>()
+                + ranges * std::mem::size_of::<PassRange>();
+            let expanded = (0..graph.rows.len())
+                .map(|row| graph.edges_at(row).len())
+                .sum::<usize>();
+            let expected = if shape == "wide" {
+                width * (width + 1) / 2
+            } else {
+                width
+            };
+            assert_eq!(expanded, expected);
+            println!(
+                "{shape} {width}: {:.2} ms median, {bytes} bytes of edge payload",
+                samples[5]
+            );
+        }
+    }
+
+    #[test]
     fn linear_is_one_continuous_lane() {
         let graph = layout(&[c("a", &["b"]), c("b", &["c"]), c("c", &[])]);
         assert_eq!(graph.lanes, 1);
         assert!(graph.rows.iter().all(|r| r.lane == 0 && r.color == 0));
-        assert!(graph.rows[2].edges.is_empty());
+        assert!(graph.edges_at(2).is_empty());
         for (index, row) in graph.rows.iter().enumerate() {
             let incoming = index
                 .checked_sub(1)
-                .map(|i| graph.rows[i].edges.as_slice())
+                .map(|i| graph.edges_at(i))
                 .unwrap_or_default();
-            assert!(!row.is_junction(incoming));
+            assert!(!row.is_junction(&incoming));
         }
     }
     #[test]
@@ -199,9 +349,9 @@ mod tests {
             .map(|(index, row)| {
                 let incoming = index
                     .checked_sub(1)
-                    .map(|i| graph.rows[i].edges.as_slice())
+                    .map(|i| graph.edges_at(i))
                     .unwrap_or_default();
-                row.is_junction(incoming)
+                row.is_junction(&incoming)
             })
             .collect();
         assert_eq!(junctions, [true, false, false, true, false]);
@@ -216,13 +366,13 @@ mod tests {
             c("r", &[]),
             c("orphan", &[]),
         ]);
-        assert_eq!(graph.rows[0].edges.len(), 3);
+        assert_eq!(graph.edges_at(0).len(), 3);
         assert_eq!(graph.lanes, 3);
         assert_eq!(graph.rows[1].lane, 0);
         assert_eq!(graph.rows[2].lane, 1);
         assert_eq!(graph.rows[3].lane, 2);
         assert_eq!(graph.rows[4].lane, 0);
-        assert!(graph.rows[5].edges.is_empty());
+        assert!(graph.edges_at(5).is_empty());
         assert_ne!(graph.rows[4].color, graph.rows[5].color);
     }
 
@@ -243,18 +393,22 @@ mod tests {
         let unrelated = &graph.rows[4];
         let base = &graph.rows[5];
         assert_eq!(unrelated.lane, 3);
-        for branch in [feature, side] {
-            assert!(branch.edges.iter().any(|edge| edge.parent == "base"
-                && edge.from_lane == branch.lane
-                && edge.to_lane == branch.lane
-                && edge.color == branch.color));
-            assert!(unrelated.edges.iter().any(|edge| edge.parent == "base"
-                && edge.from_lane == branch.lane
-                && edge.to_lane == base.lane
-                && edge.color == branch.color));
+        for (index, branch) in [(2, feature), (3, side)] {
+            assert!(graph
+                .edges_at(index)
+                .iter()
+                .any(|edge| edge.from_lane == branch.lane
+                    && edge.to_lane == branch.lane
+                    && edge.color == branch.color));
+            assert!(graph
+                .edges_at(4)
+                .iter()
+                .any(|edge| edge.from_lane == branch.lane
+                    && edge.to_lane == base.lane
+                    && edge.color == branch.color));
         }
-        assert!(base.is_junction(&unrelated.edges));
-        assert!(base.edges.is_empty());
+        assert!(base.is_junction(&graph.edges_at(4)));
+        assert!(graph.edges_at(5).is_empty());
         assert_eq!(graph.rows[6].lane, 0);
     }
     #[test]
@@ -270,7 +424,7 @@ mod tests {
         for i in 0..2 {
             assert_eq!(prefix.rows[i].lane, full.rows[i].lane);
             assert_eq!(prefix.rows[i].color, full.rows[i].color);
-            assert_eq!(prefix.rows[i].edges, full.rows[i].edges);
+            assert_eq!(prefix.edges_at(i), full.edges_at(i));
         }
     }
     #[test]
@@ -281,10 +435,10 @@ mod tests {
         assert_eq!((graph.rows[0].lane, graph.rows[0].color), (1, 1));
         assert_eq!((graph.rows[1].lane, graph.rows[1].color), (0, 0));
         assert_eq!((graph.rows[2].lane, graph.rows[2].color), (0, 0));
-        assert!(graph.rows[0]
-            .edges
+        assert!(graph
+            .edges_at(0)
             .iter()
-            .any(|edge| edge.parent == "head" && edge.from_lane == 0 && edge.to_lane == 0));
+            .any(|edge| edge.from_lane == 0 && edge.to_lane == 0));
     }
     #[test]
     fn head_reservation_is_stable_when_head_arrives_on_a_later_page() {
@@ -293,6 +447,6 @@ mod tests {
         let full = layout_with_head(&commits, Some("head"));
         assert_eq!(prefix.rows[0].lane, full.rows[0].lane);
         assert_eq!(prefix.rows[0].color, full.rows[0].color);
-        assert_eq!(prefix.rows[0].edges, full.rows[0].edges);
+        assert_eq!(prefix.edges_at(0), full.edges_at(0));
     }
 }

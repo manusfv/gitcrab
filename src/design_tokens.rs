@@ -102,9 +102,9 @@ pub const DARK: [u32; 65] = [
     0x422c35, // action.unstage.bg
     0xffa4ad, // action.discard.fg
     0x422c35, // action.discard.bg
-    0x252525, // interaction.hover
+    0x222222, // interaction.hover
     0x343434, // interaction.pressed
-    0x2c2c2c, // interaction.selected
+    0x1f2d52, // interaction.selected
     0xa9bfff, // interaction.focus
     0x668bff, // interaction.selectionRail
     0x202a43, // surface.wipSelected
@@ -269,7 +269,7 @@ pub const SIZE_REPOSITORY_TAB_LABEL_MAX_WIDTH: f32 = 224.0;
 pub const SIZE_REPOSITORY_TAB_BODY_HEIGHT: f32 = 32.0;
 pub const SIZE_REPOSITORY_TAB_CLOSE_TARGET: f32 = 24.0;
 pub const SIZE_REPOSITORY_TAB_NEW_TARGET: f32 = 28.0;
-pub const SIZE_BULK_STAGE_HEIGHT: f32 = 20.0;
+pub const SIZE_BULK_STAGE_HEIGHT: f32 = 24.0;
 pub const SIZE_BULK_STAGE_MIN_WIDTH: f32 = 0.0;
 pub const SIZE_BULK_STAGE_PADDING_X: f32 = 6.0;
 pub const SIZE_BULK_STAGE_FONT_SIZE: f32 = 11.0;
@@ -280,7 +280,7 @@ pub const SIZE_BULK_STAGE_HEADER_GAP: f32 = 8.0;
 pub const SIZE_BULK_STAGE_INSPECTOR_INSET: f32 = 12.0;
 pub const SIZE_BULK_STAGE_WRAP_BELOW: f32 = 260.0;
 pub const SIZE_FILE_ACTION_GLYPH: f32 = 13.0;
-pub const SIZE_FILE_ACTION_TARGET: f32 = 18.0;
+pub const SIZE_FILE_ACTION_TARGET: f32 = 24.0;
 pub const SIZE_FILE_ACTION_COARSE_TARGET: f32 = 28.0;
 pub const SIZE_FILE_ACTION_ROW: f32 = 30.0;
 pub const SIZE_REFERENCE_SIDEBAR_INSET: f32 = 10.0;

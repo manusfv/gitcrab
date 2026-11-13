@@ -184,6 +184,7 @@ pub fn item<T: Copy + Eq>(
                     .top_0()
                     .left(px(rail.offset(id, now)))
                     .w(width)
+                    .flex()
                     .h_full()
                     .child(element),
             )
