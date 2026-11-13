@@ -1,4 +1,10 @@
 //! Semantic color palettes and layout geometry for the native interface.
+//!
+//! [`Role`] provides the shared index into the palette arrays and [`ROLE_NAMES`].
+//! Geometry tokens use logical pixels for lengths and sizes, with separate
+//! scalar values for font weights, counts and layer ordering.
+
+/// Semantic color role whose discriminant indexes the palette arrays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Role {
@@ -68,7 +74,9 @@ pub enum Role {
     GraphLane7,
     GraphLane8,
 }
+/// Design token names in [`Role`] order.
 pub const ROLE_NAMES: &[&str] = &["surface.canvas","surface.chrome","surface.panel","surface.nav","surface.overlay","border.divider","border.control","text.default","text.secondary","text.muted","action.primary","action.primaryHover","action.primaryPressed","text.onPrimary","action.accentOutline","action.accentTint","action.accentTintHover","action.accentTintPressed","action.stage.fg","action.stage.bg","action.unstage.fg","action.unstage.bg","action.discard.fg","action.discard.bg","interaction.hover","interaction.pressed","interaction.selected","interaction.focus","interaction.selectionRail","surface.wipSelected","surface.wipInput","text.link","text.disabled","surface.disabled","status.info.fg","status.info.bg","status.success.fg","status.success.bg","status.warning.fg","status.warning.bg","status.error.fg","status.error.bg","status.conflict.fg","status.conflict.bg","diff.added.bg","diff.added.gutter","diff.removed.bg","diff.removed.gutter","diff.context.bg","diff.hunk.bg","diff.whitespace","syntax.string","syntax.keyword","syntax.number","syntax.comment","overlay.scrim","overlay.shadow","graph.lane.1","graph.lane.2","graph.lane.3","graph.lane.4","graph.lane.5","graph.lane.6","graph.lane.7","graph.lane.8"];
+/// Dark palette as packed `0xRRGGBB` colors in [`Role`] order.
 pub const DARK: [u32; 65] = [
     0x0d0d0d, // surface.canvas
     0x161616, // surface.chrome
@@ -136,6 +144,7 @@ pub const DARK: [u32; 65] = [
     0x329ccb, // graph.lane.7
     0x9ab13f, // graph.lane.8
 ];
+/// Light palette as packed `0xRRGGBB` colors in [`Role`] order.
 pub const LIGHT: [u32; 65] = [
     0xfafbfc, // surface.canvas
     0xf0f3f6, // surface.chrome
@@ -203,6 +212,7 @@ pub const LIGHT: [u32; 65] = [
     0x00757d, // graph.lane.7
     0x5b6a00, // graph.lane.8
 ];
+/// Layout tokens for spacing, control sizes, typography and layer order.
 pub mod geometry {
 pub const SIZE_ICON_SM: f32 = 12.0;
 pub const SIZE_ICON_MD: f32 = 16.0;

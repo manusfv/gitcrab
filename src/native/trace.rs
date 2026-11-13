@@ -1,6 +1,8 @@
 //! Opt-in validation measurements. Excluded from production builds.
 use gpui::*;
 use std::time::Instant;
+/// Records elapsed time at the call site and writes it off the UI thread.
+/// Enabled when `GITCRAB_INTERACTION_TRACE` names an output directory.
 pub fn record(kind: &'static str, started: Instant, cx: &App) {
     let Ok(directory) = std::env::var("GITCRAB_INTERACTION_TRACE") else {
         return;

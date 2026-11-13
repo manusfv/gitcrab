@@ -1,5 +1,17 @@
-//! Conservative reverse-hunk planning. Unsupported encodings/filters reject.
+//! Byte-level preflight for reversing a working-tree hunk.
+
 use crate::git::Hunk;
+
+/// Returns the bytes that reversing a hunk would produce in a working file.
+///
+/// `current` must contain the current contents of an ordinary UTF-8 file with
+/// LF line endings. The hunk must match at its recorded location. The caller
+/// handles file attributes and any actual write.
+///
+/// # Errors
+///
+/// Returns an error for unsupported text or patch formats, malformed hunk
+/// coordinates, or source text that differs from the hunk.
 pub fn reversed_worktree(hunk: &Hunk, current: &[u8]) -> Result<Vec<u8>, String> {
     let patch = &hunk.patch;
     if [

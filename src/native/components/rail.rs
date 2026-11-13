@@ -18,6 +18,8 @@ pub struct RailDrag<T> {
 }
 
 impl<T: Copy + Eq> RailDrag<T> {
+    /// Starts a drag from measured item bounds in display order.
+    /// Returns `None` if the dragged item is missing or a slot has no width.
     pub fn new(
         bounds: &[(T, Bounds<Pixels>)],
         dragged: T,
@@ -67,6 +69,7 @@ impl<T: Copy + Eq> RailDrag<T> {
                 .sum::<f32>()
     }
 
+    /// Returns the item's horizontal paint offset from its layout slot.
     pub fn offset(&self, id: T, now: Instant) -> f32 {
         if id == self.dragged && !self.released {
             return self.left - self.slot(id);
@@ -81,6 +84,7 @@ impl<T: Copy + Eq> RailDrag<T> {
             })
     }
 
+    /// Moves the dragged item with the pointer. Returns whether the slot order changed.
     pub fn update(&mut self, pointer: Pixels, now: Instant) -> bool {
         if self.released {
             return false;
@@ -132,6 +136,7 @@ impl<T: Copy + Eq> RailDrag<T> {
         true
     }
 
+    /// Starts the released item's animation into its final slot.
     pub fn release(&mut self, now: Instant) {
         if self.released {
             return;
@@ -147,6 +152,7 @@ impl<T: Copy + Eq> RailDrag<T> {
         })
     }
 
+    /// Reports whether the item was released and all slot animations are done.
     pub fn settled(&self, now: Instant) -> bool {
         self.released && !self.animating(now)
     }

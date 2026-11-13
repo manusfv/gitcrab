@@ -1,10 +1,17 @@
-//! Small UTF-8 safe lexical cache. Original patch text/coordinates are untouched.
+//! Lightweight syntax highlighting for individual lines of patch text.
+
+/// A syntax token with a half-open UTF-8 byte range into the input line.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
+    /// `c` for comments, `s` for strings, `k` for keywords and `n` for numbers.
     pub kind: char,
 }
+
+/// Finds spans for common syntax tokens without a language-specific parser.
+///
+/// Only tokens starting before byte 8192 are considered.
 pub fn spans(text: &str) -> Vec<Span> {
     let mut out = Vec::new();
     let mut iter = text.char_indices().peekable();
