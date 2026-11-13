@@ -15,6 +15,14 @@ mod workspace;
 use gpui::{prelude::*, *};
 use gpui_component::{Root, Theme, ThemeMode};
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!(
+            "GitCrab {} · {}",
+            env!("CARGO_PKG_VERSION"),
+            env!("GITCRAB_BUILD")
+        );
+        return;
+    }
     Application::new().with_assets(assets::Assets).run(|cx| {
         gpui_component::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
