@@ -1,0 +1,17 @@
+diff --git a/src/sys/mod.rs b/src/sys/mod.rs
+index 4724826..8480389 100644
+--- a/src/sys/mod.rs
++++ b/src/sys/mod.rs
+@@ -8,7 +8,11 @@ macro_rules! platforms {
+             #[cfg(any($(target_os = $platform),*))]
+             pub use self::$module::*;
+ 
+-            #[cfg(any($(target_os = $platform),*))]
++            // GitCrab: Linux/Android report missing attributes as ENODATA.
++            // Recent libc releases removed the long-deprecated ENOATTR alias.
++            #[cfg(all(any($(target_os = $platform),*), any(target_os = "linux", target_os = "android")))]
++            pub const ENOATTR: ::libc::c_int = ::libc::ENODATA;
++            #[cfg(all(any($(target_os = $platform),*), not(any(target_os = "linux", target_os = "android"))))]
+             pub const ENOATTR: ::libc::c_int = ::libc::ENOATTR;
+         )*
+ 
