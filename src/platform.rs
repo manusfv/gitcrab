@@ -46,6 +46,68 @@ pub fn git_executable() -> Result<&'static Path, String> {
     .map_err(Clone::clone)
 }
 
+/// Git as started for read-only queries.
+#[derive(Debug)]
+pub struct ReadGit {
+    pub executable: PathBuf,
+    /// Variables Git for Windows' launcher would have set, when it is skipped.
+    pub env: Vec<(&'static str, OsString)>,
+}
+
+/// Locates the Git used for read-only queries.
+///
+/// Git for Windows puts a launcher, `cmd\git.exe`, on PATH. It only extends
+/// PATH, sets `MSYSTEM` and starts the real `git.exe`, which costs a second
+/// process for every call. For reads, start that `git.exe` directly with the
+/// same additions. Everywhere else this is [`git_executable`].
+///
+/// # Errors
+///
+/// Returns the [`git_executable`] error when Git is unavailable.
+pub fn git_read_executable() -> Result<&'static ReadGit, String> {
+    static GIT: OnceLock<Result<ReadGit, String>> = OnceLock::new();
+    GIT.get_or_init(|| {
+        let launcher = git_executable()?;
+        Ok(skip_windows_launcher(launcher).unwrap_or_else(|| ReadGit {
+            executable: launcher.to_owned(),
+            env: vec![],
+        }))
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
+/// For `<root>\cmd\git.exe`, the `<root>\<toolchain>\bin\git.exe` it launches,
+/// with the launcher's PATH and `MSYSTEM` additions.
+fn skip_windows_launcher(launcher: &Path) -> Option<ReadGit> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let cmd = launcher.parent()?;
+    if !launcher.file_name()?.eq_ignore_ascii_case("git.exe")
+        || !cmd.file_name()?.eq_ignore_ascii_case("cmd")
+    {
+        return None;
+    }
+    let root = cmd.parent()?;
+    let (toolchain, bin) = ["mingw64", "clangarm64", "mingw32"]
+        .into_iter()
+        .map(|toolchain| (toolchain, root.join(toolchain).join("bin")))
+        .find(|(_, bin)| bin.join("git.exe").is_file())?;
+    let mut path = std::env::join_paths([bin.clone(), root.join("usr").join("bin")]).ok()?;
+    if let Some(existing) = std::env::var_os("PATH") {
+        path.push(";");
+        path.push(existing);
+    }
+    Some(ReadGit {
+        executable: bin.join("git.exe"),
+        env: vec![
+            ("PATH", path),
+            ("MSYSTEM", toolchain.to_ascii_uppercase().into()),
+        ],
+    })
+}
+
 fn supported_git_version(output: &str) -> bool {
     let mut version = output
         .strip_prefix("git version ")

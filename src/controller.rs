@@ -107,6 +107,29 @@ pub struct Controller {
     refresh_after_write: bool,
     /// The write in flight changes only the index or worktree.
     index_only_write: bool,
+    /// The write in flight is a commit: it moves the branch but leaves the
+    /// index and working tree, so index writes can wait behind it.
+    running_commit: bool,
+    /// The write's reply installed a current patch, so the refresh that
+    /// follows it does not reload the diff or hold back its actions.
+    keep_patch_on_refresh: bool,
+    /// The write's reply already updated the working changes, so no
+    /// snapshot refresh follows it.
+    worktree_fresh: bool,
+    /// Working changes as Git last reported them, kept while a whole-file
+    /// write shows its predicted result, to put back if the write fails.
+    predicted_from: Option<Vec<crate::git::FileChange>>,
+    /// Paths a whole-file write in flight moves between the lists.
+    pub pending_paths: Vec<String>,
+    /// Index writes the user asked for while another write ran. They run in
+    /// order, each as soon as the one before it finishes.
+    queued: std::collections::VecDeque<Action>,
+    /// The write in flight cannot change the patch on screen, which keeps
+    /// its hunk actions and stays visible as it is.
+    patch_untouched: bool,
+    /// When the worker started reading the working changes a write returned.
+    /// The view treats file watcher events from before then as covered.
+    pub worktree_read_at: Option<std::time::Instant>,
     pub operation_review: Option<Result<ReviewedOperation, String>>,
     pub notice: String,
     pub error: bool,
@@ -175,6 +198,14 @@ impl Default for Controller {
             busy: false,
             refresh_after_write: false,
             index_only_write: false,
+            running_commit: false,
+            keep_patch_on_refresh: false,
+            worktree_fresh: false,
+            worktree_read_at: None,
+            predicted_from: None,
+            pending_paths: vec![],
+            queued: Default::default(),
+            patch_untouched: false,
             operation_review: None,
             notice: "Open a local repository to begin".into(),
             error: false,
@@ -253,6 +284,8 @@ impl Controller {
             self.invalidate(l);
         }
         self.snapshot = None;
+        self.predicted_from = None;
+        self.pending_paths.clear();
         self.graph = Graph::default();
         self.selected = None;
         self.previewed_ref = None;
@@ -467,8 +500,10 @@ impl Controller {
     fn refresh_with(&mut self, action: Action) -> Option<RefreshPlan> {
         self.snapshot.as_ref()?;
         self.pending_watcher_refresh = None;
-        self.remember_patch();
-        self.invalidate(Lane::Diff);
+        if !std::mem::take(&mut self.keep_patch_on_refresh) {
+            self.remember_patch();
+            self.invalidate(Lane::Diff);
+        }
         Some(RefreshPlan {
             cancel: [ReadKind::Snapshot, ReadKind::Diff],
             dispatch: self.read(Lane::Snapshot, action),
@@ -491,12 +526,13 @@ impl Controller {
     pub fn patch_ready(&self) -> bool {
         self.patch.is_some() && !self.diff_loading()
     }
-    /// Reports whether a selected diff is waiting on a read, refresh or write.
+    /// Reports whether a selected diff is waiting on a read, a write, or a
+    /// refresh that will reload it.
     pub fn diff_loading(&self) -> bool {
         self.diff_context.is_some()
             && (self.slots[Lane::Diff as usize].active.is_some()
-                || self.slots[Lane::Snapshot as usize].active.is_some()
-                || self.busy)
+                || (self.slots[Lane::Snapshot as usize].active.is_some() && self.reopen.is_some())
+                || self.write_touches_patch())
     }
     /// Returns the working-changes file whose selected side has no changes left.
     ///
@@ -602,7 +638,14 @@ impl Controller {
     /// Supply a write action. A commit captures the current draft revision so
     /// its completion can preserve any edits made while Git was running.
     pub fn mutate(&mut self, action: Action) -> Option<(Lane, Request)> {
-        if self.busy || self.snapshot.is_none() {
+        self.snapshot.as_ref()?;
+        if self.busy {
+            // Index writes wait their turn instead of being dropped, and
+            // their files move at once like the running one's.
+            if self.queueable(&action) {
+                self.predict(&action);
+                self.queued.push_back(action);
+            }
             return None;
         }
         self.submitted_revision =
@@ -621,6 +664,7 @@ impl Controller {
                 | Action::Lines { .. }
                 | Action::DiscardLines { .. }
         );
+        self.running_commit = matches!(action, Action::Commit { .. });
         // Submitting a write cancels every read in the worker. Retire a
         // snapshot read in flight so its cancellation is not reported as a
         // failed refresh, and replace it once the write finishes.
@@ -633,10 +677,186 @@ impl Controller {
         self.operation_notice = None;
         self.error = false;
         self.notice = "Running Git operation…".into();
+        // Every accepted write cancels the worker's reads in flight.
         self.invalidate(Lane::Details);
-        self.invalidate(Lane::Diff);
-        self.remember_patch();
+        // A write to another file leaves the patch on screen current, and
+        // the worker keeps its hunks, unless a diff read was in flight.
+        self.patch_untouched = self.patch.is_some()
+            && self.reopen.is_none()
+            && self.slots[Lane::Diff as usize].active.is_none()
+            && !self.touches_patch(&action);
+        if !self.patch_untouched {
+            self.invalidate(Lane::Diff);
+            self.remember_patch();
+        }
+        self.predict(&action);
         self.request(Lane::Mutation, action)
+    }
+
+    /// Whether `action` can change the comparison on screen. The worker
+    /// applies the same rule to its cached hunks (`Session::keeps_patch`).
+    fn touches_patch(&self, action: &Action) -> bool {
+        let Some(patch) = &self.patch else {
+            return false;
+        };
+        let names = |path: &str| path == patch.path || patch.original_path.as_deref() == Some(path);
+        match action {
+            Action::StageFile { reviewed, .. } => {
+                names(&reviewed.path) || reviewed.original_path.as_deref().is_some_and(names)
+            }
+            Action::MarkResolved { path, .. } => names(path),
+            // A commit empties staged comparisons, but leaves the index and
+            // working tree, so unstaged ones and commit comparisons stay.
+            Action::Commit { .. } => patch.id.is_none() && patch.staged,
+            _ => true,
+        }
+    }
+
+    /// Whether `action` may wait for the write in flight: an index write,
+    /// behind another index write, that either names its file or addresses
+    /// a patch no waiting write changes. Commits and operations still block.
+    fn queueable(&self, action: &Action) -> bool {
+        if !self.index_only_write && !self.running_commit {
+            return false;
+        }
+        match action {
+            Action::StageFile { .. } | Action::StageAll { .. } | Action::MarkResolved { .. } => {
+                true
+            }
+            Action::Hunk { .. }
+            | Action::Lines { .. }
+            | Action::DiscardHunk { .. }
+            | Action::DiscardLines { .. } => {
+                self.patch_untouched && self.queued.iter().all(|queued| !self.touches_patch(queued))
+            }
+            _ => false,
+        }
+    }
+
+    /// A write is running that the rest of the window must wait for. Index
+    /// writes and commits do not count: clicks during them queue or wait on
+    /// their own. Operations that move HEAD or rewrite files still do.
+    pub fn blocking_write(&self) -> bool {
+        self.busy && !self.index_only_write && !self.running_commit
+    }
+
+    /// The write in flight changes the patch on screen.
+    pub fn write_touches_patch(&self) -> bool {
+        self.busy && !self.patch_untouched
+    }
+
+    /// Writes waiting for the one in flight.
+    pub fn queued_writes(&self) -> usize {
+        self.queued.len()
+    }
+
+    /// Takes the next waiting write, brought up to date with the status:
+    /// a whole-file write reviews the file's entry as it now is, and is
+    /// dropped when the file has nothing left on that side.
+    fn next_queued(&mut self) -> Option<Action> {
+        while let Some(action) = self.queued.pop_front() {
+            let Action::StageFile { reviewed, unstage } = action else {
+                return Some(action);
+            };
+            // Resolve against what Git reported, not this write's own prediction.
+            let status = self
+                .predicted_from
+                .as_ref()
+                .or(self.snapshot.as_ref().map(|s| &s.status))?;
+            if let Some(current) = status
+                .iter()
+                .find(|f| f.path == reviewed.path && f.on_side(unstage))
+            {
+                return Some(Action::StageFile {
+                    reviewed: current.clone(),
+                    unstage,
+                });
+            }
+        }
+        None
+    }
+
+    /// Moves the files a whole-file write stages or unstages to their
+    /// predicted place at once. The status Git reports afterwards replaces
+    /// the prediction; a failure puts the reported status back.
+    fn predict(&mut self, action: &Action) {
+        let (only, unstage) = match action {
+            Action::StageFile { reviewed, unstage } => (Some(reviewed.path.as_str()), *unstage),
+            Action::StageAll { unstage } => (None, *unstage),
+            Action::Commit { .. } => return self.predict_commit(),
+            _ => return,
+        };
+        let Some(snapshot) = self.snapshot.as_mut() else {
+            return;
+        };
+        let mut moved = vec![];
+        let predicted = snapshot
+            .status
+            .iter()
+            .filter_map(|file| {
+                if only.is_some_and(|path| path != file.path) {
+                    return Some(file.clone());
+                }
+                match file.predicted(unstage) {
+                    Some(next) => {
+                        if next.as_ref() != Some(file) {
+                            moved.push(file.path.clone());
+                        }
+                        next
+                    }
+                    None => Some(file.clone()),
+                }
+            })
+            .collect();
+        if !moved.is_empty() {
+            // Predictions stack; the status Git last reported is kept once.
+            let reported = std::mem::replace(&mut snapshot.status, predicted);
+            self.predicted_from.get_or_insert(reported);
+            for path in moved {
+                if !self.pending_paths.contains(&path) {
+                    self.pending_paths.push(path);
+                }
+            }
+        }
+    }
+
+    /// Empties the Staged list at once for a commit: its files leave it, and
+    /// any working-tree changes they also have stay in Unstaged.
+    fn predict_commit(&mut self) {
+        let Some(snapshot) = self.snapshot.as_mut() else {
+            return;
+        };
+        if snapshot.status.iter().any(|f| f.after_commit().is_none()) {
+            return;
+        }
+        let predicted: Vec<_> = snapshot
+            .status
+            .iter()
+            .filter_map(|file| file.after_commit().flatten())
+            .collect();
+        if predicted != snapshot.status {
+            let reported = std::mem::replace(&mut snapshot.status, predicted);
+            self.predicted_from.get_or_insert(reported);
+        }
+    }
+
+    /// Shows the waiting writes' predictions again on a newly reported status.
+    fn repredict_queued(&mut self) {
+        let queued = std::mem::take(&mut self.queued);
+        for action in &queued {
+            self.predict(action);
+        }
+        self.queued = queued;
+    }
+
+    /// Ends a prediction: puts the reported status back if `restore`.
+    fn settle_prediction(&mut self, restore: bool) {
+        self.pending_paths.clear();
+        if let Some(reported) = self.predicted_from.take() {
+            if let (true, Some(snapshot)) = (restore, self.snapshot.as_mut()) {
+                snapshot.status = reported;
+            }
+        }
     }
     /// Checks whether a response is current enough to apply external effects.
     ///
@@ -664,6 +884,7 @@ impl Controller {
             .result
             .as_ref()
             .map_or_else(|failure| failure.refresh, |_| true);
+        let failed = response.result.is_err();
         let mut jobs = vec![];
         if current {
             let requested_limit = if lane == Lane::Snapshot {
@@ -694,7 +915,16 @@ impl Controller {
                             .any(|file| &file.path == path && file.is_unmerged())
                     });
                     self.path = path;
+                    // Git's status replaces any predicted file move.
+                    self.settle_prediction(false);
                     self.snapshot = Some(snapshot);
+                    // Writes queued behind a commit start once its refresh lands.
+                    if !self.busy {
+                        if let Some(next) = self.next_queued() {
+                            jobs.extend(self.mutate(next));
+                            self.repredict_queued();
+                        }
+                    }
                     self.graph = graph;
                     if let Some(id) = self.selected.clone() {
                         if self
@@ -752,15 +982,8 @@ impl Controller {
                         .take()
                         .filter(|reopen| reopen.generation == self.selection_generation)
                     {
+                        let can_reopen = self.can_reopen(&reopen.selection);
                         let DiffSelection { id, path, staged } = reopen.selection;
-                        let can_reopen = id.is_some()
-                            || self.snapshot.as_ref().is_some_and(|snapshot| {
-                                snapshot.status.iter().any(|file| {
-                                    file.path == path
-                                        && !file.unsupported_path
-                                        && (file.on_side(staged) || file.is_unmerged())
-                                })
-                            });
                         if id == self.selected && can_reopen {
                             if let Some(job) = self.diff(path, staged) {
                                 jobs.push(job);
@@ -820,6 +1043,57 @@ impl Controller {
                         self.draft_revision += 1;
                     }
                 }
+                Ok(Reply::IndexDone {
+                    message,
+                    worktree,
+                    diff,
+                }) => {
+                    self.operation_notice = Some((message.clone(), false));
+                    self.notice = message;
+                    if let Some(state) = worktree {
+                        self.apply_worktree(state);
+                    }
+                    if let Some(Reply::Diff {
+                        id,
+                        path,
+                        staged,
+                        original_path,
+                        content,
+                        hunks,
+                        hunk_blocked,
+                        token,
+                        preview,
+                    }) = diff.map(|diff| *diff)
+                    {
+                        // Install it only if the user still reviews the same
+                        // comparison the write started from.
+                        let reviewed = DiffSelection {
+                            id: id.clone(),
+                            path: path.clone(),
+                            staged,
+                        };
+                        if self.selected == id
+                            && self.reopen.as_ref().is_some_and(|reopen| {
+                                reopen.generation == self.selection_generation
+                                    && reopen.selection == reviewed
+                            })
+                        {
+                            self.patch = Some(Patch {
+                                id,
+                                path,
+                                staged,
+                                original_path,
+                                content,
+                                hunks,
+                                hunk_blocked,
+                                token,
+                                preview,
+                            });
+                            self.reopen = None;
+                            self.keep_patch_on_refresh = true;
+                        }
+                    }
+                }
                 Ok(Reply::OperationReview(reviewed)) => self.operation_review = Some(Ok(reviewed)),
                 Err(e) if lane == Lane::OperationReview => {
                     self.operation_review = Some(Err(e.message))
@@ -833,6 +1107,11 @@ impl Controller {
                     }
                     if lane == Lane::Snapshot {
                         self.reveal = None;
+                        // Writes waiting for this refresh cannot be reviewed.
+                        if !self.busy && !self.queued.is_empty() {
+                            self.queued.clear();
+                            self.settle_prediction(true);
+                        }
                     }
                     if lane == Lane::Mutation {
                         self.operation_notice = Some((e.message.clone(), true));
@@ -848,9 +1127,44 @@ impl Controller {
         }
         if lane == Lane::Mutation {
             self.busy = false;
+            if !current || failed {
+                self.settle_prediction(true);
+            } else if self.worktree_fresh {
+                // The reply's status already replaced the prediction.
+                self.settle_prediction(false);
+            }
             let replaced = std::mem::take(&mut self.refresh_after_write);
             let index_only = std::mem::take(&mut self.index_only_write);
-            if current && (refresh || replaced) {
+            self.running_commit = false;
+            // The patch on screen did not depend on this write, so the
+            // refresh after it need not reload it either.
+            if self.patch_untouched && current && !failed {
+                self.keep_patch_on_refresh = true;
+            }
+            // The reply carried the new working changes; a refresh would
+            // only read them again. A retired refresh still runs in full.
+            let fresh = std::mem::take(&mut self.worktree_fresh)
+                && index_only
+                && !replaced
+                && self.requested_limit.is_none();
+            // A failed write leaves the writes waiting behind it unasked for.
+            // After a commit they wait for its refresh, so each reviews its
+            // file as the commit left it.
+            let next = if !current || failed {
+                self.queued.clear();
+                None
+            } else if index_only {
+                self.next_queued()
+            } else {
+                None
+            };
+            if let Some(next) = next {
+                // The next write starts at once. The last one in line
+                // refreshes as needed, so this one does not.
+                self.refresh_after_write |= replaced;
+                jobs.extend(self.mutate(next));
+                self.repredict_queued();
+            } else if current && (refresh || replaced) && !fresh {
                 // A write to the index or worktree cannot change history, so
                 // the worktree refresh reuses the loaded commits. It still
                 // reads references, HEAD and metadata, and reloads history if
@@ -869,10 +1183,26 @@ impl Controller {
                 .filter(|reopen| reopen.generation == self.selection_generation)
             {
                 // Without a refresh, reload the diff directly so its actions
-                // address a current worker patch again.
-                let DiffSelection { path, staged, .. } = reopen.selection;
-                jobs.extend(self.diff(path, staged));
+                // address a current worker patch again. With nothing left on
+                // its side, the view offers the next step instead.
+                if fresh && !self.can_reopen(&reopen.selection) {
+                    self.patch = None;
+                } else {
+                    let DiffSelection { path, staged, .. } = reopen.selection;
+                    jobs.extend(self.diff(path, staged));
+                }
             }
+            if !self.busy {
+                self.patch_untouched = false;
+                // The write cancelled a commit's details read in flight;
+                // without a refresh to follow, read them again here.
+                if let Some(id) = self.selected.clone().filter(|id| {
+                    fresh && self.details_loaded.as_ref() != Some(id) && !self.details_loading()
+                }) {
+                    jobs.extend(self.read(Lane::Details, Action::Details { id }));
+                }
+            }
+            self.keep_patch_on_refresh = false;
         }
         let slot = &mut self.slots[lane as usize];
         if let Some(request) = slot.pending.take().filter(|r| r.epoch == self.epoch) {
@@ -881,6 +1211,46 @@ impl Controller {
         }
         jobs
     }
+    /// Installs the working changes an index write returned, if HEAD is
+    /// still where the loaded snapshot has it. Otherwise the usual refresh
+    /// follows, since history or references may have moved too.
+    fn apply_worktree(&mut self, state: crate::service::WorktreeState) {
+        let Some(snapshot) = self.snapshot.as_mut() else {
+            return;
+        };
+        let same_head = snapshot.reviewed.as_ref().is_some_and(|reviewed| {
+            reviewed.head == state.reviewed.head
+                && reviewed.symbolic_head == state.reviewed.symbolic_head
+        });
+        if !same_head {
+            return;
+        }
+        snapshot.status = state.status;
+        snapshot.reviewed = Some(state.reviewed);
+        snapshot.journal = state.journal;
+        let status = &snapshot.status;
+        self.marker_refusals.retain(|path| {
+            status
+                .iter()
+                .any(|file| &file.path == path && file.is_unmerged())
+        });
+        self.worktree_fresh = true;
+        self.worktree_read_at = state.read_started;
+    }
+
+    /// Whether a working-changes comparison still has something to show,
+    /// so reloading it is worthwhile. Commit comparisons always do.
+    fn can_reopen(&self, selection: &DiffSelection) -> bool {
+        selection.id.is_some()
+            || self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.status.iter().any(|file| {
+                    file.path == selection.path
+                        && !file.unsupported_path
+                        && (file.on_side(selection.staged) || file.is_unmerged())
+                })
+            })
+    }
+
     /// Reports whether the snapshot lane has an active request.
     pub fn loading(&self) -> bool {
         self.slots[0].active.is_some()
@@ -1380,6 +1750,466 @@ mod tests {
         assert_eq!(c.patch.as_ref().unwrap().token, reload.sequence);
     }
     #[test]
+    fn a_hunk_write_with_its_diff_is_usable_before_the_refresh_ends() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: Some(RepoSnapshot {
+                status: vec![change("b", ' ', 'M')],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let shown = |token, hunks: usize| Reply::Diff {
+            id: None,
+            path: "b".into(),
+            staged: false,
+            original_path: None,
+            content: diff::prepare(vec![]),
+            hunks: vec!["@@ -1 +1 @@".into(); hunks],
+            hunk_blocked: None,
+            token,
+            preview: Default::default(),
+        };
+        let (_, read) = c.diff("b".into(), false).unwrap();
+        c.complete(Lane::Diff, reply(&read, Ok(shown(read.sequence, 2))));
+        let (_, write) = c
+            .mutate(Action::Hunk {
+                token: read.sequence,
+                index: 0,
+                unstage: false,
+            })
+            .unwrap();
+        // Without the working changes, the usual refresh follows.
+        let done = Ok(Reply::IndexDone {
+            message: "Staged hunk in b".into(),
+            worktree: None,
+            diff: Some(Box::new(shown(write.sequence, 1))),
+        });
+        let refresh = c.complete(Lane::Mutation, reply(&write, done));
+        // The refresh still runs, but the new patch is usable at once.
+        assert!(matches!(refresh[..], [(Lane::Snapshot, _)]));
+        assert!(c.patch_ready());
+        assert_eq!(c.patch.as_ref().unwrap().token, write.sequence);
+        assert_eq!(c.patch.as_ref().unwrap().hunks.len(), 1);
+        // When the refresh lands, nothing reloads the diff.
+        let jobs = c.complete(
+            Lane::Snapshot,
+            reply(
+                &refresh[0].1,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot: RepoSnapshot {
+                        status: vec![change("b", 'M', 'M')],
+                        ..Default::default()
+                    },
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        assert!(jobs.is_empty());
+        assert!(c.patch_ready());
+        assert_eq!(c.patch.as_ref().unwrap().token, write.sequence);
+        // A later refresh, such as from the file watcher, reloads it again.
+        let watcher = c.watcher_refresh(false).unwrap().dispatch.unwrap();
+        assert!(!c.patch_ready());
+        let jobs = c.complete(
+            Lane::Snapshot,
+            reply(
+                &watcher.1,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot: RepoSnapshot {
+                        status: vec![change("b", 'M', 'M')],
+                        ..Default::default()
+                    },
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        assert!(matches!(&jobs[0].1.action, Action::Diff { path, .. } if path == "b"));
+    }
+    #[test]
+    fn a_diff_from_a_write_is_dropped_after_switching_files() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: Some(RepoSnapshot {
+                status: vec![change("b", ' ', 'M'), change("c", ' ', 'M')],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_, read) = c.diff("b".into(), false).unwrap();
+        c.complete(
+            Lane::Diff,
+            reply(
+                &read,
+                Ok(Reply::Diff {
+                    id: None,
+                    path: "b".into(),
+                    staged: false,
+                    original_path: None,
+                    content: diff::prepare(vec![]),
+                    hunks: vec!["@@ -1 +1 @@".into(); 2],
+                    hunk_blocked: None,
+                    token: read.sequence,
+                    preview: Default::default(),
+                }),
+            ),
+        );
+        let (_, write) = c
+            .mutate(Action::Hunk {
+                token: read.sequence,
+                index: 0,
+                unstage: false,
+            })
+            .unwrap();
+        // The user opens another file while the write runs.
+        let _ = c.diff("c".into(), false);
+        let stale = Reply::Diff {
+            id: None,
+            path: "b".into(),
+            staged: false,
+            original_path: None,
+            content: diff::prepare(vec![]),
+            hunks: vec!["@@ -1 +1 @@".into()],
+            hunk_blocked: None,
+            token: write.sequence,
+            preview: Default::default(),
+        };
+        c.complete(
+            Lane::Mutation,
+            reply(
+                &write,
+                Ok(Reply::IndexDone {
+                    message: "ok".into(),
+                    worktree: None,
+                    diff: Some(Box::new(stale)),
+                }),
+            ),
+        );
+        assert!(c.patch.as_ref().is_none_or(|patch| patch.path != "b"));
+    }
+    #[test]
+    fn an_index_write_with_its_working_changes_needs_no_refresh() {
+        let identity = |head: &str, index: &[u8]| crate::git::WriteIdentity {
+            head: head.into(),
+            symbolic_head: "refs/heads/main".into(),
+            index: index.to_vec(),
+        };
+        let state = |head: &str, file: crate::git::FileChange| crate::service::WorktreeState {
+            status: vec![file],
+            reviewed: identity(head, b"new"),
+            journal: Default::default(),
+            read_started: Some(std::time::Instant::now()),
+        };
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: Some(RepoSnapshot {
+                status: vec![change("b", ' ', 'M')],
+                reviewed: Some(identity("h", b"old")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Review the file's unstaged diff, then stage the whole file.
+        let (_, read) = c.diff("b".into(), false).unwrap();
+        c.complete(
+            Lane::Diff,
+            reply(
+                &read,
+                Ok(Reply::Diff {
+                    id: None,
+                    path: "b".into(),
+                    staged: false,
+                    original_path: None,
+                    content: diff::prepare(vec![]),
+                    hunks: vec!["@@ -1 +1 @@".into()],
+                    hunk_blocked: None,
+                    token: read.sequence,
+                    preview: Default::default(),
+                }),
+            ),
+        );
+        let (_, write) = c
+            .mutate(Action::StageFile {
+                reviewed: change("b", ' ', 'M'),
+                unstage: false,
+            })
+            .unwrap();
+        let jobs = c.complete(
+            Lane::Mutation,
+            reply(
+                &write,
+                Ok(Reply::IndexDone {
+                    message: "Staged b".into(),
+                    worktree: Some(state("h", change("b", 'M', ' '))),
+                    diff: None,
+                }),
+            ),
+        );
+        // No refresh and no diff reload: the side is empty, so the review is done.
+        assert!(jobs.is_empty() && !c.loading() && !c.busy);
+        let snapshot = c.snapshot.as_ref().unwrap();
+        assert!(snapshot.status[0].on_side(true) && !snapshot.status[0].on_side(false));
+        assert_eq!(snapshot.reviewed.as_ref().unwrap().index, b"new");
+        assert!(c.completed_review().is_some());
+        assert!(c.worktree_read_at.is_some());
+
+        // If HEAD moved meanwhile, history may have too: refresh as before.
+        let (_, write) = c
+            .mutate(Action::StageFile {
+                reviewed: change("b", 'M', ' '),
+                unstage: true,
+            })
+            .unwrap();
+        let jobs = c.complete(
+            Lane::Mutation,
+            reply(
+                &write,
+                Ok(Reply::IndexDone {
+                    message: "Unstaged b".into(),
+                    worktree: Some(state("moved", change("b", ' ', 'M'))),
+                    diff: None,
+                }),
+            ),
+        );
+        assert!(matches!(jobs[..], [(Lane::Snapshot, _)]));
+        // The predicted move stays on screen until that refresh lands.
+        assert_eq!(
+            c.snapshot.as_ref().unwrap().status[0],
+            change("b", ' ', 'M')
+        );
+        assert_eq!(c.pending_paths, ["b"]);
+        c.complete(
+            Lane::Snapshot,
+            reply(
+                &jobs[0].1,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot: RepoSnapshot {
+                        status: vec![change("b", ' ', 'M')],
+                        reviewed: Some(identity("moved", b"new")),
+                        ..Default::default()
+                    },
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        assert!(c.pending_paths.is_empty());
+    }
+    fn fresh_state(files: Vec<crate::git::FileChange>) -> Result<Reply, crate::service::Failure> {
+        Ok(Reply::IndexDone {
+            message: "ok".into(),
+            worktree: Some(crate::service::WorktreeState {
+                status: files,
+                reviewed: crate::git::WriteIdentity {
+                    head: "h".into(),
+                    ..Default::default()
+                },
+                journal: Default::default(),
+                read_started: None,
+            }),
+            diff: None,
+        })
+    }
+    fn reviewed_snapshot(status: Vec<crate::git::FileChange>) -> Option<RepoSnapshot> {
+        Some(RepoSnapshot {
+            status,
+            reviewed: Some(crate::git::WriteIdentity {
+                head: "h".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+    #[test]
+    fn index_writes_wait_their_turn_and_move_files_at_once() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: reviewed_snapshot(vec![change("a", ' ', 'M'), change("b", ' ', 'M')]),
+            ..Default::default()
+        };
+        let stage = |path: &str| Action::StageFile {
+            reviewed: change(path, ' ', 'M'),
+            unstage: false,
+        };
+        let (_, first) = c.mutate(stage("a")).unwrap();
+        // A second click while the first write runs waits instead of being
+        // dropped, and its file moves at once too. Nothing else is blocked.
+        assert!(c.mutate(stage("b")).is_none());
+        assert_eq!(c.queued_writes(), 1);
+        assert!(!c.blocking_write());
+        let status = &c.snapshot.as_ref().unwrap().status;
+        assert_eq!(status[..], [change("a", 'M', ' '), change("b", 'M', ' ')]);
+        // The first write lands: the second starts at once, with b's entry
+        // as Git reported it, and b still shows as moving.
+        let jobs = c.complete(
+            Lane::Mutation,
+            reply(
+                &first,
+                fresh_state(vec![change("a", 'M', ' '), change("b", ' ', 'M')]),
+            ),
+        );
+        let [(Lane::Mutation, second)] = &jobs[..] else {
+            panic!("expected the queued write to start, got {jobs:?}");
+        };
+        assert!(matches!(
+            &second.action,
+            Action::StageFile { reviewed, unstage: false } if *reviewed == change("b", ' ', 'M')
+        ));
+        assert_eq!(
+            c.snapshot.as_ref().unwrap().status[1],
+            change("b", 'M', ' ')
+        );
+        assert_eq!(c.pending_paths, ["b"]);
+        let jobs = c.complete(
+            Lane::Mutation,
+            reply(
+                second,
+                fresh_state(vec![change("a", 'M', ' '), change("b", 'M', ' ')]),
+            ),
+        );
+        assert!(jobs.is_empty() && !c.busy && c.pending_paths.is_empty());
+    }
+    #[test]
+    fn a_failed_index_write_drops_the_writes_waiting_behind_it() {
+        let original = vec![change("a", ' ', 'M'), change("b", ' ', 'M')];
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: reviewed_snapshot(original.clone()),
+            ..Default::default()
+        };
+        let (_, first) = c
+            .mutate(Action::StageFile {
+                reviewed: change("a", ' ', 'M'),
+                unstage: false,
+            })
+            .unwrap();
+        assert!(c.mutate(Action::StageAll { unstage: false }).is_none());
+        let failure = Err(crate::service::Failure {
+            message: "index.lock exists".into(),
+            kind: Default::default(),
+            refresh: true,
+        });
+        let jobs = c.complete(Lane::Mutation, reply(&first, failure));
+        // Only the refresh after the failure follows; the status comes back.
+        assert!(matches!(jobs[..], [(Lane::Snapshot, _)]));
+        assert_eq!(c.queued_writes(), 0);
+        assert_eq!(c.snapshot.as_ref().unwrap().status, original);
+    }
+    #[test]
+    fn writing_another_file_keeps_the_open_diff_usable() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: reviewed_snapshot(vec![change("a", ' ', 'M'), change("b", ' ', 'M')]),
+            ..Default::default()
+        };
+        let (_, read) = c.diff("b".into(), false).unwrap();
+        c.complete(
+            Lane::Diff,
+            reply(
+                &read,
+                Ok(Reply::Diff {
+                    id: None,
+                    path: "b".into(),
+                    staged: false,
+                    original_path: None,
+                    content: diff::prepare(vec![]),
+                    hunks: vec!["@@ -1 +1 @@".into()],
+                    hunk_blocked: None,
+                    token: read.sequence,
+                    preview: Default::default(),
+                }),
+            ),
+        );
+        let (_, write) = c
+            .mutate(Action::StageFile {
+                reviewed: change("a", ' ', 'M'),
+                unstage: false,
+            })
+            .unwrap();
+        // b's diff cannot change, so it stays usable while a is written.
+        assert!(c.patch_ready() && !c.write_touches_patch());
+        // A hunk click on it waits for that write instead of being dropped.
+        assert!(c
+            .mutate(Action::Hunk {
+                token: read.sequence,
+                index: 0,
+                unstage: false,
+            })
+            .is_none());
+        assert_eq!(c.queued_writes(), 1);
+        let jobs = c.complete(
+            Lane::Mutation,
+            reply(
+                &write,
+                fresh_state(vec![change("a", 'M', ' '), change("b", ' ', 'M')]),
+            ),
+        );
+        // The hunk write starts with the same token; nothing reloads the diff.
+        assert!(matches!(
+            &jobs[..],
+            [(Lane::Mutation, Request { action: Action::Hunk { token, .. }, .. })] if *token == read.sequence
+        ));
+        assert_eq!(c.patch.as_ref().unwrap().token, read.sequence);
+    }
+    #[test]
+    fn a_commit_empties_staged_at_once_without_locking_the_window() {
+        let before = vec![
+            change("a", 'M', ' '),
+            change("b", 'M', 'M'),
+            change("c", ' ', 'M'),
+        ];
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: reviewed_snapshot(before.clone()),
+            ..Default::default()
+        };
+        let commit = || Action::Commit {
+            message: "m".into(),
+            reviewed: None,
+        };
+        let (_, write) = c.mutate(commit()).unwrap();
+        // Staged files leave the list at once; working-tree edits stay.
+        let status = &c.snapshot.as_ref().unwrap().status;
+        assert_eq!(status[..], [change("b", ' ', 'M'), change("c", ' ', 'M')]);
+        assert!(c.busy && !c.blocking_write());
+        let failure = Err(crate::service::Failure {
+            message: "hook failed".into(),
+            kind: Default::default(),
+            refresh: true,
+        });
+        c.complete(Lane::Mutation, reply(&write, failure));
+        // The commit failed: the staged files come back.
+        assert_eq!(c.snapshot.as_ref().unwrap().status, before);
+    }
+    #[test]
+    fn whole_file_writes_move_files_at_once_and_back_on_failure() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: Some(RepoSnapshot {
+                status: vec![change("a", ' ', 'M'), change("b", '?', '?')],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_, write) = c.mutate(Action::StageAll { unstage: false }).unwrap();
+        // Both files show as staged before Git answers.
+        let status = &c.snapshot.as_ref().unwrap().status;
+        assert_eq!(status[..], [change("a", 'M', ' '), change("b", 'A', ' ')]);
+        assert_eq!(c.pending_paths, ["a", "b"]);
+        let failure = Err(crate::service::Failure {
+            message: "index.lock exists".into(),
+            kind: Default::default(),
+            refresh: true,
+        });
+        c.complete(Lane::Mutation, reply(&write, failure));
+        // The write failed: the status Git last reported comes back.
+        let status = &c.snapshot.as_ref().unwrap().status;
+        assert_eq!(status[..], [change("a", ' ', 'M'), change("b", '?', '?')]);
+        assert!(c.pending_paths.is_empty());
+    }
+    #[test]
     fn remaining_hunks_keep_the_current_file() {
         let (_, jobs) = refresh_review(
             vec![change("b", ' ', 'M'), change("c", ' ', 'M')],
@@ -1811,7 +2641,9 @@ mod tests {
                 reviewed: None,
             })
             .unwrap();
+        // Stage all chosen during the commit waits for it and its refresh.
         assert!(c.mutate(Action::StageAll { unstage: false }).is_none());
+        assert_eq!(c.queued_writes(), 1);
         c.draft = "new".into();
         let jobs = c.complete(
             Lane::Mutation,
@@ -1826,6 +2658,29 @@ mod tests {
         assert_eq!(c.draft, "new");
         assert!(!c.busy);
         assert_eq!(jobs.len(), 1);
+        let jobs = c.complete(
+            Lane::Snapshot,
+            reply(
+                &jobs[0].1,
+                Ok(Reply::Snapshot {
+                    path: "r".into(),
+                    snapshot: Default::default(),
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        let [(Lane::Mutation, stage_all)] = &jobs[..] else {
+            panic!("the waiting Stage all should start after the refresh: {jobs:?}");
+        };
+        assert!(matches!(
+            stage_all.action,
+            Action::StageAll { unstage: false }
+        ));
+        let done = Ok(Reply::Done {
+            message: "ok".into(),
+            committed_draft: None,
+        });
+        let jobs = c.complete(Lane::Mutation, reply(stage_all, done));
         c.complete(
             Lane::Snapshot,
             reply(

@@ -78,6 +78,7 @@ impl Fixture {
                 read_scope: None,
                 git_dir: Some(root.join("repo/.git")),
                 common_dir: None,
+                index_cache: Default::default(),
                 observe_command: None,
             },
             root,

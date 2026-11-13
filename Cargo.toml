@@ -12,12 +12,20 @@ name = "gitcrab_core"
 [features]
 default = ["gpui-desktop"]
 gpui-desktop = ["dep:gpui", "dep:gpui-component", "dep:serde_json", "dep:notify", "dep:async-channel", "dep:embed-resource"]
-native-evidence = ["gpui-desktop"]
+native-evidence = ["gpui-desktop", "git-trace"]
+# Records every Git process with its timing. Diagnostic builds only.
+git-trace = []
 
 [[bin]]
 name = "gitcrab"
 path = "src/native/main.rs"
 required-features = ["gpui-desktop"]
+
+# Headless latency benchmark of the controller and Git worker:
+# cargo run --release --no-default-features --features git-trace --example latency -- --help
+[[example]]
+name = "latency"
+required-features = ["git-trace"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

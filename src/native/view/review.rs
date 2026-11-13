@@ -530,7 +530,7 @@ impl GitCrab {
                 let path = p.path.clone();
                 el.child(
                     self.action_button("resolve-file", "Mark resolved…")
-                        .disabled_when(self.state.busy)
+                        .disabled_when(self.state.blocking_write())
                         .tooltip("Review staging this working-tree file as the resolution")
                         .on_click(cx.listener(move |v, _, w, cx| {
                             v.review_resolution(path.clone(), w, cx)
@@ -557,7 +557,7 @@ impl GitCrab {
                         "Stage the whole file · Alt+S"
                     })
                     .disabled_when(
-                        self.state.busy
+                        self.state.blocking_write()
                             || !self.state.snapshot.as_ref().is_some_and(|s| {
                                 s.status.iter().any(|f| {
                                     f.path == p.path && Controller::on_side(f, staged)
@@ -639,8 +639,11 @@ impl GitCrab {
                     .min_h_0()
                     // The previous patch stays in place, dimmed, until this
                     // tab's write is reflected, instead of blanking the pane.
+                    // A hunk or line write fades only the rows it changes.
                     .when(
-                        !self.state.patch_ready() && (self.state.busy || self.own_write),
+                        !self.state.patch_ready()
+                            && (self.state.busy || self.own_write)
+                            && self.pending_on_screen().is_none(),
                         |el| el.opacity(0.55),
                     )
                     .child(
@@ -767,9 +770,11 @@ impl GitCrab {
                             .tooltip(format!(
                                 "Review discarding only this working-copy hunk · {title}"
                             ))
-                            .on_click(cx.listener(move |v, _, w, cx| {
-                                v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
-                            })),
+                            .on_click(cx.listener(
+                                move |v, _, w, cx| {
+                                    v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
+                                },
+                            )),
                         )
                     });
             }
@@ -784,8 +789,10 @@ impl GitCrab {
                     && record.at.elapsed() < std::time::Duration::from_secs(60)
             })
             .cloned();
-        let refreshing = !self.state.busy && !self.state.patch_ready();
-        bar.when(self.state.busy || refreshing, |bar| {
+        // Writes to other files leave this diff as it is and say nothing here.
+        let writing = self.state.write_touches_patch();
+        let refreshing = !writing && !self.state.patch_ready();
+        bar.when(writing || refreshing, |bar| {
             bar.child(
                 div()
                     .text_size(type_size(cx, 12.))
@@ -797,7 +804,7 @@ impl GitCrab {
                     }),
             )
         })
-        .when_some(outcome.filter(|_| !self.state.busy), |bar, record| {
+        .when_some(outcome.filter(|_| !writing), |bar, record| {
             bar.child(
                 div()
                     .text_size(type_size(cx, 12.))
@@ -1016,17 +1023,15 @@ impl GitCrab {
 
     /// Whether the patch on screen is current and no write is running.
     fn diff_actions_ready(&self) -> bool {
-        self.state.patch_ready() && !self.state.busy
+        self.state.patch_ready() && !self.state.blocking_write()
     }
 
     /// Changed lines in the selected rows, as indices into the patch lines.
     fn selected_changes(&self) -> Vec<usize> {
         match (&self.state.patch, &self.selection) {
-            (Some(p), Some(range)) => gitcrab_core::diff::selected_changes(
-                &p.content,
-                self.split_active,
-                range.clone(),
-            ),
+            (Some(p), Some(range)) => {
+                gitcrab_core::diff::selected_changes(&p.content, self.split_active, range.clone())
+            }
             _ => vec![],
         }
     }
@@ -1205,14 +1210,13 @@ impl GitCrab {
         let index = p.content.hunk_rows.binary_search(&line).ok();
         let total = p.content.hunk_rows.len();
         let (ranges, scope) = gitcrab_core::diff::hunk_header_parts(&l.text);
-        let conflict = self.state.snapshot.as_ref().is_some_and(|s| {
-            s.status
-                .iter()
-                .any(|f| f.path == p.path && f.is_unmerged())
-        });
-        let actions = index.filter(|&index| {
-            self.hunk_actions_allowed(p, conflict) && index < p.hunks.len()
-        });
+        let conflict = self
+            .state
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.status.iter().any(|f| f.path == p.path && f.is_unmerged()));
+        let actions =
+            index.filter(|&index| self.hunk_actions_allowed(p, conflict) && index < p.hunks.len());
         let ready = self.diff_actions_ready();
         let scale = self.preferences.code_size / 12.;
         let advance = self.preferences.code_size * 0.65;
@@ -1246,7 +1250,21 @@ impl GitCrab {
                         None => "Hunk".into(),
                     }),
             );
-        if let Some(index) = actions {
+        let pending = index.and_then(|index| {
+            self.pending_on_screen()
+                .filter(|change| change.touches_hunk(&p.content, index))
+                .map(|change| change.label)
+        });
+        if let Some(label) = pending {
+            // The write is under way: say so where its buttons were.
+            row = row.child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(semantic(Role::TextSecondary)))
+                    .child(label),
+            );
+        } else if let Some(index) = actions {
             let token = p.token;
             let unstage = p.staged;
             let selected: Vec<usize> = self
@@ -1353,6 +1371,18 @@ impl GitCrab {
             return self.hunk_header_row(i, line, cx);
         }
         let selected = self.selection.as_ref().is_some_and(|r| r.contains(&i));
+        // Rows that a hunk or line write in flight changes fade at once.
+        let pending = self.pending_on_screen().is_some_and(|change| {
+            let (a, b) = if self.split_active {
+                p.content.split[i]
+            } else {
+                (Some(i), None)
+            };
+            [a, b]
+                .into_iter()
+                .flatten()
+                .any(|line| change.covers(&p.content, line))
+        });
         let found = self.diff_matches.binary_search(&i).is_ok();
         let current_match = self
             .diff_match
@@ -1376,6 +1406,7 @@ impl GitCrab {
             .font_family(CODE_FONT)
             .text_size(px(self.preferences.code_size))
             .overflow_hidden()
+            .when(pending, |row| row.opacity(0.35))
             .when(found, |row| {
                 row.border_l_2()
                     .border_color(rgb(semantic(if current_match {

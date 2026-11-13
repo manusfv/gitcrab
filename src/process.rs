@@ -9,6 +9,88 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Per-process timings for latency measurements. Only built with the
+/// `git-trace` feature; production builds record nothing.
+#[cfg(feature = "git-trace")]
+pub mod trace {
+    use std::{
+        cell::Cell,
+        process::{Command, Output},
+        sync::Mutex,
+        time::Instant,
+    };
+
+    /// One Git invocation: when it started, how long the spawn took and how
+    /// long the whole call took, in milliseconds since the trace epoch.
+    #[derive(Clone, Debug)]
+    pub struct GitCall {
+        pub args: String,
+        pub thread: String,
+        pub start_ms: f64,
+        pub spawn_ms: f64,
+        pub total_ms: f64,
+        pub stdout_bytes: usize,
+    }
+
+    static CALLS: Mutex<Vec<GitCall>> = Mutex::new(Vec::new());
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    thread_local!(static SPAWNED: Cell<Option<Instant>> = const { Cell::new(None) });
+
+    fn epoch() -> Instant {
+        *EPOCH.get_or_init(Instant::now)
+    }
+
+    /// Milliseconds since the trace epoch, for aligning caller timings.
+    pub fn now_ms() -> f64 {
+        epoch().elapsed().as_secs_f64() * 1000.
+    }
+
+    /// Removes and returns every call recorded so far.
+    pub fn drain() -> Vec<GitCall> {
+        std::mem::take(&mut CALLS.lock().unwrap())
+    }
+
+    pub(super) struct Call {
+        args: String,
+        started: Instant,
+    }
+
+    impl Call {
+        pub(super) fn start(command: &Command) -> Self {
+            epoch();
+            SPAWNED.with(|s| s.set(None));
+            let args = command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            Self {
+                args,
+                started: Instant::now(),
+            }
+        }
+
+        pub(super) fn finish(self, output: Option<&Output>) {
+            let total = self.started.elapsed();
+            let spawn = SPAWNED
+                .with(Cell::take)
+                .map_or(total, |at| at.duration_since(self.started));
+            CALLS.lock().unwrap().push(GitCall {
+                args: self.args,
+                thread: std::thread::current().name().unwrap_or("?").to_owned(),
+                start_ms: self.started.duration_since(epoch()).as_secs_f64() * 1000.,
+                spawn_ms: spawn.as_secs_f64() * 1000.,
+                total_ms: total.as_secs_f64() * 1000.,
+                stdout_bytes: output.map_or(0, |o| o.stdout.len()),
+            });
+        }
+    }
+
+    pub(super) fn spawned() {
+        SPAWNED.with(|s| s.set(Some(Instant::now())));
+    }
+}
+
 const STDOUT_BYTES: usize = 32 * 1024 * 1024;
 const STDERR_BYTES: usize = 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -91,14 +173,52 @@ fn read_pipe(mut pipe: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {
 /// cancelled or times out, or stdout for a successful status exceeds 32 MiB.
 /// Git exit statuses are returned in [`Output`].
 pub(crate) fn capture(
-    mut command: Command,
+    command: Command,
     input: Option<&[u8]>,
     success_code: i32,
     scope: Option<&ReadScope>,
 ) -> io::Result<Output> {
+    capture_with(command, input, success_code, scope, false)
+}
+
+/// [`capture`] for a read-only query that starts no helpers, hooks or
+/// editors. On Windows it runs without any console (`DETACHED_PROCESS`)
+/// instead of a hidden one (`CREATE_NO_WINDOW`), which saves creating a
+/// console host for every call. Git for Windows itself starts its own
+/// children this way when it has no console.
+pub(crate) fn capture_read(
+    command: Command,
+    success_code: i32,
+    scope: Option<&ReadScope>,
+) -> io::Result<Output> {
+    capture_with(command, None, success_code, scope, true)
+}
+
+fn capture_with(
+    command: Command,
+    input: Option<&[u8]>,
+    success_code: i32,
+    scope: Option<&ReadScope>,
+    detached: bool,
+) -> io::Result<Output> {
     if let Some(scope) = scope {
         scope.check()?;
     }
+    #[cfg(feature = "git-trace")]
+    let traced = trace::Call::start(&command);
+    let result = capture_inner(command, input, success_code, scope, detached);
+    #[cfg(feature = "git-trace")]
+    traced.finish(result.as_ref().ok());
+    result
+}
+
+fn capture_inner(
+    mut command: Command,
+    input: Option<&[u8]>,
+    success_code: i32,
+    scope: Option<&ReadScope>,
+    detached: bool,
+) -> io::Result<Output> {
     command
         .stdin(if input.is_some() {
             Stdio::piped()
@@ -107,7 +227,9 @@ pub(crate) fn capture(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, mut tree) = ProcessTree::spawn(command, scope.is_some())?;
+    let (mut child, mut tree) = ProcessTree::spawn(command, scope.is_some(), detached)?;
+    #[cfg(feature = "git-trace")]
+    trace::spawned();
     let stdout = child.stdout.take().expect("piped Git stdout");
     let stderr = child.stderr.take().expect("piped Git stderr");
     let stdin = child.stdin.take();
@@ -212,7 +334,7 @@ struct ProcessTree(Option<i32>);
 
 #[cfg(unix)]
 impl ProcessTree {
-    fn spawn(mut command: Command, supervised: bool) -> io::Result<(Child, Self)> {
+    fn spawn(mut command: Command, supervised: bool, _detached: bool) -> io::Result<(Child, Self)> {
         if supervised {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
@@ -243,21 +365,25 @@ struct ProcessTree(Option<std::os::windows::io::OwnedHandle>);
 
 #[cfg(windows)]
 impl ProcessTree {
-    fn spawn(mut command: Command, supervised: bool) -> io::Result<(Child, Self)> {
+    fn spawn(mut command: Command, supervised: bool, detached: bool) -> io::Result<(Child, Self)> {
         use std::os::windows::{
             io::{AsRawHandle, FromRawHandle, OwnedHandle},
             process::CommandExt,
         };
         use windows_sys::Win32::System::{
             JobObjects::*,
-            Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED},
+            Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS},
+        };
+        // Either way no window appears. A hidden console costs a console host
+        // process per call, so reads go without one.
+        let console = if detached {
+            DETACHED_PROCESS
+        } else {
+            CREATE_NO_WINDOW
         };
 
         if !supervised {
-            return Ok((
-                command.creation_flags(CREATE_NO_WINDOW).spawn()?,
-                Self(None),
-            ));
+            return Ok((command.creation_flags(console).spawn()?, Self(None)));
         }
 
         // SAFETY: Null arguments create an anonymous job with a noninheritable handle.
@@ -283,9 +409,7 @@ impl ProcessTree {
         }
 
         // Git must join the job before it can launch any helpers.
-        let mut child = command
-            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
-            .spawn()?;
+        let mut child = command.creation_flags(console | CREATE_SUSPENDED).spawn()?;
         // SAFETY: Both handles stay open through the call.
         let assigned =
             unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) };

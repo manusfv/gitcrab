@@ -659,11 +659,48 @@ impl Step {
 }
 
 /// Checks a step's preconditions. `Ok(None)` means it can run.
+/// Runs `a` here and `b` on a scoped thread at the same time.
+fn both<A: Send, B: Send>(a: impl FnOnce() -> A + Send, b: impl FnOnce() -> B + Send) -> (A, B) {
+    std::thread::scope(|scope| {
+        let b = scope.spawn(b);
+        let a = a();
+        (
+            a,
+            b.join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        )
+    })
+}
+
+/// Runs three reads at the same time.
+fn all3<A: Send, B: Send, C: Send>(
+    a: impl FnOnce() -> A + Send,
+    b: impl FnOnce() -> B + Send,
+    c: impl FnOnce() -> C + Send,
+) -> (A, B, C) {
+    let (a, (b, c)) = both(a, || both(b, c));
+    (a, b, c)
+}
+
+/// Decides whether a step can run now.
+///
+/// Every read is a Git process, so the reads a decision may need start
+/// together. Their results are still consulted in the original order, so a
+/// read that the decision never reaches cannot change the outcome, not even
+/// by failing.
 fn check(git: &Git, change: &Change, direction: Direction) -> Result<Option<Blocker>, String> {
-    if !git.operation_markers()?.is_empty() || git.has_unmerged_entries()? {
+    let undo = direction == Direction::Undo;
+    let ((markers, unmerged), blocked) = both(
+        || both(|| git.operation_markers(), || git.has_unmerged_entries()),
+        || check_change(git, change, undo),
+    );
+    if !markers?.is_empty() || unmerged? {
         return Ok(Some(Blocker::OperationInProgress));
     }
-    let undo = direction == Direction::Undo;
+    blocked
+}
+
+fn check_change(git: &Git, change: &Change, undo: bool) -> Result<Option<Blocker>, String> {
     let head = || git.head_state();
     let blocked = match change {
         Change::Commit {
@@ -678,12 +715,15 @@ fn check(git: &Git, change: &Change, direction: Direction) -> Result<Option<Bloc
             };
             if undo && parent.is_empty() {
                 Some(Blocker::RootCommit)
-            } else if head()? != (head_ref.clone(), expected.clone()) {
-                Some(Blocker::HeadMoved)
-            } else if git.commit_parents(other)?.is_none() {
-                Some(Blocker::CommitMissing)
             } else {
-                None
+                let (here, other) = both(head, || git.commit_parents(other));
+                if here? != (head_ref.clone(), expected.clone()) {
+                    Some(Blocker::HeadMoved)
+                } else if other?.is_none() {
+                    Some(Blocker::CommitMissing)
+                } else {
+                    None
+                }
             }
         }
         Change::Checkout {
@@ -699,57 +739,75 @@ fn check(git: &Git, change: &Change, direction: Direction) -> Result<Option<Bloc
             };
             if there_id.is_empty() {
                 Some(Blocker::NoPreviousCommit)
-            } else if head()? != (here_ref.clone(), here_id.clone()) {
-                Some(Blocker::HeadMoved)
             } else if there_ref.is_empty() {
-                git.commit_parents(there_id)?
-                    .is_none()
-                    .then_some(Blocker::CommitMissing)
+                let (here, there) = both(head, || git.commit_parents(there_id));
+                if here? != (here_ref.clone(), here_id.clone()) {
+                    Some(Blocker::HeadMoved)
+                } else {
+                    there?.is_none().then_some(Blocker::CommitMissing)
+                }
             } else {
-                match git.ref_commit(there_ref)? {
-                    None => Some(Blocker::BranchMissing),
-                    Some(tip) if tip != *there_id => Some(Blocker::BranchMoved),
-                    Some(_) => None,
+                let (here, there) = both(head, || git.ref_commit(there_ref));
+                if here? != (here_ref.clone(), here_id.clone()) {
+                    Some(Blocker::HeadMoved)
+                } else {
+                    match there? {
+                        None => Some(Blocker::BranchMissing),
+                        Some(tip) if tip != *there_id => Some(Blocker::BranchMoved),
+                        Some(_) => None,
+                    }
                 }
             }
         }
         Change::CreateBranch { name, id } => {
             let full = format!("refs/heads/{name}");
-            let tip = git.ref_commit(&full)?;
             if undo {
-                match tip {
+                let (tip, here) = both(|| git.ref_commit(&full), head);
+                match tip? {
                     None => Some(Blocker::BranchMissing),
                     Some(tip) if tip != *id => Some(Blocker::BranchMoved),
-                    Some(_) if head()?.0 == full => Some(Blocker::BranchCheckedOut),
+                    Some(_) if here?.0 == full => Some(Blocker::BranchCheckedOut),
                     Some(_) => None,
                 }
-            } else if tip.is_some() {
-                Some(Blocker::BranchExists)
             } else {
-                git.commit_parents(id)?
-                    .is_none()
-                    .then_some(Blocker::CommitMissing)
+                let (tip, commit) = both(|| git.ref_commit(&full), || git.commit_parents(id));
+                if tip?.is_some() {
+                    Some(Blocker::BranchExists)
+                } else {
+                    commit?.is_none().then_some(Blocker::CommitMissing)
+                }
             }
         }
         Change::Stash {
             head: at, stash, ..
         } => {
-            if head()?.1 != *at {
-                Some(Blocker::HeadMoved)
-            } else if undo {
-                if !git.stash_entries()?.iter().any(|(id, _)| id == stash) {
+            if undo {
+                let (here, entries, changes) =
+                    all3(head, || git.stash_entries(), || git.has_tracked_changes());
+                if here?.1 != *at {
+                    Some(Blocker::HeadMoved)
+                } else if !entries?.iter().any(|(id, _)| id == stash) {
                     Some(Blocker::StashMissing)
-                } else if git.has_tracked_changes()? {
+                } else if changes? {
                     Some(Blocker::LocalChanges)
                 } else {
                     None
                 }
-            } else if git.commit_parents(stash)?.is_none() {
-                Some(Blocker::CommitMissing)
-            } else if !git.tracked_state_matches(stash)? {
-                Some(Blocker::TreeChanged)
             } else {
-                None
+                let (here, commit, matches) = all3(
+                    head,
+                    || git.commit_parents(stash),
+                    || git.tracked_state_matches(stash),
+                );
+                if here?.1 != *at {
+                    Some(Blocker::HeadMoved)
+                } else if commit?.is_none() {
+                    Some(Blocker::CommitMissing)
+                } else if !matches? {
+                    Some(Blocker::TreeChanged)
+                } else {
+                    None
+                }
             }
         }
         Change::PopStash {
@@ -759,31 +817,52 @@ fn check(git: &Git, change: &Change, direction: Direction) -> Result<Option<Bloc
             restorable,
             ..
         } => {
-            let listed = git.stash_entries()?.iter().any(|(id, _)| id == stash);
-            if undo && !restorable {
+            if undo && !*restorable {
+                // Reading the stash list first keeps its failure reported.
+                git.stash_entries()?;
                 Some(Blocker::PopNotRestorable)
-            } else if head()?.1 != *at {
-                Some(Blocker::HeadMoved)
             } else if undo {
-                let unchanged = match result {
-                    Some(state) => git.tracked_state_matches(state)?,
-                    None => !git.has_tracked_changes()?,
-                };
-                if listed {
-                    Some(Blocker::StashPresent)
-                } else if git.commit_parents(stash)?.is_none() {
-                    Some(Blocker::CommitMissing)
-                } else if !unchanged {
-                    Some(Blocker::TreeChanged)
+                let ((entries, here), (unchanged, commit)) = both(
+                    || both(|| git.stash_entries(), head),
+                    || {
+                        both(
+                            || match result {
+                                Some(state) => git.tracked_state_matches(state),
+                                None => git.has_tracked_changes().map(|changed| !changed),
+                            },
+                            || git.commit_parents(stash),
+                        )
+                    },
+                );
+                let listed = entries?.iter().any(|(id, _)| id == stash);
+                if here?.1 != *at {
+                    Some(Blocker::HeadMoved)
+                } else {
+                    // The tree check ran before the listing check, as before.
+                    let unchanged = unchanged?;
+                    if listed {
+                        Some(Blocker::StashPresent)
+                    } else if commit?.is_none() {
+                        Some(Blocker::CommitMissing)
+                    } else if !unchanged {
+                        Some(Blocker::TreeChanged)
+                    } else {
+                        None
+                    }
+                }
+            } else {
+                let (entries, here, changes) =
+                    all3(|| git.stash_entries(), head, || git.has_tracked_changes());
+                let listed = entries?.iter().any(|(id, _)| id == stash);
+                if here?.1 != *at {
+                    Some(Blocker::HeadMoved)
+                } else if !listed {
+                    Some(Blocker::StashMissing)
+                } else if changes? {
+                    Some(Blocker::LocalChanges)
                 } else {
                     None
                 }
-            } else if !listed {
-                Some(Blocker::StashMissing)
-            } else if git.has_tracked_changes()? {
-                Some(Blocker::LocalChanges)
-            } else {
-                None
             }
         }
         Change::BranchMoved {
@@ -799,14 +878,21 @@ fn check(git: &Git, change: &Change, direction: Direction) -> Result<Option<Bloc
             };
             if there.is_empty() {
                 Some(Blocker::NoPreviousCommit)
-            } else if head()? != (head_ref.clone(), here.clone()) {
-                Some(Blocker::HeadMoved)
-            } else if git.commit_parents(there)?.is_none() {
-                Some(Blocker::CommitMissing)
-            } else if git.has_tracked_changes()? {
-                Some(Blocker::LocalChanges)
             } else {
-                None
+                let (now, commit, changes) = all3(
+                    head,
+                    || git.commit_parents(there),
+                    || git.has_tracked_changes(),
+                );
+                if now? != (head_ref.clone(), here.clone()) {
+                    Some(Blocker::HeadMoved)
+                } else if commit?.is_none() {
+                    Some(Blocker::CommitMissing)
+                } else if changes? {
+                    Some(Blocker::LocalChanges)
+                } else {
+                    None
+                }
             }
         }
     };

@@ -43,7 +43,7 @@ impl GitCrab {
         self.start_operation(op, target, false, window, cx);
     }
 
-    fn start_operation(
+    pub(super) fn start_operation(
         &mut self,
         op: Operation,
         target: String,
@@ -54,6 +54,17 @@ impl GitCrab {
         let Some(snapshot) = self.state.snapshot.as_ref() else {
             return false;
         };
+        if self.state.busy && !self.state.blocking_write() && self.pending_run.is_none() {
+            // Staging is still being written: run once it lands, reviewed
+            // against the HEAD and index it leaves.
+            self.after_writes = Some(AfterWrites::Operation {
+                op,
+                target,
+                then_switch,
+            });
+            cx.notify();
+            return true;
+        }
         if self.state.busy || self.pending_run.is_some() {
             self.state.notice = "A Git operation is running. Wait for it to finish.".into();
             cx.notify();

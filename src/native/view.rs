@@ -210,6 +210,96 @@ impl OperationRecord {
     }
 }
 
+/// A command chosen while an index write ran. It runs once every write has
+/// landed and the working changes are current, as if chosen then.
+pub(super) enum AfterWrites {
+    Commit,
+    Fetch,
+    Operation {
+        op: Operation,
+        target: String,
+        then_switch: bool,
+    },
+}
+
+/// A hunk or line write in flight, drawn on the patch it was started from.
+pub(super) struct PendingChange {
+    /// Token of the patch the write addresses.
+    pub(super) token: u32,
+    /// Progress word for the hunk header, such as `Staging…`.
+    pub(super) label: &'static str,
+    pub(super) target: PendingRows,
+}
+
+pub(super) enum PendingRows {
+    /// Every line of this zero-based hunk.
+    Hunk(usize),
+    /// These indices into the patch lines, sorted.
+    Lines(Vec<usize>),
+}
+
+impl PendingChange {
+    /// Describes the rows a hunk or line write changes, or `None` for any
+    /// other write.
+    fn of(action: &Action) -> Option<Self> {
+        let verb = |unstage: bool| {
+            if unstage {
+                "Unstaging…"
+            } else {
+                "Staging…"
+            }
+        };
+        let (token, label, target) = match action {
+            Action::Hunk {
+                token,
+                index,
+                unstage,
+            } => (*token, verb(*unstage), PendingRows::Hunk(*index)),
+            Action::DiscardHunk { token, index } => {
+                (*token, "Discarding…", PendingRows::Hunk(*index))
+            }
+            Action::Lines {
+                token,
+                rows,
+                unstage,
+            } => (*token, verb(*unstage), PendingRows::Lines(sorted(rows))),
+            Action::DiscardLines { token, rows } => {
+                (*token, "Discarding…", PendingRows::Lines(sorted(rows)))
+            }
+            _ => return None,
+        };
+        Some(Self {
+            token,
+            label,
+            target,
+        })
+    }
+
+    /// Whether the write changes this line of the patch.
+    pub(super) fn covers(&self, content: &gitcrab_core::diff::Content, line: usize) -> bool {
+        match &self.target {
+            PendingRows::Hunk(index) => gitcrab_core::diff::hunk_of(content, line) == Some(*index),
+            PendingRows::Lines(rows) => rows.binary_search(&line).is_ok(),
+        }
+    }
+
+    /// Whether the write touches this zero-based hunk.
+    pub(super) fn touches_hunk(&self, content: &gitcrab_core::diff::Content, hunk: usize) -> bool {
+        match &self.target {
+            PendingRows::Hunk(index) => *index == hunk,
+            PendingRows::Lines(rows) => rows
+                .iter()
+                .any(|&line| gitcrab_core::diff::hunk_of(content, line) == Some(hunk)),
+        }
+    }
+}
+
+fn sorted(rows: &[usize]) -> Vec<usize> {
+    let mut rows = rows.to_vec();
+    rows.sort_unstable();
+    rows
+}
+
 /// A write in flight, named for progress and its activity record.
 struct RunningWrite {
     request: (u32, u32),
@@ -268,6 +358,11 @@ pub struct GitCrab {
     diff_updated: bool,
     /// A write finished, so the next patch change is the user's own.
     own_write: bool,
+    /// The hunk or lines a write in flight changes, shown as pending on the
+    /// patch it was started from until the result replaces that patch.
+    pending_change: Option<PendingChange>,
+    /// A commit or operation waiting for index writes to land.
+    after_writes: Option<AfterWrites>,
     diff_search: Entity<InputState>,
     diff_find_open: bool,
     diff_matches: Vec<usize>,
@@ -329,6 +424,9 @@ pub struct GitCrab {
     watch_start: Option<std::time::Instant>,
     #[cfg(feature = "native-evidence")]
     benchmark: (Option<std::time::Instant>, Vec<f64>),
+    /// Scripted stage and unstage writes for the `stagefiles` capture view.
+    #[cfg(feature = "native-evidence")]
+    stage_bench: evidence::StageBench,
 }
 impl GitCrab {
     /// Creates a tab and starts discovering the supplied repository, if any.
@@ -452,6 +550,8 @@ impl GitCrab {
             shown_patch: None,
             diff_updated: false,
             own_write: false,
+            pending_change: None,
+            after_writes: None,
             diff_search,
             diff_find_open: false,
             diff_matches: vec![],
@@ -509,6 +609,8 @@ impl GitCrab {
             watch_start: None,
             #[cfg(feature = "native-evidence")]
             benchmark: (None, vec![]),
+            #[cfg(feature = "native-evidence")]
+            stage_bench: Default::default(),
         };
         v.reset_panels(cx);
         if active {
@@ -625,7 +727,10 @@ impl GitCrab {
             .map(|running| (running.action, running.target));
         if lane == Lane::Mutation {
             let (summary, failure) = match &response.result {
-                Ok(gitcrab_core::service::Reply::Done { message, .. }) => (message.clone(), None),
+                Ok(
+                    gitcrab_core::service::Reply::Done { message, .. }
+                    | gitcrab_core::service::Reply::IndexDone { message, .. },
+                ) => (message.clone(), None),
                 Err(failure) => (failure.message.clone(), Some(failure.kind)),
                 _ => (
                     "Operation result requires inspection".into(),
@@ -635,6 +740,11 @@ impl GitCrab {
             let (action, target) = running.clone().unwrap_or(("Git operation", None));
             if let Some(kind) = failure {
                 self.error_heading = gitcrab_core::presentation::failure_heading(action, kind);
+                // The patch on screen is unchanged, so show it as it was.
+                self.pending_change = None;
+                // A commit chosen during the failed write would no longer
+                // commit what was on screen.
+                self.after_writes = None;
             }
             self.activity.push_front(OperationRecord {
                 at: std::time::Instant::now(),
@@ -659,7 +769,12 @@ impl GitCrab {
         }
         let opening = lane == Lane::Snapshot && self.state.snapshot.is_none();
         let jobs = self.state.complete(lane, response);
-        if lane == Lane::Diff || lane == Lane::Snapshot {
+        // A write that returned the working changes read them like a
+        // refresh would, so earlier watcher events are already reflected.
+        if let Some(read) = self.state.worktree_read_at.take() {
+            self.full_refresh_sent = self.full_refresh_sent.max(Some(read));
+        }
+        if matches!(lane, Lane::Diff | Lane::Snapshot | Lane::Mutation) {
             self.follow_patch(cx);
         }
         if lane == Lane::OperationReview {
@@ -724,7 +839,13 @@ impl GitCrab {
             }
         }
         for job in jobs {
-            self.dispatch(Some(job), window, cx);
+            // A queued write starting now gets its progress label and
+            // pending rows like one started by a click.
+            if job.0 == Lane::Mutation {
+                self.dispatch_mutation(Some(job), window, cx);
+            } else {
+                self.dispatch(Some(job), window, cx);
+            }
         }
         if std::mem::take(&mut self.state.revealed) {
             // A commit or reference activated outside the loaded page has arrived.
@@ -737,6 +858,22 @@ impl GitCrab {
         }
         if let Some(ok) = mutation_ok {
             self.after_mutation(ok, window, cx);
+        }
+        // Writes have landed and the working changes are current: run the
+        // command chosen meanwhile.
+        if !self.state.busy && !self.state.loading() {
+            match self.after_writes.take() {
+                Some(AfterWrites::Commit) => self.commit_staged(&CommitStaged, window, cx),
+                Some(AfterWrites::Fetch) => self.mutate(Action::Fetch, window, cx),
+                Some(AfterWrites::Operation {
+                    op,
+                    target,
+                    then_switch,
+                }) => {
+                    self.start_operation(op, target, then_switch, window, cx);
+                }
+                None => {}
+            }
         }
         #[cfg(feature = "native-evidence")]
         self.advance_evidence(lane, window, cx);
@@ -1046,7 +1183,16 @@ impl GitCrab {
             self.feedback_start =
                 Some((std::time::Instant::now(), "mutation-feedback-to-next-frame"));
         }
-        self.selection = None;
+        // Without a job the write was queued or refused; what is on screen
+        // stays as it is until a write actually starts.
+        if job.is_some() {
+            if self.state.write_touches_patch() {
+                self.selection = None;
+            }
+            self.pending_change = job
+                .as_ref()
+                .and_then(|(_, request)| PendingChange::of(&request.action));
+        }
         if let Some((_, request)) = &job {
             let target = match &request.action {
                 Action::Hunk { .. }
@@ -1068,6 +1214,14 @@ impl GitCrab {
             });
         }
         self.dispatch(job, window, cx);
+    }
+
+    /// The pending hunk or line write, when the patch it addresses is on screen.
+    pub(super) fn pending_on_screen(&self) -> Option<&PendingChange> {
+        let token = self.state.patch.as_ref()?.token;
+        self.pending_change
+            .as_ref()
+            .filter(|pending| pending.token == token)
     }
 
     /// Progress text for the write in flight, such as `Stage hunk · a.txt…`.
@@ -1239,7 +1393,9 @@ impl GitCrab {
         let snapshot = self.state.snapshot.as_ref();
         CommandContext {
             repository: snapshot.is_some(),
-            busy: self.state.busy || self.pending_run.is_some(),
+            // Index writes do not block commands: a command chosen during
+            // one waits for it (`AfterWrites`).
+            busy: self.state.blocking_write() || self.pending_run.is_some(),
             modal: self.settings_open || (window.has_active_dialog(cx) && !self.references_open),
             reviewable: snapshot.is_some_and(|s| s.reviewed.is_some()),
             unborn: snapshot.is_some_and(|s| s.head_id.is_empty()),
@@ -1348,7 +1504,11 @@ impl GitCrab {
             Command::Undo => Operation::Undo,
             Command::Redo => Operation::Redo,
             Command::Fetch => {
-                self.mutate(Action::Fetch, window, cx);
+                if self.state.busy && !self.state.blocking_write() {
+                    self.after_writes = Some(AfterWrites::Fetch);
+                } else {
+                    self.mutate(Action::Fetch, window, cx);
+                }
                 return;
             }
             Command::Pull => Operation::Pull {
@@ -1602,7 +1762,7 @@ impl GitCrab {
     }
     fn can_commit(&self) -> bool {
         !self.settings_open
-            && !self.state.busy
+            && !self.state.blocking_write()
             && self
                 .state
                 .draft
@@ -1622,7 +1782,12 @@ impl GitCrab {
         let composing = [&self.draft, &self.wip_summary, &self.description]
             .into_iter()
             .any(|input| input.update(cx, |s, cx| s.marked_text_range(window, cx).is_some()));
-        if self.can_commit() && !composing {
+        if self.can_commit() && !composing && self.state.busy {
+            // Staging is still being written: commit once it lands, against
+            // the index it leaves.
+            self.after_writes = Some(AfterWrites::Commit);
+            cx.notify();
+        } else if self.can_commit() && !composing {
             self.mutate(
                 Action::Commit {
                     message: self.state.draft.clone(),
@@ -2395,7 +2560,7 @@ impl Render for GitCrab {
                     "{} · Open another repository in a tab · Ctrl/Cmd+O",
                     display_path(&self.state.path)
                 ))
-                .disabled(self.state.busy)
+                .disabled(self.state.blocking_write())
                 .dropdown_menu(move |menu, _, _| {
                     let mut menu = menu.action_context(menu_focus.clone()).item(
                         PopupMenuItem::new("Browse for a repository… · Ctrl/Cmd+O")

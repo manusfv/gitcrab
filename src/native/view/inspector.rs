@@ -791,7 +791,7 @@ impl GitCrab {
                     )
                     .flex_none()
                     .tooltip(tooltip)
-                    .disabled_when(self.state.busy || count == 0)
+                    .disabled_when(self.state.blocking_write() || count == 0)
                     .on_click(cx.listener(move |v, _, w, cx| {
                         v.mutate(Action::StageAll { unstage: staged }, w, cx)
                     })),
@@ -855,6 +855,8 @@ impl GitCrab {
             context.id.is_none() && context.path == f.path && (conflict || context.staged == staged)
         });
         let markers = conflict && self.state.marker_refusals.contains(&f.path);
+        // Shown in its predicted list while Git stages or unstages it.
+        let moving = self.state.pending_paths.contains(&f.path);
         let action = if conflict {
             let path = f.path.clone();
             self.action_button(("mark-resolved", i), "Mark resolved…")
@@ -862,7 +864,7 @@ impl GitCrab {
                 .tooltip(format!(
                     "Review staging the working-tree version of {display_path} as its resolution"
                 ))
-                .disabled_when(self.state.busy || path_issue.is_some())
+                .disabled_when(self.state.blocking_write() || path_issue.is_some())
                 .on_click(cx.listener(move |v, _, w, cx| v.review_resolution(path.clone(), w, cx)))
                 .into_any_element()
         } else {
@@ -880,7 +882,7 @@ impl GitCrab {
                     icon(if staged { "minus" } else { "plus" })
                         .size(px(geometry::SIZE_FILE_ACTION_GLYPH)),
                 )
-                .disabled_when(self.state.busy || path_issue.is_some())
+                .disabled_when(self.state.blocking_write() || path_issue.is_some())
                 .on_click(cx.listener(move |v, _, w, cx| {
                     v.mutate(
                         Action::StageFile {
@@ -907,6 +909,7 @@ impl GitCrab {
             .items_center()
             .px(px(INSPECTOR_INSET))
             .gap_1()
+            .when(moving, |e| e.opacity(0.55))
             .when(active, |e| {
                 e.bg(rgb(semantic(Role::InteractionSelected)))
                     .border_l_2()
@@ -959,7 +962,7 @@ impl GitCrab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.state.busy || window.has_active_dialog(cx) {
+        if self.state.blocking_write() || window.has_active_dialog(cx) {
             return;
         }
         let markers = self.state.marker_refusals.contains(&path);
@@ -1017,7 +1020,7 @@ impl GitCrab {
                     )
                     .on_click(move |_, w, cx| {
                         let _ = weak.update(cx, |v, cx| {
-                            if v.state.epoch == epoch && !v.state.busy {
+                            if v.state.epoch == epoch && !v.state.blocking_write() {
                                 v.mutate(
                                     Action::MarkResolved {
                                         path: path.clone(),
@@ -1055,7 +1058,7 @@ impl GitCrab {
             if no_summary {
                 Some("Enter a commit summary to commit staged changes.".to_string())
             } else if !can_commit {
-                Some(if self.state.busy {
+                Some(if self.state.blocking_write() {
                     "A Git operation is running. Wait for it to finish.".to_string()
                 } else {
                     "Close Appearance to commit.".to_string()
@@ -1118,7 +1121,7 @@ impl GitCrab {
                         )
                         .child(
                             self.action_button("detached-create-branch", "Create a branch…")
-                                .disabled_when(self.state.busy)
+                                .disabled_when(self.state.blocking_write())
                                 .tooltip("Create a branch at HEAD, then switch to it before committing")
                                 .on_click(cx.listener(|v, _, w, cx| {
                                     v.prompt_branch(None, w, cx)
@@ -1127,7 +1130,7 @@ impl GitCrab {
                         .children(branches_at_head.into_iter().enumerate().map(|(i, name)| {
                             let target = name.clone();
                             self.action_button(("detached-switch", i), format!("Switch to {name}"))
-                                .disabled_when(self.state.busy)
+                                .disabled_when(self.state.blocking_write())
                                 .tooltip("Switch to this branch, which points at the current commit")
                                 .on_click(cx.listener(move |v, _, w, cx| {
                                     v.run_operation(Operation::Checkout, target.clone(), w, cx)

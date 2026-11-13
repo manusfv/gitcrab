@@ -3,11 +3,12 @@
 //! [`Git`] passes arguments directly to Git. Reviewed writes check repository
 //! state before acting and may verify the result afterward. An external Git
 //! process can still change the worktree between inspection and execution.
-use crate::process::{capture, ReadScope};
+use crate::process::{capture, capture_read, ReadScope};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, Mutex},
 };
 
 /// Git query result with a user-facing error message.
@@ -253,6 +254,57 @@ impl FileChange {
         } else {
             self.worktree != ' ' || self.index == '?'
         }
+    }
+
+    /// Predicts this entry after staging it, or unstaging it with `unstage`,
+    /// for showing the result before Git confirms it.
+    ///
+    /// `Some(None)` means the entry disappears. `None` means the outcome is
+    /// not obvious from the status alone, as for renames, conflicts and
+    /// unusual combinations; the entry is then left as it is. A prediction
+    /// can still be wrong, for example when a file was edited back to its
+    /// staged content; the status Git reports afterwards replaces it.
+    pub fn predicted(&self, unstage: bool) -> Option<Option<Self>> {
+        if !self.on_side(unstage) {
+            return Some(Some(self.clone()));
+        }
+        if self.is_unmerged() || self.unsupported_path || self.original_path.is_some() {
+            return None;
+        }
+        let edited = |c: char| matches!(c, 'M' | 'T' | 'D');
+        let (index, worktree) = match (self.index, self.worktree, unstage) {
+            ('?', '?', false) => ('A', ' '),
+            ('A', 'D', false) => return Some(None),
+            ('A', 'M' | 'T', false) => ('A', ' '),
+            (' ' | 'M' | 'T', w, false) if edited(w) => (w, ' '),
+            ('A', ' ' | 'M', true) => ('?', '?'),
+            ('A', 'D', true) => return Some(None),
+            (i, ' ', true) if edited(i) => (' ', i),
+            (i, w, true) if edited(i) && edited(w) => (' ', w),
+            _ => return None,
+        };
+        Some(Some(Self {
+            index,
+            worktree,
+            ..self.clone()
+        }))
+    }
+
+    /// Predicts this entry once its staged change is committed: the staged
+    /// side empties and only working-tree changes remain. `Some(None)` means
+    /// the entry disappears, `None` that it cannot be predicted (conflicts).
+    pub fn after_commit(&self) -> Option<Option<Self>> {
+        if self.is_unmerged() {
+            return None;
+        }
+        if !self.on_side(true) {
+            return Some(Some(self.clone()));
+        }
+        Some((self.worktree != ' ').then(|| Self {
+            index: ' ',
+            original_path: None,
+            ..self.clone()
+        }))
     }
 }
 
@@ -625,6 +677,39 @@ fn header_blocked_reason(patch: &str) -> Option<&'static str> {
     None
 }
 
+/// Git's revision-parsing rules (`ref_rev_parse_rules`) as prefix and suffix.
+const REV_PARSE_RULES: [(&str, &str); 6] = [
+    ("", ""),
+    ("refs/", ""),
+    ("refs/tags/", ""),
+    ("refs/heads/", ""),
+    ("refs/remotes/", ""),
+    ("refs/remotes/", "/HEAD"),
+];
+
+/// Git's `shorten_unambiguous_ref` in strict mode: try the most specific rule
+/// first, and keep a short name only if no other rule turns it back into a
+/// ref for which `exists` holds. Falls back to the full name.
+fn shorten_ref(full: &str, exists: &dyn Fn(&str) -> bool) -> String {
+    for (i, (prefix, suffix)) in REV_PARSE_RULES.iter().enumerate().skip(1).rev() {
+        let Some(short) = full
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .filter(|short| !short.is_empty())
+        else {
+            continue;
+        };
+        let ambiguous = REV_PARSE_RULES
+            .iter()
+            .enumerate()
+            .any(|(j, (p, s))| j != i && exists(&format!("{p}{short}{s}")));
+        if !ambiguous {
+            return short.to_owned();
+        }
+    }
+    full.to_owned()
+}
+
 /// Access to Git commands for one trusted local worktree.
 ///
 /// Write methods return [`WriteError`]. Its [`FailureKind`] distinguishes a
@@ -636,8 +721,45 @@ pub struct Git {
     pub(crate) read_scope: Option<ReadScope>,
     pub(crate) git_dir: Option<PathBuf>,
     pub(crate) common_dir: Option<PathBuf>,
+    /// The last index listing and the index file it was read from.
+    pub(crate) index_cache: IndexCache,
     #[cfg(test)]
     pub(crate) observe_command: Option<TestCommandObserver>,
+}
+
+/// Reuses `ls-files --stage` output while the index file is unchanged.
+///
+/// The index file ends with a checksum of everything before it, so the same
+/// length and trailing checksum mean the same content and the same listing.
+/// Shared by clones of a [`Git`], which all read the same index.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct IndexCache(Arc<Mutex<Option<CachedListing>>>);
+
+/// An index listing and the index file it was read from.
+type CachedListing = (IndexStamp, Vec<u8>);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IndexStamp {
+    len: u64,
+    trailer: [u8; 32],
+}
+
+impl IndexStamp {
+    /// Reads the length and the last 32 bytes, which hold the SHA-1 or
+    /// SHA-256 checksum, from one open handle. `None` when the file is
+    /// missing or has no checksum (`index.skipHash` writes zeros).
+    fn read(index: &Path) -> Option<Self> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(index).ok()?;
+        let len = file.metadata().ok()?.len();
+        if len < 64 {
+            return None;
+        }
+        file.seek(SeekFrom::End(-32)).ok()?;
+        let mut trailer = [0; 32];
+        file.read_exact(&mut trailer).ok()?;
+        (trailer[12..] != [0; 20]).then_some(Self { len, trailer })
+    }
 }
 
 #[cfg(test)]
@@ -682,6 +804,7 @@ impl Git {
             read_scope,
             git_dir: Some(location.git_dir),
             common_dir: Some(location.common_dir),
+            index_cache: IndexCache::default(),
             #[cfg(test)]
             observe_command: None,
         };
@@ -689,8 +812,21 @@ impl Git {
         Ok(repo)
     }
 
+    /// Builds a Git command for writes, hooks and network operations.
     fn command(&self, args: &[&str]) -> GitResult<Command> {
-        let mut cmd = Command::new(crate::platform::git_executable()?);
+        self.command_with(Command::new(crate::platform::git_executable()?), args)
+    }
+
+    /// Builds a Git command for a read-only query, which may skip Git for
+    /// Windows' launcher; see [`crate::platform::git_read_executable`].
+    fn read_command(&self, args: &[&str]) -> GitResult<Command> {
+        let git = crate::platform::git_read_executable()?;
+        let mut cmd = Command::new(&git.executable);
+        cmd.envs(git.env.iter().map(|(key, value)| (key, value)));
+        self.command_with(cmd, args)
+    }
+
+    fn command_with(&self, mut cmd: Command, args: &[&str]) -> GitResult<Command> {
         if let Some(directory) = &self.git_dir {
             cmd.arg("--git-dir")
                 .arg(crate::platform::git_path(directory).as_ref())
@@ -734,7 +870,7 @@ impl Git {
             observe(self, args)?;
         }
         let scope = self.read_scope.clone().unwrap_or_default();
-        capture(self.command(args)?, None, 0, Some(&scope))
+        capture_read(self.read_command(args)?, 0, Some(&scope))
             .map_err(|e| format!("Could not complete Git command: {e}"))
     }
 
@@ -743,6 +879,28 @@ impl Git {
         format!("Git exited with {}. {}", output.status, stderr.trim())
             .trim_end()
             .to_owned()
+    }
+
+    /// `git ls-files --stage -z`, reused from the last read while the index
+    /// file's length and checksum are unchanged.
+    fn index_listing(&self) -> GitResult<Vec<u8>> {
+        let index = self.git_dir.as_ref().map(|dir| dir.join("index"));
+        let before = index.as_deref().and_then(IndexStamp::read);
+        if let Some(stamp) = &before {
+            if let Some((cached, listing)) = &*self.index_cache.0.lock().unwrap() {
+                if cached == stamp {
+                    return Ok(listing.clone());
+                }
+            }
+        }
+        let listing = self.bytes(&["ls-files", "--stage", "-z"])?;
+        // Keep the listing only if the index did not change while Git read it.
+        if let Some(stamp) = before {
+            if index.as_deref().and_then(IndexStamp::read).as_ref() == Some(&stamp) {
+                *self.index_cache.0.lock().unwrap() = Some((stamp, listing.clone()));
+            }
+        }
+        Ok(listing)
     }
 
     fn bytes(&self, args: &[&str]) -> GitResult<Vec<u8>> {
@@ -805,11 +963,6 @@ impl Git {
             Some(1) if output.stderr.is_empty() => Ok(String::new()),
             _ => Err(Self::failed_output(&output)),
         }
-    }
-
-    fn head_id(&self, symbolic: &str) -> GitResult<String> {
-        let output = self.head_commit_output()?;
-        self.head_id_from(output, symbolic)
     }
 
     fn head_commit_output(&self) -> GitResult<std::process::Output> {
@@ -893,11 +1046,43 @@ impl Git {
             .map(|(snapshot, _, _)| snapshot)
     }
 
+    /// Lists refs as `object NUL peeled-object NUL full-name` lines.
+    ///
+    /// Short names are not requested from Git: `%(refname:short)` looks up
+    /// every candidate name of every ref inside Git, which grows with the
+    /// number of refs. [`Self::short_ref_names`] derives them from this list.
     fn read_refs(&self) -> GitResult<String> {
         self.run(&[
             "for-each-ref",
-            "--format=%(objectname)%00%(refname:short)%00%(*objectname)%00%(refname)",
+            "--format=%(objectname)%00%(*objectname)%00%(refname)",
         ])
+    }
+
+    /// Shortens each full ref name the way Git's `%(refname:short)` does with
+    /// `core.warnAmbiguousRefs` at its default: the shortest name that no
+    /// other revision-parsing rule resolves to an existing ref.
+    fn short_ref_names(&self, full_names: &[&str]) -> Vec<String> {
+        let listed: std::collections::HashSet<&str> = full_names.iter().copied().collect();
+        let root_dirs: Vec<&Path> = [self.git_dir.as_deref(), self.common_dir.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        let exists = |name: &str| {
+            if name.starts_with("refs/") {
+                listed.contains(name)
+            } else {
+                // Outside refs/ only root refs such as HEAD or FETCH_HEAD resolve.
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b == b'_' || b == b'-')
+                    && root_dirs.iter().any(|dir| dir.join(name).is_file())
+            }
+        };
+        full_names
+            .iter()
+            .map(|full| shorten_ref(full, &exists))
+            .collect()
     }
 
     pub(crate) fn snapshot_cached(
@@ -929,37 +1114,36 @@ impl Git {
         let mut branches = Vec::new();
         let mut remote_refs = Vec::new();
         let mut tags = Vec::new();
-        for line in refs.lines() {
-            let fields: Vec<_> = line.split('\0').collect();
-            if fields.len() == 4 {
-                let target = if fields[2].is_empty() {
-                    fields[0]
-                } else {
-                    fields[2]
-                };
-                if let Some(name) = fields[3].strip_prefix("refs/heads/") {
-                    branches.push(LocalBranch {
-                        name: name.into(),
-                        tip: fields[0].into(),
-                    });
-                } else if let Some(list) = if fields[3].starts_with("refs/remotes/") {
-                    Some(&mut remote_refs)
-                } else if fields[3].starts_with("refs/tags/") {
-                    Some(&mut tags)
-                } else {
-                    None
-                } {
-                    list.push(ReferenceTip {
-                        full_name: fields[3].into(),
-                        label: fields[1].into(),
-                        tip: target.into(),
-                    });
-                }
-                labels
-                    .entry(target.into())
-                    .or_default()
-                    .push(fields[1].into());
+        let listed: Vec<[&str; 3]> = refs
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\0');
+                let fields = [fields.next()?, fields.next()?, fields.next()?];
+                Some(fields)
+            })
+            .collect();
+        let short = self.short_ref_names(&listed.iter().map(|f| f[2]).collect::<Vec<_>>());
+        for (&[object, peeled, full], short) in listed.iter().zip(short) {
+            let target = if peeled.is_empty() { object } else { peeled };
+            if let Some(name) = full.strip_prefix("refs/heads/") {
+                branches.push(LocalBranch {
+                    name: name.into(),
+                    tip: object.into(),
+                });
+            } else if let Some(list) = if full.starts_with("refs/remotes/") {
+                Some(&mut remote_refs)
+            } else if full.starts_with("refs/tags/") {
+                Some(&mut tags)
+            } else {
+                None
+            } {
+                list.push(ReferenceTip {
+                    full_name: full.into(),
+                    label: short.clone(),
+                    tip: target.into(),
+                });
             }
+            labels.entry(target.into()).or_default().push(short);
         }
         let head_exists: GitResult<String> = if reviewed.head.is_empty() {
             Err("Unborn HEAD".into())
@@ -1289,6 +1473,36 @@ impl Git {
         Ok((email.to_owned(), body.trim_end_matches('\n').to_owned()))
     }
 
+    /// Reads the commit `revision` names together with its summary, so a
+    /// summary read beside a separate lookup can be matched to its commit.
+    pub(crate) fn commit_summary_with_id(
+        &self,
+        revision: &str,
+    ) -> GitResult<(String, CommitSummary)> {
+        validate_revision(revision)?;
+        let commit = format!("{revision}^{{commit}}");
+        let output = self.run(&[
+            "show",
+            "-s",
+            "--no-notes",
+            "--no-show-signature",
+            "--format=%H%x00%P%x00%s%x00%ci",
+            &commit,
+            "--",
+        ])?;
+        let mut fields = output.trim_end_matches('\n').splitn(4, '\0');
+        let id = fields.next().unwrap_or_default().to_owned();
+        let parents = fields.next().unwrap_or_default().split_whitespace().count();
+        Ok((
+            id,
+            CommitSummary {
+                subject: fields.next().unwrap_or_default().to_owned(),
+                date: fields.next().unwrap_or_default().to_owned(),
+                parents,
+            },
+        ))
+    }
+
     /// Reads the subject, committer date and parent count of `commit`.
     pub(crate) fn commit_summary(&self, commit: &str) -> GitResult<CommitSummary> {
         validate_revision(commit)?;
@@ -1329,11 +1543,13 @@ impl Git {
         let files = if let Some(id) = commit {
             self.changed_files(id)?
         } else {
+            // Untracked files never carry a rename source, so skipping the
+            // untracked scan gives the same answer for less work.
             parse_status(&self.bytes(&[
                 "status",
                 "--porcelain=v1",
                 "-z",
-                "--untracked-files=all",
+                "--untracked-files=no",
             ])?)
         };
         Ok(files
@@ -1376,8 +1592,18 @@ impl Git {
         path: &str,
         staged: bool,
     ) -> GitResult<DiffComparison> {
-        let original = self.diff_identity(commit, path, staged)?;
-        let patch = self.patch_for_paths(commit, path, staged, original.as_deref())?;
+        // Most comparisons have no rename, so the patch without a source path
+        // is read beside the rename lookup and replaced only when one is found.
+        let (original, plain) = std::thread::scope(|scope| {
+            let plain = scope.spawn(|| self.patch_for_paths(commit, path, staged, None));
+            let original = self.diff_identity(commit, path, staged);
+            (original, plain.join())
+        });
+        let original = original?;
+        let patch = match original.as_deref() {
+            None => plain.map_err(|_| "Git diff read failed")??,
+            Some(old) => self.patch_for_paths(commit, path, staged, Some(old))?,
+        };
         Ok(DiffComparison {
             patch,
             original_path: original,
@@ -1432,8 +1658,8 @@ impl Git {
             let mut args = patch_args("diff");
             args.extend(["--no-index", "--", "/dev/null", path]);
             let scope = self.read_scope.clone().unwrap_or_default();
-            let output =
-                capture(self.command(&args)?, None, 1, Some(&scope)).map_err(|e| e.to_string())?;
+            let output = capture_read(self.read_command(&args)?, 1, Some(&scope))
+                .map_err(|e| e.to_string())?;
             // For --no-index, exit 1 means a successful comparison with differences.
             if output.status.success() || output.status.code() == Some(1) {
                 return String::from_utf8(output.stdout)
@@ -1442,6 +1668,24 @@ impl Git {
             return Err(String::from_utf8_lossy(&output.stderr).trim().into());
         }
         Ok(diff)
+    }
+
+    /// Reads working changes together with the HEAD and index identity they
+    /// belong to, for refreshing the file lists after an index write.
+    ///
+    /// Like a snapshot, the identity is read again afterwards: if HEAD or the
+    /// index moved while status ran, the pair would not match and this fails.
+    pub(crate) fn worktree_state(&self) -> GitResult<(Vec<FileChange>, WriteIdentity)> {
+        let (identity, status) = std::thread::scope(|scope| {
+            let status = scope.spawn(|| self.status());
+            (self.write_identity(), status.join())
+        });
+        let identity = identity?;
+        let status = status.map_err(|_| "Git status read failed")??;
+        if self.write_identity()? != identity {
+            return Err("Repository changed during refresh.".into());
+        }
+        Ok((status, identity))
     }
 
     fn status(&self) -> GitResult<Vec<FileChange>> {
@@ -1848,7 +2092,7 @@ impl Git {
         std::thread::scope(|scope| {
             let symbolic = scope.spawn(|| self.symbolic_head());
             let commit = scope.spawn(|| self.head_commit_output());
-            let index = self.bytes(&["ls-files", "--stage", "-z"]);
+            let index = self.index_listing();
             let symbolic_head = symbolic.join().map_err(|_| "HEAD read failed")??;
             let commit = commit.join().map_err(|_| "HEAD read failed")??;
             let index = index?;
@@ -1907,8 +2151,10 @@ impl Git {
             return Err("Index changed before commit. Refresh and review again.".into());
         }
         self.commit(message)?;
-        let (state, symbolic) = std::thread::scope(|scope| {
+        // The three checks of the result are independent reads.
+        let (state, symbolic, resolved) = std::thread::scope(|scope| {
             let symbolic = scope.spawn(|| self.symbolic_head());
+            let resolved = scope.spawn(|| self.resolve_commit("HEAD"));
             let state = self.run(&[
                 "show",
                 "-s",
@@ -1920,6 +2166,7 @@ impl Git {
             (
                 state,
                 symbolic.join().map_err(|_| "HEAD read failed".to_owned()),
+                resolved.join().map_err(|_| "HEAD read failed".to_owned()),
             )
         });
         let state = state.map_err(WriteError::inspect)?;
@@ -1935,7 +2182,7 @@ impl Git {
         if parents != reviewed.head
             || actual_tree != tree.trim()
             || symbolic.and_then(|s| s).map_err(WriteError::inspect)? != reviewed.symbolic_head
-            || self.resolve_commit("HEAD").map_err(WriteError::inspect)? != sha
+            || resolved.and_then(|r| r).map_err(WriteError::inspect)? != sha
         {
             return Err(WriteError::inspect("Commit outcome uncertain. The resulting parent, tree, or branch differs from the reviewed commit. Your draft is kept in this tab."));
         }
@@ -2133,8 +2380,13 @@ impl Git {
     /// Full symbolic ref of HEAD (empty when detached) and its commit ID
     /// (empty for an unborn branch).
     pub(crate) fn head_state(&self) -> GitResult<(String, String)> {
-        let symbolic = self.symbolic_head()?;
-        let id = self.head_id(&symbolic)?;
+        // Both reads are independent, as in `write_identity`.
+        let (symbolic, commit) = std::thread::scope(|scope| {
+            let commit = scope.spawn(|| self.head_commit_output());
+            (self.symbolic_head(), commit.join())
+        });
+        let symbolic = symbolic?;
+        let id = self.head_id_from(commit.map_err(|_| "HEAD read failed")??, &symbolic)?;
         Ok((symbolic, id))
     }
 
@@ -2203,26 +2455,31 @@ impl Git {
     pub(crate) fn tracked_state_matches(&self, state: &str) -> GitResult<bool> {
         validate_revision(state)?;
         let index = format!("{state}^2");
-        for args in [
-            &[
-                "diff",
-                "--quiet",
-                "--no-ext-diff",
-                "--no-textconv",
-                state,
-                "--",
-            ][..],
-            &[
-                "diff",
-                "--quiet",
-                "--cached",
-                "--no-ext-diff",
-                "--no-textconv",
-                &index,
-                "--",
-            ],
-        ] {
-            let output = self.output(args)?;
+        let worktree_args: &[&str] = &[
+            "diff",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            state,
+            "--",
+        ];
+        let index_args: &[&str] = &[
+            "diff",
+            "--quiet",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            &index,
+            "--",
+        ];
+        // Both comparisons run at once; their results are read in the
+        // original order, so the first difference or error still decides.
+        let (worktree, index) = std::thread::scope(|scope| {
+            let index = scope.spawn(|| self.output(index_args));
+            (self.output(worktree_args), index.join())
+        });
+        for output in [worktree, index.map_err(|_| "Git diff read failed")?] {
+            let output = output?;
             match output.status.code() {
                 Some(0) => {}
                 Some(1) => return Ok(false),
@@ -3775,6 +4032,146 @@ pub(crate) fn hunk_ranges(diff: &str) -> Vec<HunkRange> {
 mod tests {
     use super::*;
     use crate::test_repo::Fixture;
+
+    #[test]
+    fn predicted_status_matches_git_for_common_changes() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        for name in ["modified", "deleted", "staged", "partly", "staged-delete"] {
+            fixture.write(name, "base\n");
+        }
+        git.run(&["add", "."]).unwrap();
+        git.run(&["commit", "-qm", "base"]).unwrap();
+        fixture.write("modified", "edit\n");
+        std::fs::remove_file(git.path.join("deleted")).unwrap();
+        fixture.write("staged", "edit\n");
+        fixture.write("partly", "edit\n");
+        fixture.write("added", "new\n");
+        fixture.write("added-edited", "new\n");
+        git.run(&["add", "staged", "partly", "added", "added-edited"])
+            .unwrap();
+        git.run(&["rm", "-q", "staged-delete"]).unwrap();
+        fixture.write("partly", "edit again\n");
+        fixture.write("added-edited", "newer\n");
+        fixture.write("untracked", "new\n");
+
+        let mut checked = 0;
+        for unstage in [false, true] {
+            for file in git.status().unwrap() {
+                if !file.on_side(unstage) {
+                    continue;
+                }
+                let Some(predicted) = file.predicted(unstage) else {
+                    panic!("no prediction for {file:?}");
+                };
+                // Apply the real change and compare. Staging only rewrites the
+                // index file, so restoring its bytes puts the state back.
+                let index = git.path.join(".git/index");
+                let saved = std::fs::read(&index).unwrap();
+                git.stage_reviewed(&file, unstage).unwrap();
+                let actual = git
+                    .status()
+                    .unwrap()
+                    .into_iter()
+                    .find(|f| f.path == file.path);
+                let verb = if unstage { "unstage" } else { "stage" };
+                assert_eq!(predicted, actual, "{verb} {file:?}");
+                checked += 1;
+                std::fs::write(&index, saved).unwrap();
+            }
+        }
+        assert!(checked >= 10, "only {checked} cases checked");
+    }
+
+    #[test]
+    fn index_listing_is_reused_only_while_the_index_is_unchanged() {
+        thread_local!(static LISTINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+        fn count(_: &Git, args: &[&str]) -> GitResult<()> {
+            if args.starts_with(&["ls-files", "--stage"]) {
+                LISTINGS.with(|n| n.set(n.get() + 1));
+            }
+            Ok(())
+        }
+        let mut fixture = Fixture::new();
+        fixture.write("a.txt", "one\n");
+        fixture.git.run(&["add", "a.txt"]).unwrap();
+        fixture.git.observe_command = Some(count);
+        let git = &fixture.git;
+
+        let first = git.write_identity().unwrap();
+        assert_eq!(git.write_identity().unwrap(), first);
+        assert_eq!(
+            LISTINGS.with(|n| n.get()),
+            1,
+            "unchanged index is not listed again"
+        );
+
+        fixture.write("a.txt", "two\n");
+        git.run(&["add", "a.txt"]).unwrap();
+        let second = git.write_identity().unwrap();
+        assert_ne!(second.index, first.index);
+        assert_eq!(
+            LISTINGS.with(|n| n.get()),
+            2,
+            "a changed index is listed again"
+        );
+        assert_eq!(
+            second.index,
+            git.bytes(&["ls-files", "--stage", "-z"]).unwrap()
+        );
+    }
+
+    #[test]
+    fn short_ref_names_match_git_including_ambiguous_names() {
+        let fixture = Fixture::new();
+        fixture.history(2, 0);
+        let git = &fixture.git;
+        let tip = git.run(&["rev-parse", "HEAD"]).unwrap();
+        let tip = tip.trim();
+        // A branch and a tag with one name, a branch shaped like a remote
+        // branch, a branch under `tags/`, a remote HEAD symref and a stash.
+        let refs = [
+            "refs/heads/v1",
+            "refs/tags/v1",
+            "refs/tags/main",
+            "refs/heads/origin/topic",
+            "refs/remotes/origin/topic",
+            "refs/remotes/origin/main",
+            "refs/heads/tags/x",
+            "refs/tags/x",
+            "refs/heads/FETCH_HEAD",
+            "refs/heads/plain",
+            "refs/notes/commits",
+        ]
+        .iter()
+        .map(|name| format!("update {name} {tip}\n"))
+        .collect::<String>();
+        git.fixture_input(&["update-ref", "--stdin"], refs.as_bytes())
+            .unwrap();
+        git.run(&[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ])
+        .unwrap();
+        std::fs::write(git.path.join(".git/FETCH_HEAD"), format!("{tip}\n")).unwrap();
+
+        let expected = git
+            .run(&["for-each-ref", "--format=%(refname)%00%(refname:short)"])
+            .unwrap();
+        let (full, short): (Vec<&str>, Vec<&str>) = expected
+            .lines()
+            .map(|line| line.split_once('\0').unwrap())
+            .unzip();
+        // The fixture really exercises the ambiguity rules.
+        for name in ["heads/v1", "tags/v1", "origin", "heads/FETCH_HEAD"] {
+            assert!(
+                short.contains(&name),
+                "Git did not shorten to {name}: {short:?}"
+            );
+        }
+        assert_eq!(git.short_ref_names(&full), short);
+    }
 
     #[test]
     fn history_search_matches_reference_only_with_normalized_whitespace() {

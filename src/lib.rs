@@ -35,6 +35,9 @@ pub mod appearance;
 
 pub mod hunk_edit;
 mod process;
+/// Per-Git-process timings, for latency measurements only.
+#[cfg(feature = "git-trace")]
+pub use process::trace as git_trace;
 
 #[cfg(test)]
 mod test_repo;

@@ -304,22 +304,62 @@ impl ReviewedOperation {
         target: String,
         destination: crate::git::WriteIdentity,
     ) -> Result<Self, String> {
-        let checkout_ref = if matches!(op, Operation::Checkout) {
-            let full = if target.starts_with("refs/heads/") {
-                target.clone()
-            } else {
-                format!("refs/heads/{target}")
-            };
-            let local_name = full.strip_prefix("refs/heads/").unwrap_or(&target);
-            if Operation::CreateBranch.validate_target(local_name).is_ok()
-                && git.ref_exists(&full)?
-            {
-                Some(full)
-            } else {
-                None
+        // A branch name a Checkout may switch to, when the target can be one.
+        let branch = matches!(op, Operation::Checkout)
+            .then(|| {
+                if target.starts_with("refs/heads/") {
+                    target.clone()
+                } else {
+                    format!("refs/heads/{target}")
+                }
+            })
+            .filter(|full| {
+                let local_name = full.strip_prefix("refs/heads/").unwrap_or(&target);
+                Operation::CreateBranch.validate_target(local_name).is_ok()
+            });
+        // The revision a local operation acts on, when it names one.
+        let revision = match &op {
+            Operation::CreateBranch => Some("HEAD".to_owned()),
+            Operation::CreateBranchAt { start } => Some(start.clone()),
+            Operation::Checkout | Operation::Merge | Operation::CherryPick | Operation::Revert => {
+                Some(target.clone())
             }
-        } else {
-            None
+            Operation::PopStash => Some("refs/stash".to_owned()),
+            _ => None,
+        };
+        // Each read is a Git process, so every read the resolution may need
+        // starts at once: whether the branch exists, and both candidates'
+        // commit and summary. Results are still consulted in the original
+        // order, so an unneeded read cannot change the outcome.
+        let read = |revision: &str| {
+            std::thread::scope(|scope| {
+                let summary = scope.spawn(|| git.commit_summary_with_id(revision));
+                (
+                    git.resolve_commit(revision),
+                    summary
+                        .join()
+                        .unwrap_or_else(|_| Err("Git read failed".into())),
+                )
+            })
+        };
+        let (exists, branch_read, revision_read) = std::thread::scope(|scope| {
+            let exists = branch
+                .as_deref()
+                .map(|full| scope.spawn(move || git.ref_exists(full)));
+            let branch_read = branch
+                .as_deref()
+                .map(|full| scope.spawn(move || read(full)));
+            let revision_read = revision.as_deref().map(read);
+            let failed = |_| "Git read failed".to_owned();
+            (
+                exists.map(|handle| handle.join().map_err(failed)),
+                branch_read.map(|handle| handle.join().map_err(failed)),
+                revision_read,
+            )
+        });
+        let checkout_ref = match (branch, exists) {
+            (Some(full), Some(exists)) => exists??.then_some(full),
+            _ => None,
         };
         if matches!(op, Operation::Stash) && !git.has_tracked_changes()? {
             return Err(crate::git::NOTHING_TO_STASH.into());
@@ -329,23 +369,30 @@ impl ReviewedOperation {
             Operation::Push => Some(git.push_target(&destination)?),
             _ => None,
         };
-        let target_id = match &op {
+        let (target_id, prefetched) = match &op {
             // The upstream tip as last fetched; Pull fetches again before integrating.
-            Operation::Pull { .. } => network
-                .as_ref()
-                .and_then(|network| git.resolve_commit(&network.tracking).ok()),
-            Operation::Push => Some(git.resolve_commit("HEAD")?),
-            Operation::CreateBranch => Some(git.resolve_commit("HEAD")?),
-            Operation::CreateBranchAt { start } => Some(git.resolve_commit(start)?),
-            Operation::Checkout | Operation::Merge | Operation::CherryPick | Operation::Revert => {
-                Some(git.resolve_commit(checkout_ref.as_deref().unwrap_or(&target))?)
+            Operation::Pull { .. } => (
+                network
+                    .as_ref()
+                    .and_then(|network| git.resolve_commit(&network.tracking).ok()),
+                None,
+            ),
+            Operation::Push => (Some(git.resolve_commit("HEAD")?), None),
+            Operation::Stash | Operation::Undo | Operation::Redo => (None, None),
+            _ => {
+                let (id, summary) = match (checkout_ref.is_some(), branch_read, revision_read) {
+                    (true, Some(branch_read), _) => branch_read?,
+                    (_, _, Some(revision_read)) => revision_read,
+                    _ => return Err("Enter a target before continuing.".into()),
+                };
+                (Some(id?), Some(summary))
             }
-            Operation::PopStash => Some(git.resolve_commit("refs/stash")?),
-            Operation::Stash | Operation::Undo | Operation::Redo => None,
         };
-        let target_summary = match &target_id {
-            Some(id) => Some(git.commit_summary(id)?),
-            None => None,
+        let target_summary = match (&target_id, prefetched) {
+            // Use the summary read beside the lookup if it names that commit.
+            (Some(id), Some(Ok((summary_id, summary)))) if summary_id == *id => Some(summary),
+            (Some(id), _) => Some(git.commit_summary(id)?),
+            (None, _) => None,
         };
         if matches!(op, Operation::CherryPick | Operation::Revert)
             && target_summary.as_ref().is_some_and(|s| s.parents > 1)
@@ -740,7 +787,32 @@ pub enum Reply {
         message: String,
         committed_draft: Option<String>,
     },
+    /// Completed index or working-tree write, with what it changed read
+    /// again right after it, so no snapshot refresh has to follow.
+    IndexDone {
+        message: String,
+        /// Working changes and the identity they belong to, or `None` when
+        /// they could not be read consistently.
+        worktree: Option<WorktreeState>,
+        /// For a hunk or line write, a [`Reply::Diff`] of the comparison it
+        /// started from. Its token addresses the worker's cached hunks, so
+        /// further hunk actions need no reload. `None` when nothing is left.
+        diff: Option<Box<Reply>>,
+    },
 }
+/// The parts of a snapshot an index or working-tree write can change.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorktreeState {
+    pub status: Vec<crate::git::FileChange>,
+    /// HEAD and index identity that `status` was read against.
+    pub reviewed: crate::git::WriteIdentity,
+    pub journal: crate::journal::JournalStatus,
+    /// When the worker started reading. File watcher events from before
+    /// then are already reflected.
+    #[serde(skip)]
+    pub read_started: Option<std::time::Instant>,
+}
+
 /// Worker failure reported through [`Response::result`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Failure {
@@ -1007,8 +1079,88 @@ struct PatchCache {
     token: u32,
     staged: bool,
     path: String,
+    /// Rename or copy source shown in the same comparison.
+    original: Option<String>,
     source: String,
     hunks: Vec<HunkRange>,
+}
+
+/// Whether `action` leaves the cached comparison as it is: a whole-file
+/// index write to a path the comparison does not show, or a commit under an
+/// unstaged comparison. The controller applies the same rule before keeping
+/// the patch on screen.
+fn keeps_patch(action: &Action, patch: &PatchCache) -> bool {
+    let shown = |path: &str| path == patch.path || patch.original.as_deref() == Some(path);
+    match action {
+        Action::StageFile { reviewed, .. } => {
+            !shown(&reviewed.path) && !reviewed.original_path.as_deref().is_some_and(shown)
+        }
+        Action::MarkResolved { path, .. } => !shown(path),
+        // A commit leaves the index and working tree, so an unstaged
+        // comparison is unchanged; a staged one empties.
+        Action::Commit { .. } => !patch.staged,
+        _ => false,
+    }
+}
+
+/// Reads a comparison and prepares it for display. Returns the hunk cache
+/// for later hunk and line actions when the patch has addressable hunks.
+fn read_diff(
+    g: &Git,
+    id: Option<String>,
+    path: String,
+    staged: bool,
+    token: u32,
+) -> Result<(Reply, Option<PatchCache>), String> {
+    let crate::git::DiffComparison {
+        patch,
+        original_path,
+    } = g.compare(id.as_deref(), &path, staged)?;
+    let fits = preview_fits(&patch);
+    let hunks = if fits && id.is_none() {
+        crate::git::hunk_ranges(&patch)
+    } else {
+        vec![]
+    };
+    let titles = hunks.iter().map(|h| h.title(&patch).to_owned()).collect();
+    let hunk_blocked = hunks
+        .iter()
+        .find_map(|hunk| hunk.blocked_reason(&patch))
+        .map(str::to_owned);
+    let preview = diff::classify(&patch, fits);
+    // Only text patches have displayable lines. Other previews are
+    // described by the view instead of synthetic code rows.
+    let mut lines = if preview == diff::Preview::Text {
+        diff::parse(&patch)
+    } else {
+        vec![]
+    };
+    let cache = (!hunks.is_empty()).then(|| PatchCache {
+        token,
+        staged,
+        hunks,
+        path: path.clone(),
+        original: original_path.clone(),
+        source: patch,
+    });
+    if let Some(first) = lines.iter().position(|l| l.text.starts_with("@@ ")) {
+        lines.drain(..first);
+    }
+    let content = diff::prepare(lines);
+    Ok((
+        Reply::Diff {
+            id,
+            path,
+            staged,
+            original_path,
+            content,
+            hunks: titles,
+            hunk_blocked,
+            token,
+            preview,
+        },
+        cache,
+    ))
 }
 
 const MAX_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
@@ -1058,6 +1210,10 @@ impl Session {
                 | Action::Operation { .. }
                 | Action::RunOperation { .. }
         );
+        let keeps_patch = self
+            .patch
+            .as_ref()
+            .is_some_and(|patch| keeps_patch(&action, patch));
         let result = if mutation && self.network_busy.load(Ordering::Acquire) {
             // Pull and Push run beside the worker; writes wait for them.
             Err(WriteError::from(
@@ -1071,8 +1227,11 @@ impl Session {
             kind: error.kind,
             refresh: mutation && epoch == self.epoch,
         });
-        // A failed write can still change the index or worktree.
-        if mutation {
+        // A failed write can still change the index or worktree. A hunk or
+        // line write that read its comparison again keeps that fresh cache.
+        // A write to another file cannot change the cached comparison.
+        if mutation && !keeps_patch && !matches!(result, Ok(Reply::IndexDone { diff: Some(_), .. }))
+        {
             self.patch = None;
         }
         self.read_scope = None;
@@ -1145,74 +1304,30 @@ impl Session {
         let g = self.repo.as_ref().ok_or("Open a local repository first")?;
         let reply = match action {
             Action::Details { id } => {
-                let (author_email, body) = g.commit_message_details(&id)?;
+                // The message and the file list are independent reads.
+                let (message, files) = std::thread::scope(|scope| {
+                    let files = scope.spawn(|| g.changed_files(&id));
+                    (g.commit_message_details(&id), files.join())
+                });
+                let (author_email, body) = message?;
                 Reply::Details {
-                    files: g.changed_files(&id)?,
+                    files: files.map_err(|_| "Git changed-files read failed")??,
                     id,
                     body,
                     author_email,
                 }
             }
             Action::Diff { id, path, staged } => {
-                let crate::git::DiffComparison {
-                    patch,
-                    original_path,
-                } = g.compare(id.as_deref(), &path, staged)?;
-                self.patch = None;
-                let fits = preview_fits(&patch);
-                let hunks = if fits && id.is_none() {
-                    crate::git::hunk_ranges(&patch)
-                } else {
-                    vec![]
-                };
-                let titles = hunks.iter().map(|h| h.title(&patch).to_owned()).collect();
-                let hunk_blocked = hunks
-                    .iter()
-                    .find_map(|hunk| hunk.blocked_reason(&patch))
-                    .map(str::to_owned);
-                let preview = diff::classify(&patch, fits);
-                // Only text patches have displayable lines. Other previews are
-                // described by the view instead of synthetic code rows.
-                let mut lines = if preview == diff::Preview::Text {
-                    diff::parse(&patch)
-                } else {
-                    vec![]
-                };
-                if !hunks.is_empty() {
-                    self.patch = Some(PatchCache {
-                        token: sequence,
-                        staged,
-                        hunks,
-                        path: path.clone(),
-                        source: patch,
-                    });
-                }
-                if let Some(first) = lines.iter().position(|l| l.text.starts_with("@@ ")) {
-                    lines.drain(..first);
-                }
-                let content = diff::prepare(lines);
-                return Ok(Reply::Diff {
-                    id,
-                    path,
-                    staged,
-                    original_path,
-                    content,
-                    hunks: titles,
-                    hunk_blocked,
-                    token: sequence,
-                    preview,
-                });
+                return Ok(self.diff_reply(id, path, staged, sequence)?);
             }
             Action::StageFile { reviewed, unstage } => {
                 g.stage_reviewed(&reviewed, unstage)?;
-                Reply::Done {
-                    message: format!(
-                        "{} {}",
-                        if unstage { "Unstaged" } else { "Staged" },
-                        reviewed.display_path()
-                    ),
-                    committed_draft: None,
-                }
+                let message = format!(
+                    "{} {}",
+                    if unstage { "Unstaged" } else { "Staged" },
+                    reviewed.display_path()
+                );
+                return Ok(self.index_done(message, None, sequence));
             }
             Action::StageAll { unstage } => {
                 let outcome = g.stage_all(unstage)?;
@@ -1237,23 +1352,18 @@ impl Session {
                         }
                     ));
                 }
-                Reply::Done {
-                    message,
-                    committed_draft: None,
-                }
+                return Ok(self.index_done(message, None, sequence));
             }
             Action::MarkResolved {
                 path,
                 allow_markers,
             } => {
                 g.mark_resolved(&path, allow_markers)?;
-                Reply::Done {
-                    message: format!(
-                        "Marked {} resolved. Its merged content is now staged.",
-                        crate::git::display_path(&path)
-                    ),
-                    committed_draft: None,
-                }
+                let message = format!(
+                    "Marked {} resolved. Its merged content is now staged.",
+                    crate::git::display_path(&path)
+                );
+                return Ok(self.index_done(message, None, sequence));
             }
             Action::Hunk {
                 token,
@@ -1278,14 +1388,13 @@ impl Session {
                 let hunk = patch.hunks.get(index).ok_or("Hunk no longer exists")?;
                 unmerged.map_err(|_| WriteError::from("Git conflict check failed"))??;
                 g.apply_hunk(&hunk.materialize(&patch.source), unstage)?;
-                Reply::Done {
-                    message: format!(
-                        "{} hunk in {}",
-                        if unstage { "Unstaged" } else { "Staged" },
-                        crate::git::display_path(&patch.path)
-                    ),
-                    committed_draft: None,
-                }
+                let message = format!(
+                    "{} hunk in {}",
+                    if unstage { "Unstaged" } else { "Staged" },
+                    crate::git::display_path(&patch.path)
+                );
+                let path = patch.path.clone();
+                return Ok(self.index_done(message, Some((path, unstage)), sequence));
             }
             Action::DiscardHunk { token, index } => {
                 let patch = self
@@ -1304,13 +1413,12 @@ impl Session {
                     .ok_or("Hunk no longer exists")?
                     .materialize(&patch.source);
                 g.discard_hunk(&patch.path, &hunk)?;
-                Reply::Done {
-                    message: format!(
-                        "Discarded working-copy hunk in {}. Index and HEAD verified unchanged.",
-                        patch.path
-                    ),
-                    committed_draft: None,
-                }
+                let message = format!(
+                    "Discarded working-copy hunk in {}. Index and HEAD verified unchanged.",
+                    patch.path
+                );
+                let path = patch.path.clone();
+                return Ok(self.index_done(message, Some((path, false)), sequence));
             }
             Action::Lines {
                 token,
@@ -1335,14 +1443,13 @@ impl Session {
                 let partial = crate::hunk_edit::select_lines(&patch.source, &rows, keep)?;
                 g.reject_unmerged_paths(&[&patch.path])?;
                 g.apply_hunk(&partial, unstage)?;
-                Reply::Done {
-                    message: format!(
-                        "{} selected lines in {}",
-                        if unstage { "Unstaged" } else { "Staged" },
-                        crate::git::display_path(&patch.path)
-                    ),
-                    committed_draft: None,
-                }
+                let message = format!(
+                    "{} selected lines in {}",
+                    if unstage { "Unstaged" } else { "Staged" },
+                    crate::git::display_path(&patch.path)
+                );
+                let path = patch.path.clone();
+                return Ok(self.index_done(message, Some((path, unstage)), sequence));
             }
             Action::DiscardLines { token, rows } => {
                 let patch = self
@@ -1361,13 +1468,12 @@ impl Session {
                     crate::hunk_edit::Keep::After,
                 )?;
                 g.discard_hunk(&patch.path, &partial)?;
-                Reply::Done {
-                    message: format!(
-                        "Discarded selected working-copy lines in {}. Index and HEAD verified unchanged.",
-                        crate::git::display_path(&patch.path)
-                    ),
-                    committed_draft: None,
-                }
+                let message = format!(
+                    "Discarded selected working-copy lines in {}. Index and HEAD verified unchanged.",
+                    crate::git::display_path(&patch.path)
+                );
+                let path = patch.path.clone();
+                return Ok(self.index_done(message, Some((path, false)), sequence));
             }
             Action::Commit { message, reviewed } => {
                 let reviewed = reviewed
@@ -1437,6 +1543,74 @@ impl Session {
         };
         self.patch = None;
         Ok(reply)
+    }
+
+    /// Reads a comparison, caches its hunks under `token` for later hunk and
+    /// line actions, and returns it ready for display.
+    fn diff_reply(
+        &mut self,
+        id: Option<String>,
+        path: String,
+        staged: bool,
+        token: u32,
+    ) -> Result<Reply, String> {
+        let g = self.repo.as_ref().ok_or("Open a local repository first")?;
+        self.patch = None;
+        let (reply, cache) = read_diff(g, id, path, staged, token)?;
+        self.patch = cache;
+        Ok(reply)
+    }
+
+    /// Finishes an index or working-tree write by reading what it changed.
+    ///
+    /// `diff` names the comparison a hunk or line write started from. Only
+    /// that comparison is read again: it is what the user waits for, and a
+    /// consistent read of the working changes takes longer, so the file lists
+    /// follow in the usual refresh. A whole-file write has no comparison to
+    /// show, so its reply carries the working changes and no refresh follows.
+    /// Either part is left out when it cannot be read consistently, or when
+    /// the comparison is now empty, and the controller refreshes as before.
+    fn index_done(&mut self, message: String, diff: Option<(String, bool)>, token: u32) -> Reply {
+        if diff.is_some() {
+            // Replaced below by the comparison read again, if any is left.
+            self.patch = None;
+        }
+        let Some(g) = self.repo.as_ref() else {
+            return Reply::Done {
+                message,
+                committed_draft: None,
+            };
+        };
+        let read_started = std::time::Instant::now();
+        let (worktree, diff) = match diff {
+            Some((path, staged)) => (None, Some(read_diff(g, None, path, staged, token))),
+            None => {
+                let journal = &self.journal;
+                let worktree = std::thread::scope(|scope| {
+                    let undo = scope.spawn(|| journal.lock().unwrap().status(g));
+                    let state = g.worktree_state();
+                    Some((state.ok()?, undo.join().ok()?))
+                });
+                (worktree, None)
+            }
+        };
+        let diff = match diff {
+            Some(Ok((reply, Some(cache)))) => {
+                self.patch = Some(cache);
+                Some(Box::new(reply))
+            }
+            _ => None,
+        };
+        Reply::IndexDone {
+            message,
+            worktree: worktree.map(|((status, reviewed), journal)| WorktreeState {
+                status,
+                reviewed,
+                journal,
+                read_started: Some(read_started),
+            }),
+            diff,
+        }
     }
 
     /// Records a completed local operation in the journal and words its result.
@@ -1765,6 +1939,190 @@ mod tests {
     }
 
     #[test]
+    fn hunk_writes_return_the_diff_that_the_next_hunk_write_uses() {
+        let fixture = Fixture::new();
+        let lines = |edited: &[usize]| {
+            (0..40)
+                .map(|i| {
+                    if edited.contains(&i) {
+                        format!("edited {i}\n")
+                    } else {
+                        format!("line {i}\n")
+                    }
+                })
+                .collect::<String>()
+        };
+        fixture.write("a.txt", &lines(&[]));
+        let git = &fixture.git;
+        git.run(&["add", "a.txt"]).unwrap();
+        git.run(&["commit", "-qm", "base"]).unwrap();
+        fixture.write("a.txt", &lines(&[2, 20, 38]));
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let hunks = |reply: &Reply| match reply {
+            Reply::Diff { hunks, token, .. } => (hunks.len(), *token),
+            other => panic!("expected a diff, got {other:?}"),
+        };
+        let diff = Action::Diff {
+            id: None,
+            path: "a.txt".into(),
+            staged: false,
+        };
+        let (count, mut token) = hunks(
+            &session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 1,
+                    action: diff,
+                })
+                .result
+                .unwrap(),
+        );
+        assert_eq!(count, 3);
+        // Each write returns the remaining hunks under its own token, which
+        // the next write uses without reading the diff again.
+        for (sequence, remaining) in [(2, 2), (3, 1)] {
+            let reply = session
+                .execute(Request {
+                    epoch: 1,
+                    sequence,
+                    action: Action::Hunk {
+                        token,
+                        index: 0,
+                        unstage: false,
+                    },
+                })
+                .result
+                .unwrap();
+            // Only the diff: the file lists follow in the refresh.
+            let Reply::IndexDone {
+                message,
+                worktree: None,
+                diff: Some(diff),
+            } = reply
+            else {
+                panic!("expected the write to carry its diff");
+            };
+            assert_eq!(message, "Staged hunk in a.txt");
+            (_, token) = hunks(&diff);
+            assert_eq!((hunks(&diff).0, token), (remaining, sequence));
+        }
+        // Staging the last hunk leaves no diff; nothing is read again.
+        let reply = session
+            .execute(Request {
+                epoch: 1,
+                sequence: 4,
+                action: Action::Hunk {
+                    token,
+                    index: 0,
+                    unstage: false,
+                },
+            })
+            .result
+            .unwrap();
+        assert!(matches!(
+            reply,
+            Reply::IndexDone {
+                worktree: None,
+                diff: None,
+                ..
+            }
+        ));
+        assert!(session.patch.is_none());
+        assert_eq!(
+            git.run(&["diff", "--cached", "--stat"]).unwrap().trim(),
+            "a.txt | 6 +++---\n 1 file changed, 3 insertions(+), 3 deletions(-)"
+        );
+        // A whole-file write carries the working changes instead, matching
+        // a fresh identity.
+        let reply = session
+            .execute(Request {
+                epoch: 1,
+                sequence: 5,
+                action: Action::StageAll { unstage: true },
+            })
+            .result
+            .unwrap();
+        let Reply::IndexDone {
+            worktree: Some(worktree),
+            diff: None,
+            ..
+        } = reply
+        else {
+            panic!("expected working changes, got {reply:?}");
+        };
+        assert!(matches!(&worktree.status[..], [f] if (f.index, f.worktree) == (' ', 'M')));
+        assert_eq!(worktree.reviewed, git.write_identity().unwrap());
+    }
+
+    #[test]
+    fn writing_another_file_keeps_the_open_diffs_hunks() {
+        let fixture = Fixture::new();
+        fixture.write("a.txt", "a\n");
+        fixture.write("b.txt", "b\n");
+        let git = &fixture.git;
+        git.run(&["add", "."]).unwrap();
+        git.run(&["commit", "-qm", "base"]).unwrap();
+        fixture.write("a.txt", "a edited\n");
+        fixture.write("b.txt", "b edited\n");
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let mut run = |sequence, action| {
+            session
+                .execute(Request {
+                    epoch: 1,
+                    sequence,
+                    action,
+                })
+                .result
+        };
+        run(
+            1,
+            Action::Diff {
+                id: None,
+                path: "a.txt".into(),
+                staged: false,
+            },
+        )
+        .unwrap();
+        let b = git
+            .worktree_state()
+            .unwrap()
+            .0
+            .into_iter()
+            .find(|f| f.path == "b.txt")
+            .unwrap();
+        run(
+            2,
+            Action::StageFile {
+                reviewed: b,
+                unstage: false,
+            },
+        )
+        .unwrap();
+        // a.txt's hunk from before b was staged still applies.
+        run(
+            3,
+            Action::Hunk {
+                token: 1,
+                index: 0,
+                unstage: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            git.run(&["diff", "--cached", "--name-only"]).unwrap(),
+            "a.txt\nb.txt\n"
+        );
+    }
+
+    #[test]
     fn preview_limits_disable_partial_writes_without_changing_git_state() {
         let fixture = Fixture::new();
         fixture.write("large.txt", &"x".repeat(MAX_PREVIEW_LINE_BYTES + 1));
@@ -2015,7 +2373,11 @@ mod tests {
         git.stage("tracked.txt").unwrap();
         let moved = run(Operation::Checkout, "topic", destination.clone());
         assert!(moved.is_err_and(|failure| failure.message.contains("changed")));
-        assert!(git.write_identity().unwrap().symbolic_head.ends_with("/main"));
+        assert!(git
+            .write_identity()
+            .unwrap()
+            .symbolic_head
+            .ends_with("/main"));
         // Network and journal operations keep their separate review.
         let current = git.write_identity().unwrap();
         assert!(run(Operation::Push, "", current.clone()).is_err());
@@ -2319,7 +2681,7 @@ mod tests {
                 .result
         };
         for unstage in [false, true] {
-            let Ok(Reply::Done { message, .. }) = run(Action::StageAll { unstage }) else {
+            let Ok(Reply::IndexDone { message, .. }) = run(Action::StageAll { unstage }) else {
                 panic!("bulk index action failed");
             };
             assert!(message.contains("1 conflicted path left for resolution"));
