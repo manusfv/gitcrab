@@ -241,14 +241,27 @@ impl Preferences {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        Some(base.join("GitCrab/appearance.json"))
+        let dir = base.join("GitCrab");
+        migrate_legacy_files(&dir);
+        Some(dir.join("preferences.json"))
     }
     fn session_path() -> Option<PathBuf> {
-        Some(Self::path()?.with_extension("session.json"))
+        Self::sibling_path("session")
     }
 
     fn trust_path() -> Option<PathBuf> {
-        Some(Self::path()?.with_extension("trust.json"))
+        Self::sibling_path("trust")
+    }
+
+    /// Names a companion file next to the preferences file. A `GITCRAB_SETTINGS`
+    /// override keeps deriving from its own name so overrides never share files.
+    fn sibling_path(name: &str) -> Option<PathBuf> {
+        let path = Self::path()?;
+        if std::env::var_os("GITCRAB_SETTINGS").is_some() {
+            Some(path.with_extension(format!("{name}.json")))
+        } else {
+            Some(path.with_file_name(format!("{name}.json")))
+        }
     }
 
     /// Checks for saved trust in this exact worktree and its metadata paths.
@@ -352,6 +365,25 @@ impl Preferences {
     pub fn flush(cx: &mut App) -> Result<PersistenceResult, String> {
         persist(PersistenceAction::Barrier, cx)
     }
+}
+
+/// Renames files from the old `appearance*` names so saved preferences, open
+/// tabs and repository trust survive the rename. Never overwrites a new file.
+fn migrate_legacy_files(dir: &Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        for (old, new) in [
+            ("appearance.json", "preferences.json"),
+            ("appearance.session.json", "session.json"),
+            ("appearance.trust.json", "trust.json"),
+            ("appearance.trust.lock", "trust.lock"),
+        ] {
+            let (old, new) = (dir.join(old), dir.join(new));
+            if old.exists() && !new.exists() {
+                let _ = std::fs::rename(old, new);
+            }
+        }
+    });
 }
 
 fn parse_session(bytes: &[u8]) -> Vec<String> {
@@ -554,7 +586,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let path = root.join("appearance.trust.json");
+        let path = root.join("trust.json");
         let worktree = root.join("repo");
         let original = RepositoryLocation {
             git_dir: worktree.join(".git"),
