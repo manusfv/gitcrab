@@ -38,6 +38,13 @@ The Rust core remains usable with `cargo test --locked --no-default-features --l
   target, then the write starts and rechecks it before Git runs.
   `native/view/repository.rs` owns trust prompts and watcher lifecycle.
   `native/view/evidence.rs` contains diagnostic navigation.
+- `native/theme.rs` holds design tokens: palette roles (`role_color`, the
+  `RoleStyled` helpers `text_role`, `bg_role` and `border_role`), the
+  font-scaled size helper `scaled`, and geometry constants. `native/components/`
+  holds the reusable UI built on them: button roles and sizes (`buttons`), the
+  `ListRow` used by every list and tree, `Badge`, and pane containers
+  (`layout`). Views import them through `components::prelude` and compose
+  panes from them instead of styling raw elements.
 - `native/preferences.rs` owns the application appearance source and a
   serialized persistence worker. Closing flushes pending saves. File replacement
   uses an owned temporary file beside the destination.

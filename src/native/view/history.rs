@@ -515,12 +515,12 @@ impl GitCrab {
                                     .map(|s| s.conflict_count())
                                     .filter(|count| *count > 0),
                                 |row, count| {
-                                    row.child(badge(
+                                    row.child(Badge::role(
                                         format!(
                                             "{count} {}",
                                             if count == 1 { "conflict" } else { "conflicts" }
                                         ),
-                                        semantic(Role::StatusConflictFg),
+                                        Role::StatusConflictFg,
                                     ))
                                 },
                             )
@@ -535,13 +535,12 @@ impl GitCrab {
                                     ])
                                     .filter(|(count, _)| *count > 0)
                                     .map(|(count, (mark, name, role))| {
-                                        badge_fixed(format!("{mark} {count}"), semantic(role), 44.)
-                                            .flex_none()
-                                            .id(SharedString::from(format!("wip-{name}")))
-                                            .tooltip(move |w, cx| {
-                                                Tooltip::new(format!("{count} {name} paths"))
-                                                    .build(w, cx)
-                                            })
+                                        Badge::role(format!("{mark} {count}"), role)
+                                            .fixed_width(44.)
+                                            .tooltip(
+                                                SharedString::from(format!("wip-{name}")),
+                                                format!("{count} {name} paths"),
+                                            )
                                     })
                             }))
                             .into_any_element(),

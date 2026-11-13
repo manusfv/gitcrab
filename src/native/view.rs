@@ -9,7 +9,7 @@ mod repository;
 mod review;
 mod settings;
 mod sidebar;
-use super::components::{self, ButtonExt as _, ControlSize};
+use super::components::{self, prelude::*};
 use super::preferences::Preferences;
 use super::theme::*;
 use gitcrab_core::{

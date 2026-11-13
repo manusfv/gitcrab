@@ -78,11 +78,11 @@ fn status_badge(file: &FileChange, staged: bool) -> impl IntoElement {
             if staged { "staged" } else { "unstaged" }
         )
     };
-    badge_fixed(letter.to_string(), color, 20.)
+    Badge::new(letter.to_string(), color)
+        .fixed_width(20.)
         .text_size(scaled(11.))
         .px_0()
-        .id(SharedString::from(format!("status-{}", file.path)))
-        .tooltip(move |w, cx| Tooltip::new(name.clone()).build(w, cx))
+        .tooltip(SharedString::from(format!("status-{}", file.path)), name)
 }
 
 impl GitCrab {
@@ -429,32 +429,17 @@ impl GitCrab {
                                         v.state.diff_context.as_ref().is_some_and(|context| {
                                             context.id.is_some() && context.path == change.path
                                         });
-                                    div()
-                                        .h(scaled(FILE_ROW_HEIGHT))
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .px(scaled(INSPECTOR_INSET))
-                                        .when(active, |row| {
-                                            row.bg_role(Role::InteractionSelected)
-                                                .border_l_2()
-                                                .border_role(Role::InteractionSelectionRail)
-                                        })
-                                        .child(status_badge(change, true))
-                                        .child(
-                                            div().flex_1().min_w_0().child(
-                                                v.button(("changed", i), label)
-                                                    .w_full()
-                                                    .px_1()
-                                                    .justify_start()
-                                                    .selected(active)
-                                                    .disabled_when(change.unsupported_path)
-                                                    .tooltip(change.describe(true))
-                                                    .on_click(cx.listener(move |v, _, w, cx| {
-                                                        v.file(path.clone(), false, w, cx)
-                                                    })),
-                                            ),
-                                        )
+                                    ListRow::new(("changed", i))
+                                        .inset(INSPECTOR_INSET)
+                                        .tab_stop(!v.settings_open)
+                                        .start(status_badge(change, true))
+                                        .label(label)
+                                        .active(active)
+                                        .disabled(change.unsupported_path)
+                                        .tooltip(change.describe(true))
+                                        .on_click(cx.listener(move |v, _, w, cx| {
+                                            v.file(path.clone(), false, w, cx)
+                                        }))
                                 })
                                 .collect::<Vec<_>>()
                         })
@@ -884,58 +869,31 @@ impl GitCrab {
             )
             .into_any_element()
         };
-        div()
+        let id = match section {
+            Section::Conflicts => "conflict",
+            Section::Staged => "index",
+            Section::Unstaged => "worktree",
+        };
+        ListRow::new((id, i))
+            .inset(INSPECTOR_INSET)
+            .tab_stop(!self.settings_open)
             .group("file-row")
             .track_focus(&row_focus)
-            .w_full()
-            .h(scaled(FILE_ROW_HEIGHT))
-            .flex()
-            .items_center()
-            .px(scaled(INSPECTOR_INSET))
-            .gap_1()
-            .when(moving, |e| e.opacity(0.55))
-            .when(active, |e| {
-                e.bg_role(Role::InteractionSelected)
-                    .border_l_2()
-                    .border_role(Role::InteractionSelectionRail)
-            })
-            .hover(|e| {
-                e.bg(rgb(if active {
-                    semantic(Role::InteractionSelected)
-                } else {
-                    semantic(Role::InteractionHover)
-                }))
-            })
-            .child(status_badge(f, staged))
+            .when(moving, |row| row.opacity(0.55))
+            .start(status_badge(f, staged))
             .when(markers, |row| {
-                row.child(
-                    badge("Markers", semantic(Role::StatusWarningFg))
+                row.leading(
+                    Badge::role("Markers", Role::StatusWarningFg)
                         .text_size(scaled(11.))
                         .px_1(),
                 )
             })
-            .child(
-                div().flex_1().min_w_0().child(
-                    self.button(
-                        (
-                            match section {
-                                Section::Conflicts => "conflict",
-                                Section::Staged => "index",
-                                Section::Unstaged => "worktree",
-                            },
-                            i,
-                        ),
-                        display_path,
-                    )
-                    .w_full()
-                    .px_1()
-                    .justify_start()
-                    .disabled_when(path_issue.is_some())
-                    .tooltip(f.describe(staged))
-                    .on_click(cx.listener(move |v, _, w, cx| v.file(path.clone(), staged, w, cx))),
-                ),
-            )
-            .child(action)
+            .label(display_path)
+            .active(active)
+            .disabled(path_issue.is_some())
+            .tooltip(f.describe(staged))
+            .on_click(cx.listener(move |v, _, w, cx| v.file(path.clone(), staged, w, cx)))
+            .end(action)
             .into_any_element()
     }
 

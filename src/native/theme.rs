@@ -250,74 +250,8 @@ pub fn install(cx: &mut App) {
     t.colors.cyan = role_color(Role::StatusInfoFg).into();
     t.colors.cyan_light = role_color(Role::StatusInfoBg).into();
 }
-pub fn panel() -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .size_full()
-        .min_w_0()
-        .min_h_0()
-        .bg_role(Role::SurfacePanel)
-        .overflow_hidden()
-}
-pub fn section_bar() -> Div {
-    div()
-        .h(scaled(SECTION_HEIGHT))
-        .flex_none()
-        .flex()
-        .items_center()
-        .gap_2()
-        .px(scaled(SECTION_INSET))
-        .bg_role(Role::SurfaceChrome)
-        .border_b_1()
-        .border_role(Role::BorderDivider)
-}
 
-pub fn segmented_group() -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .rounded(px(CONTROL_RADIUS))
-        .border_1()
-        .border_role(Role::BorderDivider)
-        .bg_role(Role::SurfaceChrome)
-}
-
+/// Loads one of GitCrab's bundled icons by name.
 pub fn icon(name: &str) -> gpui_component::Icon {
     gpui_component::Icon::default().path(SharedString::from(format!("icons/{name}.svg")))
-}
-
-pub fn badge(label: impl Into<SharedString>, color: u32) -> Div {
-    div()
-        .flex_none()
-        .px_2()
-        .py(px(2.))
-        .rounded(px(4.))
-        .bg(tint(color, 0x18))
-        .text_color(rgb(color))
-        .text_size(scaled(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .whitespace_nowrap()
-        .child(label.into())
-}
-
-/// A badge with a fixed width so a column of them lines up regardless of the
-/// label length.
-pub fn badge_fixed(label: impl Into<SharedString>, color: u32, width: f32) -> Div {
-    badge(label, color)
-        .w(px(width))
-        .flex()
-        .justify_center()
-        .overflow_hidden()
-        .whitespace_nowrap()
-}
-
-pub fn separator() -> Div {
-    div()
-        .w(px(1.))
-        .h(px(22.))
-        .mx_2()
-        .flex_none()
-        .bg_role(Role::BorderDivider)
 }

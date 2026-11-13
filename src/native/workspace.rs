@@ -1,4 +1,4 @@
-use super::components::{self, ControlSize};
+use super::components::{self, prelude::*};
 use super::{
     preferences::Preferences,
     theme::*,

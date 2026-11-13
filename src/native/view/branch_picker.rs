@@ -141,27 +141,19 @@ impl GitCrab {
                     let name = branches[branch].clone();
                     let is_current = current.as_deref() == Some(name.as_str());
                     let choose = choose.clone();
-                    div()
-                        .id(("branch-picker-row", row))
-                        .h(scaled(28.))
-                        .flex_none()
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .gap_2()
+                    // The search field keeps focus; arrow keys move the selection.
+                    ListRow::new(("branch-picker-row", row))
+                        .height(28.)
+                        .focusable(false)
                         .rounded(px(3.))
-                        .cursor_pointer()
-                        .when(row == index, |r| r.bg_role(Role::InteractionSelected))
-                        .when(row != index, |r| {
-                            r.hover(|r| r.bg_role(Role::InteractionHover))
-                        })
-                        .child(
+                        .selected(row == index)
+                        .leading(
                             icon(if is_current { "check" } else { "branch" })
                                 .size(px(14.))
                                 .flex_none()
                                 .when(is_current, |i| i.text_role(Role::StatusSuccessFg)),
                         )
-                        .child(
+                        .content(
                             div()
                                 .flex_1()
                                 .min_w_0()
@@ -170,7 +162,7 @@ impl GitCrab {
                                 .child(name),
                         )
                         .when(is_current, |r| {
-                            r.child(
+                            r.trailing(
                                 div()
                                     .flex_none()
                                     .text_size(scaled(11.))

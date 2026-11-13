@@ -404,7 +404,7 @@ impl GitCrab {
                 bar.child(
                     div()
                         .id("diff-updated")
-                        .child(badge("Updated on disk", semantic(Role::StatusInfoFg)))
+                        .child(Badge::role("Updated on disk", Role::StatusInfoFg))
                         .tooltip(|w, cx| {
                             Tooltip::new(
                                 "The file changed outside GitCrab. The diff was reloaded; a selection stays only where its lines are unchanged.",
@@ -468,7 +468,7 @@ impl GitCrab {
             .py_1()
             .flex_wrap()
             .when(conflict, |bar| {
-                bar.child(badge("Conflict", semantic(Role::StatusConflictFg)))
+                bar.child(Badge::role("Conflict", Role::StatusConflictFg))
             })
             .when_some(source, |bar, source| bar.child(source))
             .child(

@@ -23,14 +23,6 @@ struct TreeEntry {
 }
 
 impl GitCrab {
-    fn sidebar_divider() -> Div {
-        div()
-            .w_full()
-            .h(px(SEAM))
-            .flex_none()
-            .bg_role(Role::BorderDivider)
-    }
-
     fn toggle_collapsed(v: &mut Self, key: &str, w: &mut Window, cx: &mut Context<Self>) {
         if !v.preferences.collapsed.remove(key) {
             v.preferences.collapsed.insert(key.to_string());
@@ -47,42 +39,28 @@ impl GitCrab {
         label: &str,
         count: String,
         collapsed: bool,
-    ) -> Button {
-        self.button(id, "")
-            .icon(
-                icon(if collapsed { "right" } else { "down" })
-                    .size(px(12.))
-                    .text_role(Role::TextMuted),
-            )
-            .w_full()
-            .h(scaled(HEADER_HEIGHT))
-            .px(scaled(INSET))
-            .justify_start()
+    ) -> ListRow {
+        ListRow::new(id)
+            .height(HEADER_HEIGHT)
+            .inset(INSET)
+            .tab_stop(!self.settings_open)
+            .foreground(Role::TextSecondary)
             .font_weight(FontWeight::SEMIBOLD)
-            .text_size(scaled(11.))
-            .text_role(Role::TextSecondary)
-            .tooltip(format!(
-                "{} {}",
-                if collapsed { "Expand" } else { "Collapse" },
-                label.to_lowercase()
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(icon(glyph).size(px(14.)))
-                    .child(div().truncate().child(label.to_uppercase())),
-            )
-            .child(
+            .leading(disclosure(collapsed))
+            .leading(icon(glyph).size(px(14.)))
+            .label(label.to_uppercase())
+            .trailing(
                 div()
                     .flex_none()
                     .font_weight(FontWeight::NORMAL)
                     .text_role(Role::TextMuted)
                     .child(count),
             )
+            .tooltip(format!(
+                "{} {}",
+                if collapsed { "Expand" } else { "Collapse" },
+                label.to_lowercase()
+            ))
     }
 
     /// Folder rows and leaf rows for one reference kind, indented per depth.
@@ -108,33 +86,19 @@ impl GitCrab {
                 let collapsed = self.preferences.collapsed.contains(&key) && !filtering;
                 if seen.insert(key.clone()) {
                     tree = tree.child(
-                        self.button(SharedString::from(format!("folder-{key}")), "")
-                            .icon(
-                                icon(if collapsed { "right" } else { "down" })
-                                    .size(px(12.))
-                                    .text_role(Role::TextMuted),
-                            )
-                            .w_full()
-                            .h(scaled(ROW_HEIGHT))
-                            .justify_start()
-                            .pl(scaled(INSET + 4. + (depth - 1) as f32 * INDENT))
-                            .pr(scaled(INSET))
-                            .text_role(Role::TextSecondary)
+                        ListRow::new(SharedString::from(format!("folder-{key}")))
+                            .height(ROW_HEIGHT)
+                            .inset(INSET)
+                            .indent(4. + (depth - 1) as f32 * INDENT)
+                            .tab_stop(!self.settings_open)
+                            .foreground(Role::TextSecondary)
+                            .leading(disclosure(collapsed))
+                            .leading(icon("folder").size(px(14.)).text_role(Role::TextMuted))
+                            .label(format!("{}/", parts[depth - 1]))
                             .tooltip(format!(
                                 "{} {prefix}/",
                                 if collapsed { "Expand" } else { "Collapse" }
                             ))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(icon("folder").size(px(14.)).text_role(Role::TextMuted))
-                                    .child(
-                                        div().truncate().child(format!("{}/", parts[depth - 1])),
-                                    ),
-                            )
                             .on_click(cx.listener(move |v, _, w, cx| {
                                 Self::toggle_collapsed(v, &key, w, cx)
                             })),
@@ -161,29 +125,30 @@ impl GitCrab {
             } = entry;
             let lead = if previewed { "eye" } else { glyph };
             tree = tree.child(
-                self.button(SharedString::from(id), "")
-                    .icon(icon(lead).size(px(14.)).text_color(rgb(if previewed {
-                        semantic(Role::ActionPrimary)
+                ListRow::new(SharedString::from(id))
+                    .height(ROW_HEIGHT)
+                    .inset(INSET)
+                    .indent(18. + depth as f32 * INDENT)
+                    .tab_stop(!self.settings_open)
+                    .foreground(if current || previewed {
+                        Role::TextDefault
                     } else {
-                        semantic(Role::TextMuted)
-                    })))
-                    .child(div().flex_1().min_w_0().truncate().child(leaf))
-                    .when(current, |row| {
-                        row.child(icon("check").size(px(14.)).text_role(Role::StatusSuccessFg))
+                        Role::TextMuted
                     })
-                    .w_full()
-                    .h(scaled(ROW_HEIGHT))
-                    .justify_start()
-                    .pl(scaled(INSET + 18. + depth as f32 * INDENT))
-                    .pr(scaled(INSET))
-                    .text_color(rgb(if current || previewed {
-                        semantic(Role::TextDefault)
+                    .leading(icon(lead).size(px(14.)).text_role(if previewed {
+                        Role::ActionPrimary
                     } else {
-                        semantic(Role::TextMuted)
+                        Role::TextMuted
                     }))
-                    .when(current, |b| b.font_weight(FontWeight::SEMIBOLD))
-                    .when(current && !previewed, |b| b.bg_role(Role::StatusSuccessBg))
-                    .map(|b| Self::highlight_sidebar_row(b, previewed))
+                    .label(leaf)
+                    .when(current, |row| {
+                        row.trailing(icon("check").size(px(14.)).text_role(Role::StatusSuccessFg))
+                            .font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(current && !previewed, |row| {
+                        row.background(Role::StatusSuccessBg)
+                    })
+                    .highlighted(previewed)
                     .tooltip(tooltip)
                     .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| on_click(v, e, w, cx))),
             );
@@ -235,24 +200,21 @@ impl GitCrab {
                 ),
             )
             .child(
-                self.button("working", "")
-                    .icon(icon("changes").size(px(14.)))
-                    .child(div().flex_1().min_w_0().truncate().child("Working changes"))
-                    .child(badge(
+                ListRow::new("working")
+                    .height(32.)
+                    .inset(INSET)
+                    .tab_stop(!self.settings_open)
+                    .leading(icon("changes").size(px(14.)))
+                    .label("Working changes")
+                    .trailing(Badge::role(
                         changes.to_string(),
                         if changes > 0 {
-                            semantic(Role::ActionPrimary)
+                            Role::ActionPrimary
                         } else {
-                            semantic(Role::TextMuted)
+                            Role::TextMuted
                         },
                     ))
-                    .w_full()
-                    .h(scaled(32.))
-                    .px(scaled(INSET))
-                    .justify_start()
-                    .map(|button| {
-                        Self::highlight_sidebar_row(button, self.state.selected.is_none())
-                    })
+                    .highlighted(self.state.selected.is_none())
                     .on_click(cx.listener(|v, _, w, cx| {
                         v.select(None, w, cx);
                         v.close_references(w, cx);
@@ -312,7 +274,7 @@ impl GitCrab {
                 div()
                     .flex()
                     .flex_col()
-                    .child(Self::sidebar_divider())
+                    .child(divider())
                     .child(
                         self.sidebar_header(
                             "local-branches",
@@ -361,7 +323,7 @@ impl GitCrab {
                     div()
                         .flex()
                         .flex_col()
-                        .child(Self::sidebar_divider())
+                        .child(divider())
                         .child(
                             self.sidebar_header(
                                 SharedString::from(format!("ref-heading-{kind}")),
@@ -385,7 +347,7 @@ impl GitCrab {
                 div()
                     .flex()
                     .flex_col()
-                    .child(Self::sidebar_divider())
+                    .child(divider())
                     .child(
                         self.sidebar_header(
                             "ref-heading-Stashes",
