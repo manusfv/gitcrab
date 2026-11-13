@@ -80,6 +80,72 @@ impl GitCrab {
         .max(self.preferences.code_size + 5.)
     }
 
+    /// Rebuilds the Split wrap layout when the patch, layout or pane width
+    /// changes. Each side wraps its long lines at the columns it can show,
+    /// measured from the code font, as GitHub Desktop's split diff does.
+    pub(super) fn update_split_wrap(&mut self, window: &mut Window) {
+        let Some(p) = self.state.patch.as_ref().filter(|_| self.split_active) else {
+            self.split_wrap = None;
+            return;
+        };
+        let size = self.preferences.code_size;
+        let scale = size / 12.;
+        let text = window.text_system();
+        let advance = text
+            .advance(text.resolve_font(&font(CODE_FONT)), px(size), 'm')
+            .map(|advance| f32::from(advance.width))
+            .unwrap_or(size * 0.65)
+            .max(1.);
+        // Each side: 8 px padding on both edges, two 8 px gaps, the line
+        // number and marker columns, and a little slack for rounding.
+        let side = self.history_available / 2. - 16. - 16. - 54. * scale - 6.;
+        let columns = ((side / advance).floor() as usize).max(8);
+        if self
+            .split_wrap
+            .as_ref()
+            .is_some_and(|(token, wrap)| *token == p.token && wrap.columns == columns)
+        {
+            return;
+        }
+        self.split_wrap = Some((
+            p.token,
+            gitcrab_core::diff::Wrap::split(&p.content, columns),
+        ));
+    }
+
+    /// The wrap layout for the patch on screen, when Split is active.
+    fn wrap(&self) -> Option<&gitcrab_core::diff::Wrap> {
+        let p = self.state.patch.as_ref()?;
+        self.split_wrap
+            .as_ref()
+            .filter(|(token, _)| self.split_active && *token == p.token)
+            .map(|(_, wrap)| wrap)
+    }
+
+    /// Rows the diff list draws: wrapped visual rows in Split.
+    fn diff_visual_rows(&self) -> usize {
+        let Some(p) = self.state.patch.as_ref() else {
+            return 0;
+        };
+        match self.wrap() {
+            Some(wrap) => wrap.rows(),
+            None if self.split_active => p.content.split.len(),
+            None => p.content.lines.len(),
+        }
+    }
+
+    /// The displayed row (selection, find and hunk index) a drawn row shows,
+    /// and which wrapped segment of it.
+    fn row_of_visual(&self, visual: usize) -> (usize, usize) {
+        self.wrap().map_or((visual, 0), |wrap| wrap.locate(visual))
+    }
+
+    /// Scrolls a displayed row into view, at its first wrapped segment.
+    pub(super) fn scroll_diff_to(&self, row: usize, strategy: ScrollStrategy) {
+        let visual = self.wrap().map_or(row, |wrap| wrap.first(row));
+        self.diff_scroll.scroll_to_item(visual, strategy);
+    }
+
     /// Hunk header rows in the displayed layout.
     fn hunk_rows(&self) -> &[usize] {
         match &self.state.patch {
@@ -117,6 +183,7 @@ impl GitCrab {
             });
         }
         let top = (offset / self.diff_row_height() + 0.5).floor().max(0.) as usize;
+        let top = self.row_of_visual(top).0;
         gitcrab_core::diff::hunk_position(rows, top, offset >= max - 1.)
             .map(|position| (position, true))
     }
@@ -135,7 +202,7 @@ impl GitCrab {
             position.previous
         };
         if let Some(row) = target.and_then(|index| self.hunk_rows().get(index).copied()) {
-            self.diff_scroll.scroll_to_item(row, ScrollStrategy::Top);
+            self.scroll_diff_to(row, ScrollStrategy::Top);
             cx.notify();
         }
     }
@@ -332,11 +399,7 @@ impl GitCrab {
                 .snapshot
                 .as_ref()
                 .is_some_and(|s| s.status.iter().any(|f| f.path == p.path && f.is_unmerged()));
-        let n = if self.split_active {
-            p.content.split.len()
-        } else {
-            p.content.lines.len()
-        };
+        let n = self.diff_visual_rows();
         let weak = cx.weak_entity();
         let display = gitcrab_core::git::display_path(&p.path);
         let (directory, name) = match display.rfind(['/', '\\']) {
@@ -1346,8 +1409,12 @@ impl GitCrab {
         .into_any_element()
     }
 
-    fn diff_row(&self, i: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn diff_row(&self, visual: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = self.state.patch.as_ref().unwrap();
+        // `i` is the displayed row; `segment` is which wrapped part of it
+        // this drawn row shows. Only Split wraps, so Unified segments are 0.
+        let (i, segment) = self.row_of_visual(visual);
+        let wrap_columns = self.wrap().map(|wrap| wrap.columns);
         let header = if self.split_active {
             p.content.split[i].0
         } else {
@@ -1355,7 +1422,7 @@ impl GitCrab {
         }
         .filter(|&line| p.content.lines[line].text.starts_with("@@ "));
         if let Some(line) = header {
-            return self.hunk_header_row(i, line, cx);
+            return self.hunk_header_row(visual, line, cx);
         }
         let selected = self.selection.as_ref().is_some_and(|r| r.contains(&i));
         // Rows that a hunk or line write in flight changes fade at once.
@@ -1379,7 +1446,7 @@ impl GitCrab {
         let scale = self.preferences.code_size / 12.;
         let split = self.split_active;
         let mut el = div()
-            .id(("diff-line", i))
+            .id(("diff-line", visual))
             .cursor_text()
             .w_full()
             .when(!split, |row| {
@@ -1420,7 +1487,8 @@ impl GitCrab {
                 .gap_2()
                 .px_2()
                 .when(split, |cell| {
-                    // Each side clips its own long lines; Unified shows them in full.
+                    // Each side wraps its long lines onto further rows; the
+                    // clip only guards against a font wider than measured.
                     cell.overflow_hidden().on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |v, _: &MouseDownEvent, _, _| {
@@ -1452,7 +1520,10 @@ impl GitCrab {
                             .flex_none()
                             .whitespace_nowrap()
                             .text_role(Role::TextMuted)
-                            .child(if split {
+                            .child(if segment > 0 {
+                                // Continuation rows of a wrapped line.
+                                String::new()
+                            } else if split {
                                 (if side == 0 { l.old } else { l.new })
                                     .map(|n| format!("{n:>4}"))
                                     .unwrap_or_default()
@@ -1474,20 +1545,36 @@ impl GitCrab {
                                 _ => semantic(Role::TextMuted),
                             }))
                             .child(match l.kind {
+                                _ if segment > 0 => "",
                                 '+' => "+",
                                 '-' => "−",
                                 _ => "",
                             }),
                     )
                     .child({
-                        let mut end = l.text.len().min(8192);
-                        while !l.text.is_char_boundary(end) {
-                            end -= 1;
+                        let (prefix, shown) = gitcrab_core::diff::shown_text(l);
+                        let mut highlights =
+                            diff_highlights(shown, &l.highlights, prefix, self.show_whitespace);
+                        // In Split, this row shows one wrapped segment of the line.
+                        let range = match wrap_columns {
+                            Some(columns) => gitcrab_core::diff::wrap_ranges(shown, columns)
+                                .get(segment)
+                                .cloned()
+                                .unwrap_or(shown.len()..shown.len()),
+                            None => 0..shown.len(),
+                        };
+                        if range != (0..shown.len()) {
+                            highlights = highlights
+                                .into_iter()
+                                .filter_map(|(span, style)| {
+                                    let start = span.start.max(range.start);
+                                    let end = span.end.min(range.end);
+                                    (start < end)
+                                        .then(|| (start - range.start..end - range.start, style))
+                                })
+                                .collect();
                         }
-                        let prefix = usize::from(matches!(l.kind, ' ' | '+' | '-') && end > 0);
-                        let text = SharedString::from(l.text[prefix..end].to_string());
-                        let highlights =
-                            diff_highlights(&text, &l.highlights, prefix, self.show_whitespace);
+                        let text = SharedString::from(shown[range].to_string());
                         div()
                             .whitespace_nowrap()
                             .flex_none()

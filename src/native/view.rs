@@ -350,6 +350,8 @@ pub struct GitCrab {
     show_whitespace: bool,
     /// Split was requested and fits the pane this frame.
     split_active: bool,
+    /// Split rows wrapped to the pane, with the patch token they were built for.
+    split_wrap: Option<(u32, gitcrab_core::diff::Wrap)>,
     /// Pane that Copy reads in Split.
     copy_side: gitcrab_core::diff::Side,
     /// The patch on screen, kept to follow the selection across reloads.
@@ -546,6 +548,7 @@ impl GitCrab {
             compact: preferences.compact,
             show_whitespace: false,
             split_active: false,
+            split_wrap: None,
             copy_side: Default::default(),
             shown_patch: None,
             diff_updated: false,
@@ -1314,7 +1317,7 @@ impl GitCrab {
         };
         if reveal {
             if let Some(row) = self.diff_match.map(|index| self.diff_matches[index]) {
-                self.diff_scroll.scroll_to_item(row, ScrollStrategy::Center);
+                self.scroll_diff_to(row, ScrollStrategy::Center);
             }
         }
     }
@@ -1330,8 +1333,7 @@ impl GitCrab {
             None => 0,
         };
         self.diff_match = Some(index);
-        self.diff_scroll
-            .scroll_to_item(self.diff_matches[index], ScrollStrategy::Center);
+        self.scroll_diff_to(self.diff_matches[index], ScrollStrategy::Center);
         cx.notify();
     }
 
@@ -2365,6 +2367,7 @@ impl Render for GitCrab {
             self.selection = None;
             self.update_diff_find(false, cx);
         }
+        self.update_split_wrap(window);
         let sidebar = if rail {
             div()
                 .flex()

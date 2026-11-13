@@ -267,6 +267,112 @@ pub fn hunk_header_parts(header: &str) -> (&str, &str) {
     }
 }
 
+/// Longest part of a line shown or wrapped, in bytes. Longer text is cut.
+pub const MAX_SHOWN_BYTES: usize = 8192;
+
+/// A line's shown source text: without its diff marker, cut to
+/// [`MAX_SHOWN_BYTES`] at a character boundary. Returns the marker's length
+/// too, so highlight offsets can be shifted to the shown text.
+pub fn shown_text(line: &Line) -> (usize, &str) {
+    let mut end = line.text.len().min(MAX_SHOWN_BYTES);
+    while !line.text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let prefix = usize::from(matches!(line.kind, ' ' | '+' | '-') && end > 0);
+    (prefix, &line.text[prefix..end])
+}
+
+/// Columns a character takes in a monospaced code font: tabs count as four
+/// and East Asian wide characters and emoji as two.
+fn char_columns(c: char) -> usize {
+    match c as u32 {
+        0x09 => 4,
+        0x1100..=0x115F
+        | 0x2E80..=0xA4CF
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1FAFF
+        | 0x20000..=0x3FFFD => 2,
+        _ => 1,
+    }
+}
+
+/// Splits `text` into byte ranges at most `columns` wide, breaking at any
+/// character as GitHub Desktop's split diff does. Empty text is one empty range.
+pub fn wrap_ranges(text: &str, columns: usize) -> Vec<std::ops::Range<usize>> {
+    let columns = columns.max(1);
+    let mut ranges = Vec::new();
+    let (mut start, mut width) = (0, 0);
+    for (index, c) in text.char_indices() {
+        let w = char_columns(c);
+        if width + w > columns && index > start {
+            ranges.push(start..index);
+            (start, width) = (index, 0);
+        }
+        width += w;
+    }
+    ranges.push(start..text.len());
+    ranges
+}
+
+/// Split rows wrapped to a column width: each split row becomes as many
+/// visual rows as its taller side needs, so both sides stay aligned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wrap {
+    /// Columns of source text each side shows per visual row.
+    pub columns: usize,
+    /// First visual row of each split row, followed by the total.
+    starts: Vec<usize>,
+}
+
+impl Wrap {
+    /// Wraps the split layout of `content` to `columns` per side. Hunk
+    /// headers stay one row; they truncate instead.
+    pub fn split(content: &Content, columns: usize) -> Self {
+        let segments = |index: Option<usize>| {
+            index.map_or(1, |i| {
+                let line = &content.lines[i];
+                if line.text.starts_with("@@ ") {
+                    1
+                } else {
+                    wrap_ranges(shown_text(line).1, columns).len()
+                }
+            })
+        };
+        let mut starts = Vec::with_capacity(content.split.len() + 1);
+        let mut total = 0;
+        for (before, after) in &content.split {
+            starts.push(total);
+            total += segments(*before).max(segments(*after));
+        }
+        starts.push(total);
+        Self { columns, starts }
+    }
+
+    /// Number of visual rows.
+    pub fn rows(&self) -> usize {
+        self.starts.last().copied().unwrap_or(0)
+    }
+
+    /// First visual row of a split row.
+    pub fn first(&self, row: usize) -> usize {
+        self.starts[row.min(self.starts.len() - 1)]
+    }
+
+    /// The split row a visual row belongs to and its wrapped segment.
+    pub fn locate(&self, visual: usize) -> (usize, usize) {
+        let row = self
+            .starts
+            .partition_point(|&start| start <= visual)
+            .saturating_sub(1)
+            .min(self.starts.len().saturating_sub(2));
+        (row, visual.saturating_sub(self.starts[row]))
+    }
+}
+
 /// Comparable identity of each displayed row, used to follow a selection
 /// when the patch is replaced.
 pub fn row_keys(content: &Content, split: bool) -> Vec<(Option<&str>, Option<&str>)> {
@@ -490,6 +596,27 @@ mod tests {
             ("-1,2 +1,2", "fn a")
         );
         assert_eq!(hunk_header_parts("@@ -9 +9 @@"), ("-9 +9", ""));
+    }
+
+    #[test]
+    fn wrapping_breaks_by_columns_and_keeps_split_sides_aligned() {
+        assert_eq!(wrap_ranges("abcdefg", 3), [0..3, 3..6, 6..7]);
+        assert_eq!(wrap_ranges("", 3), vec![0..0]);
+        // Wide characters take two columns and are never split.
+        assert_eq!(wrap_ranges("日本語", 4), [0..6, 6..9]);
+        assert_eq!(wrap_ranges("\tx", 4), [0..1, 1..2]);
+        let content = prepare(parse(
+            "@@ -1,3 +1,3 @@ a very long scope line\n keep\n-0123456789\n+short\n tail\n",
+        ));
+        // Rows: header, keep, -long/+short, tail.
+        let wrap = Wrap::split(&content, 4);
+        assert_eq!(wrap.rows(), 1 + 1 + 3 + 1);
+        assert_eq!(wrap.first(2), 2);
+        assert_eq!(wrap.first(3), 5);
+        assert_eq!(wrap.locate(4), (2, 2));
+        assert_eq!(wrap.locate(5), (3, 0));
+        let (prefix, text) = shown_text(&content.lines[2]);
+        assert_eq!((prefix, text), (1, "0123456789"));
     }
 
     #[test]

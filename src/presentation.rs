@@ -267,12 +267,18 @@ pub fn filter_branches<S: AsRef<str>>(names: &[S], query: &str) -> Vec<usize> {
 /// Decides whether a split comparison stays readable in a pane `width` wide.
 ///
 /// Each side needs room for its gutter (`side_chrome`) and the longest line,
-/// counted up to 80 characters of `char_width` and at least 20. Longer lines
-/// clip within their side. When this is false the view shows Unified instead.
+/// counted between 20 and [`SPLIT_MIN_COLUMNS`] characters of `char_width`.
+/// Longer lines wrap within their side. When this is false the view shows
+/// Unified instead.
 pub fn split_fits(width: f32, columns: usize, char_width: f32, side_chrome: f32) -> bool {
     let side = width / 2. - side_chrome;
-    side >= columns.clamp(20, 80) as f32 * char_width
+    side >= columns.clamp(20, SPLIT_MIN_COLUMNS) as f32 * char_width
 }
+
+/// Characters each Split side must show before the diff falls back to
+/// Unified. Kept low so a full-screen 1080p window with display scaling (1280
+/// or 1536 logical pixels) still fits Split beside the details pane.
+pub const SPLIT_MIN_COLUMNS: usize = 40;
 
 /// Heading for a failed request, naming the action and what happened.
 pub fn failure_heading(action: &str, kind: crate::git::FailureKind) -> String {
@@ -305,9 +311,13 @@ mod tests {
         // 7.8 px characters at 12 px code size, 70 px of gutter per side.
         assert!(split_fits(1400., 60, 7.8, 70.));
         assert!(!split_fits(700., 60, 7.8, 70.));
-        // Very long lines count as 80 characters; they clip within each side.
+        // Very long lines count as 40 characters; they wrap within each side.
         assert!(split_fits(1400., 4000, 7.8, 70.));
         assert!(split_fits(560., 5, 7.8, 70.));
+        // Full-screen 1080p at 150% scaling: 1280 logical pixels minus the
+        // 44 px rail and the 360 px details pane leaves 876 px for the diff.
+        assert!(split_fits(876., 120, 7.8, 86.));
+        assert!(!split_fits(600., 120, 7.8, 86.));
     }
 
     #[test]
