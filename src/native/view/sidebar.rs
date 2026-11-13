@@ -28,7 +28,7 @@ impl GitCrab {
             .w_full()
             .h(px(SEAM))
             .flex_none()
-            .bg(rgb(semantic(Role::BorderDivider)))
+            .bg_role(Role::BorderDivider)
     }
 
     fn toggle_collapsed(v: &mut Self, key: &str, w: &mut Window, cx: &mut Context<Self>) {
@@ -47,21 +47,20 @@ impl GitCrab {
         label: &str,
         count: String,
         collapsed: bool,
-        cx: &App,
     ) -> Button {
         self.button(id, "")
             .icon(
                 icon(if collapsed { "right" } else { "down" })
                     .size(px(12.))
-                    .text_color(rgb(semantic(Role::TextMuted))),
+                    .text_role(Role::TextMuted),
             )
             .w_full()
-            .h(type_size(cx, HEADER_HEIGHT))
-            .px(px(INSET))
+            .h(scaled(HEADER_HEIGHT))
+            .px(scaled(INSET))
             .justify_start()
             .font_weight(FontWeight::SEMIBOLD)
-            .text_size(type_size(cx, 11.))
-            .text_color(rgb(semantic(Role::TextSecondary)))
+            .text_size(scaled(11.))
+            .text_role(Role::TextSecondary)
             .tooltip(format!(
                 "{} {}",
                 if collapsed { "Expand" } else { "Collapse" },
@@ -81,7 +80,7 @@ impl GitCrab {
                 div()
                     .flex_none()
                     .font_weight(FontWeight::NORMAL)
-                    .text_color(rgb(semantic(Role::TextMuted)))
+                    .text_role(Role::TextMuted)
                     .child(count),
             )
     }
@@ -113,14 +112,14 @@ impl GitCrab {
                             .icon(
                                 icon(if collapsed { "right" } else { "down" })
                                     .size(px(12.))
-                                    .text_color(rgb(semantic(Role::TextMuted))),
+                                    .text_role(Role::TextMuted),
                             )
                             .w_full()
-                            .h(type_size(cx, ROW_HEIGHT))
+                            .h(scaled(ROW_HEIGHT))
                             .justify_start()
-                            .pl(px(INSET + 4. + (depth - 1) as f32 * INDENT))
-                            .pr(px(INSET))
-                            .text_color(rgb(semantic(Role::TextSecondary)))
+                            .pl(scaled(INSET + 4. + (depth - 1) as f32 * INDENT))
+                            .pr(scaled(INSET))
+                            .text_role(Role::TextSecondary)
                             .tooltip(format!(
                                 "{} {prefix}/",
                                 if collapsed { "Expand" } else { "Collapse" }
@@ -131,11 +130,7 @@ impl GitCrab {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .child(
-                                        icon("folder")
-                                            .size(px(14.))
-                                            .text_color(rgb(semantic(Role::TextMuted))),
-                                    )
+                                    .child(icon("folder").size(px(14.)).text_role(Role::TextMuted))
                                     .child(
                                         div().truncate().child(format!("{}/", parts[depth - 1])),
                                     ),
@@ -174,26 +169,20 @@ impl GitCrab {
                     })))
                     .child(div().flex_1().min_w_0().truncate().child(leaf))
                     .when(current, |row| {
-                        row.child(
-                            icon("check")
-                                .size(px(14.))
-                                .text_color(rgb(semantic(Role::StatusSuccessFg))),
-                        )
+                        row.child(icon("check").size(px(14.)).text_role(Role::StatusSuccessFg))
                     })
                     .w_full()
-                    .h(type_size(cx, ROW_HEIGHT))
+                    .h(scaled(ROW_HEIGHT))
                     .justify_start()
-                    .pl(px(INSET + 18. + depth as f32 * INDENT))
-                    .pr(px(INSET))
+                    .pl(scaled(INSET + 18. + depth as f32 * INDENT))
+                    .pr(scaled(INSET))
                     .text_color(rgb(if current || previewed {
                         semantic(Role::TextDefault)
                     } else {
                         semantic(Role::TextMuted)
                     }))
                     .when(current, |b| b.font_weight(FontWeight::SEMIBOLD))
-                    .when(current && !previewed, |b| {
-                        b.bg(rgb(semantic(Role::StatusSuccessBg)))
-                    })
+                    .when(current && !previewed, |b| b.bg_role(Role::StatusSuccessBg))
                     .map(|b| Self::highlight_sidebar_row(b, previewed))
                     .tooltip(tooltip)
                     .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| on_click(v, e, w, cx))),
@@ -206,7 +195,7 @@ impl GitCrab {
         if self.state.snapshot.is_none() {
             return div()
                 .size_full()
-                .bg(rgb(semantic(Role::SurfaceNav)))
+                .bg_role(Role::SurfaceNav)
                 .into_any_element();
         }
         let changes = self
@@ -239,9 +228,9 @@ impl GitCrab {
             .flex_col()
             .overflow_y_scroll()
             .child(
-                div().px(px(INSET)).py(px(INSET)).child(
+                div().px(scaled(INSET)).py(scaled(INSET)).child(
                     Input::new(&self.reference_search)
-                        .h(px(CONTROL_HEIGHT))
+                        .h(scaled(CONTROL_HEIGHT))
                         .disabled(self.settings_open),
                 ),
             )
@@ -258,8 +247,8 @@ impl GitCrab {
                         },
                     ))
                     .w_full()
-                    .h(type_size(cx, 32.))
-                    .px(px(INSET))
+                    .h(scaled(32.))
+                    .px(scaled(INSET))
                     .justify_start()
                     .map(|button| {
                         Self::highlight_sidebar_row(button, self.state.selected.is_none())
@@ -331,7 +320,6 @@ impl GitCrab {
                             "Local",
                             count_label(local_matches, s.branches.len()),
                             local_collapsed,
-                            cx,
                         )
                         .on_click(cx.listener(move |v, _, w, cx| {
                             Self::toggle_collapsed(v, &local_key, w, cx)
@@ -381,7 +369,6 @@ impl GitCrab {
                                 kind,
                                 count_label(matches, refs.len()),
                                 collapsed,
-                                cx,
                             )
                             .on_click(cx.listener(
                                 move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx),
@@ -406,7 +393,6 @@ impl GitCrab {
                             "Stashes",
                             s.stash_count.to_string(),
                             collapsed,
-                            cx,
                         )
                         .on_click(
                             cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)),
@@ -418,12 +404,12 @@ impl GitCrab {
                             // Pop stash acts on this entry, so name it where the button is.
                             section.child(
                                 div()
-                                    .pl(px(INSET + 18.))
-                                    .pr(px(INSET))
+                                    .pl(scaled(INSET + 18.))
+                                    .pr(scaled(INSET))
                                     .pb_2()
                                     .flex()
                                     .flex_col()
-                                    .text_size(type_size(cx, 12.))
+                                    .text_size(scaled(12.))
                                     .child(
                                         div()
                                             .truncate()
@@ -431,7 +417,7 @@ impl GitCrab {
                                     )
                                     .child(
                                         div()
-                                            .text_color(rgb(semantic(Role::TextMuted)))
+                                            .text_role(Role::TextMuted)
                                             .child(display_date(&stash.date)),
                                     ),
                             )
@@ -444,7 +430,7 @@ impl GitCrab {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(semantic(Role::SurfaceNav)))
+            .bg_role(Role::SurfaceNav)
             .overflow_hidden()
             .child(nav)
             .into_any_element()

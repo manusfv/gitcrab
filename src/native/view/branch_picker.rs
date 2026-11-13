@@ -143,7 +143,7 @@ impl GitCrab {
                     let choose = choose.clone();
                     div()
                         .id(("branch-picker-row", row))
-                        .h(rems(28. / 13.))
+                        .h(scaled(28.))
                         .flex_none()
                         .px_2()
                         .flex()
@@ -151,19 +151,15 @@ impl GitCrab {
                         .gap_2()
                         .rounded(px(3.))
                         .cursor_pointer()
-                        .when(row == index, |r| {
-                            r.bg(rgb(semantic(Role::InteractionSelected)))
-                        })
+                        .when(row == index, |r| r.bg_role(Role::InteractionSelected))
                         .when(row != index, |r| {
-                            r.hover(|r| r.bg(rgb(semantic(Role::InteractionHover))))
+                            r.hover(|r| r.bg_role(Role::InteractionHover))
                         })
                         .child(
                             icon(if is_current { "check" } else { "branch" })
                                 .size(px(14.))
                                 .flex_none()
-                                .when(is_current, |i| {
-                                    i.text_color(rgb(semantic(Role::StatusSuccessFg)))
-                                }),
+                                .when(is_current, |i| i.text_role(Role::StatusSuccessFg)),
                         )
                         .child(
                             div()
@@ -177,8 +173,8 @@ impl GitCrab {
                             r.child(
                                 div()
                                     .flex_none()
-                                    .text_size(rems(11. / 13.))
-                                    .text_color(rgb(semantic(Role::TextMuted)))
+                                    .text_size(scaled(11.))
+                                    .text_role(Role::TextMuted)
                                     .child("checked out"),
                             )
                         })
@@ -240,11 +236,9 @@ impl GitCrab {
                         }
                     })
                     .child(
-                        Input::new(&query).h(rems(32. / 13.)).prefix(
-                            icon("search")
-                                .size(px(14.))
-                                .text_color(rgb(semantic(Role::TextMuted))),
-                        ),
+                        Input::new(&query)
+                            .h(scaled(32.))
+                            .prefix(icon("search").size(px(14.)).text_role(Role::TextMuted)),
                     )
                     .child(
                         div()
@@ -260,8 +254,8 @@ impl GitCrab {
                         el.child(
                             div()
                                 .px_2()
-                                .text_size(rems(12. / 13.))
-                                .text_color(rgb(semantic(Role::TextMuted)))
+                                .text_size(scaled(12.))
+                                .text_role(Role::TextMuted)
                                 .child(note),
                         )
                     })
@@ -269,8 +263,8 @@ impl GitCrab {
                         el.child(
                             div()
                                 .px_2()
-                                .text_size(rems(12. / 13.))
-                                .text_color(rgb(semantic(Role::TextMuted)))
+                                .text_size(scaled(12.))
+                                .text_role(Role::TextMuted)
                                 .child(format!("Switching branches is unavailable. {reason}")),
                         )
                     })

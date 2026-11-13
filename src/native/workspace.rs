@@ -52,16 +52,16 @@ fn tab_chrome(selected: bool) -> Div {
         .items_center()
         .rounded(px(4.))
         .border_b_1()
-        .border_color(rgb(semantic(if selected {
+        .border_role(if selected {
             Role::ActionPrimary
         } else {
             Role::SurfaceChrome
-        })))
-        .bg(rgb(semantic(if selected {
+        })
+        .bg_role(if selected {
             Role::SurfaceOverlay
         } else {
             Role::SurfaceChrome
-        })))
+        })
 }
 
 fn tab_label(id: impl Into<ElementId>, label: String) -> Button {
@@ -70,13 +70,13 @@ fn tab_label(id: impl Into<ElementId>, label: String) -> Button {
         .cursor_default()
         .interaction_highlight(false)
         .small()
-        .h(rems(28. / 13.))
+        .h(scaled(28.))
         .child(
             div()
                 .max_w(px(170.))
                 .truncate()
-                .text_size(rems(14. / 13.))
-                .line_height(rems(20. / 13.))
+                .text_size(scaled(14.))
+                .line_height(scaled(20.))
                 .child(label),
         )
 }
@@ -85,15 +85,15 @@ fn tab_close(id: impl Into<ElementId>) -> Button {
     components::sized(
         Button::new(id).child(
             div()
-                .text_size(rems(16. / 13.))
-                .line_height(rems(16. / 13.))
+                .text_size(scaled(16.))
+                .line_height(scaled(16.))
                 .child("×"),
         ),
         ControlSize::TabClose,
     )
     .ghost()
     .cursor_default()
-    .w(rems(32. / 13.))
+    .w(scaled(32.))
 }
 
 /// The window's repository tabs and their shared open and close actions.
@@ -714,8 +714,8 @@ impl Render for Workspace {
             div()
                 .id("repository-tabs-end")
                 .flex_1()
-                .min_w(rems(8. / 13.))
-                .h(rems(28. / 13.)),
+                .min_w(scaled(8.))
+                .h(scaled(28.)),
         );
         // New tab and the tab list stay outside the scrolling strip so they
         // remain reachable however many tabs are open.
@@ -723,13 +723,13 @@ impl Render for Workspace {
             .ghost()
             .small()
             .tab_stop(true)
-            .w(rems(28. / 13.))
-            .h(rems(28. / 13.))
-            .px(rems(4. / 13.))
+            .w(scaled(28.))
+            .h(scaled(28.))
+            .px(scaled(4.))
             .child(
                 div()
-                    .text_size(rems(16. / 13.))
-                    .line_height(rems(16. / 13.))
+                    .text_size(scaled(16.))
+                    .line_height(scaled(16.))
                     .child("+"),
             )
             .disabled(blocked)
@@ -751,7 +751,7 @@ impl Render for Workspace {
             .ghost()
             .small()
             .tab_stop(true)
-            .h(rems(28. / 13.))
+            .h(scaled(28.))
             .icon(icon("down"))
             .label(format!("{tab_count}"))
             .disabled(blocked)
@@ -829,20 +829,15 @@ impl Render for Workspace {
                     .gap_1()
                     .px_2()
                     .h(px(geometry::SIZE_SHELL_TAB_STRIP))
-                    .bg(rgb(semantic(Role::SurfaceChrome)))
+                    .bg_role(Role::SurfaceChrome)
                     .border_b_1()
-                    .border_color(rgb(semantic(Role::BorderDivider)))
+                    .border_role(Role::BorderDivider)
                     .child(strip)
                     .child(new_tab)
                     .child(tab_list),
             )
             .when_some(self.picker_error.clone(), |el, error| {
-                el.child(
-                    div()
-                        .px_3()
-                        .text_color(rgb(semantic(Role::StatusErrorFg)))
-                        .child(error),
-                )
+                el.child(div().px_3().text_role(Role::StatusErrorFg).child(error))
             })
             .child(
                 div()

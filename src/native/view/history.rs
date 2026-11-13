@@ -59,12 +59,12 @@ impl Decoration {
     }
 
     /// A type marker drawn before the name so tags, remotes and HEAD stay distinct.
-    fn marker(&self, cx: &App) -> Option<AnyElement> {
+    fn marker(&self) -> Option<AnyElement> {
         let glyph = |name: &str| {
             icon(name)
-                .size(type_size(cx, 12.))
+                .size(scaled(12.))
                 .flex_none()
-                .text_color(rgb(semantic(Role::TextSecondary)))
+                .text_role(Role::TextSecondary)
                 .into_any_element()
         };
         match (self.kind, self.target.as_ref().map(|t| t.0)) {
@@ -73,9 +73,9 @@ impl Decoration {
                     .flex_none()
                     .px(px(3.))
                     .rounded(px(3.))
-                    .bg(rgb(semantic(Role::ActionPrimary)))
-                    .text_color(rgb(semantic(Role::TextOnPrimary)))
-                    .text_size(type_size(cx, 10.))
+                    .bg_role(Role::ActionPrimary)
+                    .text_role(Role::TextOnPrimary)
+                    .text_size(scaled(10.))
                     .font_weight(FontWeight::BOLD)
                     .child("HEAD")
                     .into_any_element(),
@@ -191,10 +191,10 @@ impl GitCrab {
 
     pub(super) fn history(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.prepare_column_drag(window, cx);
-        self.history_layout = self
-            .preferences
-            .history_columns
-            .adapted(self.history_available, self.preferences.font_size / 13.);
+        self.history_layout = self.preferences.history_columns.adapted(
+            self.history_available - self.history_gutter(),
+            self.preferences.font_size / 13.,
+        );
         let count = self.state.graph.rows.len();
         let weak = cx.weak_entity();
         let unborn = self
@@ -206,7 +206,7 @@ impl GitCrab {
         let row_height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
             .max(self.preferences.font_size * 20. / 13. + 8.);
         panel()
-            .bg(rgb(semantic(Role::SurfaceCanvas)))
+            .bg_role(Role::SurfaceCanvas)
             .child(
                 div()
                     .relative()
@@ -268,12 +268,12 @@ impl GitCrab {
                                                 .p_4()
                                                 .child(
                                                     div()
-                                                        .text_size(type_size(cx, 16.))
+                                                        .text_size(scaled(16.))
                                                         .child("No commits yet"),
                                                 )
                                                 .child(
                                                     div()
-                                                        .text_color(rgb(semantic(Role::TextMuted)))
+                                                        .text_role(Role::TextMuted)
                                                         .child(format!(
                                                             "{branch} has no commits. Stage files in Working changes and commit them to start its history."
                                                         )),
@@ -296,16 +296,16 @@ impl GitCrab {
                         div()
                             .absolute()
                             .top_0()
-                            .right(px(8.))
-                            .h(type_size(cx, 28.))
+                            .right(scaled(4.))
+                            .h(scaled(28.))
                             .flex()
                             .items_center()
-                            .bg(rgb(semantic(Role::SurfaceChrome)))
+                            .bg_role(Role::SurfaceChrome)
                             .child(
-                                self.button("history-columns", "Columns")
-                                    .icon(icon("down"))
-                                    .h(type_size(cx, 24.))
-                                    .tooltip("Show, order and size history columns")
+                                self.button("history-columns", "")
+                                    .icon(icon("columns").size(scaled(14.)))
+                                    .size(scaled(24.))
+                                    .tooltip("Columns: show, order and size history columns")
                                     .dropdown_menu(move |menu, w, cx| {
                                         Self::columns_menu(weak.clone(), menu, w, cx)
                                     }),
@@ -317,7 +317,7 @@ impl GitCrab {
                     div()
                         .h(px(30.))
                         .px_3()
-                        .text_color(rgb(semantic(Role::TextMuted)))
+                        .text_role(Role::TextMuted)
                         .child(format!("{count} commits shown · history limit reached")),
                 )
             })
@@ -392,7 +392,8 @@ impl GitCrab {
                 .flex()
                 .items_center()
                 .min_w(px(self.history_table_width()))
-                .text_color(rgb(semantic(Role::ActionPrimary)))
+                .pr(px(self.history_gutter()))
+                .text_role(Role::ActionPrimary)
                 .bg(rgb(if self.state.selected.is_none() {
                     semantic(Role::SurfaceWipSelected)
                 } else {
@@ -486,7 +487,7 @@ impl GitCrab {
                                             // the rest, matching the 12px left inset.
                                             .pr(px(WIP_EDITOR_PAD_RIGHT))
                                             .h(px((height - 10.).max(18.)))
-                                            .text_size(type_size(cx, 12.)),
+                                            .text_size(scaled(12.)),
                                     )
                                     .tooltip(|w, cx| {
                                         Tooltip::new("Working changes · commit summary")
@@ -501,8 +502,8 @@ impl GitCrab {
                                 |row| {
                                     row.child(
                                         div()
-                                            .text_size(type_size(cx, 12.))
-                                            .text_color(rgb(semantic(Role::TextMuted)))
+                                            .text_size(scaled(12.))
+                                            .text_role(Role::TextMuted)
                                             .child("No changes"),
                                     )
                                 },
@@ -623,9 +624,10 @@ impl GitCrab {
             .flex()
             .items_center()
             .min_w(px(self.history_table_width()))
+            .pr(px(self.history_gutter()))
             .cursor_pointer()
             .overflow_hidden()
-            .when(selected, |e| e.bg(rgb(semantic(Role::InteractionSelected))))
+            .when(selected, |e| e.bg_role(Role::InteractionSelected))
             .hover(|s| {
                 s.bg(rgb(if selected {
                     semantic(Role::InteractionSelected)
@@ -652,10 +654,10 @@ impl GitCrab {
                         .items_center()
                         .gap_1()
                         .overflow_hidden()
-                        .text_size(type_size(cx, 12.))
-                        .text_color(rgb(semantic(Role::TextDefault)))
+                        .text_size(scaled(12.))
+                        .text_role(Role::TextDefault)
                         .when_some(primary.clone(), |e, primary| {
-                            let marker = primary.marker(cx);
+                            let marker = primary.marker();
                             let label = primary.label();
                             e.child(
                                 self.button(("ref-detail", i), "")
@@ -665,7 +667,7 @@ impl GitCrab {
                                             .flex_1()
                                             .min_w_0()
                                             .truncate()
-                                            .text_color(rgb(semantic(Role::TextDefault)))
+                                            .text_role(Role::TextDefault)
                                             .child(refs),
                                     )
                                     .flex_1()
@@ -673,7 +675,7 @@ impl GitCrab {
                                     .justify_start()
                                     .overflow_hidden()
                                     .px_1()
-                                    .h(px(REF_BADGE_HEIGHT))
+                                    .h(scaled(REF_BADGE_HEIGHT))
                                     .bg(branch_tint(color, REF_TINT))
                                     .tooltip(format!("{label} · Click to preview"))
                                     .on_click(cx.listener({
@@ -691,7 +693,7 @@ impl GitCrab {
                             e.child(
                                 self.button(("ref-more", i), format!("+{others}"))
                                     .flex_none()
-                                    .h(px(REF_BADGE_HEIGHT))
+                                    .h(scaled(REF_BADGE_HEIGHT))
                                     .px(px(4.))
                                     .bg(branch_tint(color, REF_TINT))
                                     .tooltip(format!("{others} more · Open the list of references"))
@@ -851,20 +853,20 @@ impl GitCrab {
                         .flex_none()
                         .whitespace_nowrap()
                         .truncate()
-                        .text_size(type_size(cx, 12.))
+                        .text_size(scaled(12.))
                         .font_family(CODE_FONT)
-                        .text_color(rgb(semantic(Role::TextSecondary)))
+                        .text_role(Role::TextSecondary)
                         .child(c.id[..8.min(c.id.len())].to_string()))
                     .into_any_element(),
                     HistoryColumn::Author => div()
                         .truncate()
-                        .text_color(rgb(semantic(Role::TextSecondary)))
+                        .text_role(Role::TextSecondary)
                         .child(c.author.clone())
                         .into_any_element(),
                     HistoryColumn::Date => div()
                         .truncate()
-                        .text_size(type_size(cx, 12.))
-                        .text_color(rgb(semantic(Role::TextSecondary)))
+                        .text_size(scaled(12.))
+                        .text_role(Role::TextSecondary)
                         .child(display_date(&c.date))
                         .into_any_element(),
                 };
@@ -914,7 +916,7 @@ impl GitCrab {
                     .bottom_0()
                     .left_0()
                     .w(px(2.))
-                    .bg(rgb(semantic(Role::ActionPrimary))),
+                    .bg_role(Role::ActionPrimary),
             );
         }
         let view = cx.entity();

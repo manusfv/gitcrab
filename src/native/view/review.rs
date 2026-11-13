@@ -51,7 +51,7 @@ fn diff_highlights(
         if character.is_whitespace() {
             style.underline = Some(UnderlineStyle {
                 thickness: px(1.),
-                color: Some(rgb(semantic(Role::TextMuted)).into()),
+                color: Some(role_color(Role::TextMuted).into()),
                 wavy: false,
             });
         }
@@ -264,7 +264,7 @@ impl GitCrab {
                     div()
                         .w(px(80.))
                         .flex_none()
-                        .text_color(rgb(semantic(Role::TextMuted)))
+                        .text_role(Role::TextMuted)
                         .child(label),
                 )
                 .child(div().min_w_0().font_family(CODE_FONT).child(value))
@@ -277,8 +277,8 @@ impl GitCrab {
             .justify_center()
             .gap_3()
             .p_4()
-            .child(icon("changes").text_color(rgb(semantic(Role::TextMuted))))
-            .child(div().text_size(type_size(cx, 16.)).child(title))
+            .child(icon("changes").text_role(Role::TextMuted))
+            .child(div().text_size(scaled(16.)).child(title))
             .when(p.preview == Preview::Renamed, |panel| {
                 panel.child(
                     div()
@@ -298,7 +298,7 @@ impl GitCrab {
             .child(
                 div()
                     .max_w(px(520.))
-                    .text_color(rgb(semantic(Role::TextMuted)))
+                    .text_role(Role::TextMuted)
                     .child(detail),
             )
             .when_some(other_side, |panel, (path, staged)| {
@@ -389,7 +389,7 @@ impl GitCrab {
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_color(rgb(semantic(Role::TextMuted)))
+                            .text_role(Role::TextMuted)
                             .child(match &p.original_path {
                                 Some(old) => format!(
                                     "{directory} · renamed from {}",
@@ -464,7 +464,7 @@ impl GitCrab {
             .then_some("Split needs a wider pane · showing Unified");
         let comparison = section_bar()
             .h_auto()
-            .min_h(px(SECTION_HEIGHT))
+            .min_h(scaled(SECTION_HEIGHT))
             .py_1()
             .flex_wrap()
             .when(conflict, |bar| {
@@ -473,8 +473,8 @@ impl GitCrab {
             .when_some(source, |bar, source| bar.child(source))
             .child(
                 div()
-                    .text_size(type_size(cx, 12.))
-                    .text_color(rgb(semantic(Role::TextMuted)))
+                    .text_size(scaled(12.))
+                    .text_role(Role::TextMuted)
                     .child(self.comparison_label(p, conflict)),
             )
             .child(div().flex_1())
@@ -482,8 +482,8 @@ impl GitCrab {
                 bar.child(
                     div()
                         .id("split-fallback")
-                        .text_size(type_size(cx, 12.))
-                        .text_color(rgb(semantic(Role::StatusWarningFg)))
+                        .text_size(scaled(12.))
+                        .text_role(Role::StatusWarningFg)
                         .child(note)
                         .tooltip(|w, cx| {
                             Tooltip::new(
@@ -592,7 +592,7 @@ impl GitCrab {
                 )
             });
         let el = panel()
-            .bg(rgb(semantic(Role::SurfaceCanvas)))
+            .bg_role(Role::SurfaceCanvas)
             .child(header)
             .child(comparison);
         if !text || p.content.lines.is_empty() {
@@ -608,27 +608,22 @@ impl GitCrab {
                         .min_w_0()
                         .px_2()
                         .truncate()
-                        .text_size(type_size(cx, 12.))
+                        .text_size(scaled(12.))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(rgb(semantic(Role::TextSecondary)))
+                        .text_role(Role::TextSecondary)
                         .child(text)
                 };
                 el.child(
                     div()
-                        .h(type_size(cx, 24.))
+                        .h(scaled(24.))
                         .flex_none()
                         .flex()
                         .items_center()
-                        .bg(rgb(semantic(Role::SurfaceChrome)))
+                        .bg_role(Role::SurfaceChrome)
                         .border_b_1()
-                        .border_color(rgb(semantic(Role::BorderDivider)))
+                        .border_role(Role::BorderDivider)
                         .child(label(before))
-                        .child(
-                            div()
-                                .w(px(1.))
-                                .h_full()
-                                .bg(rgb(semantic(Role::BorderDivider))),
-                        )
+                        .child(div().w(px(1.)).h_full().bg_role(Role::BorderDivider))
                         .child(label(after)),
                 )
             })
@@ -690,7 +685,7 @@ impl GitCrab {
         let position = self.viewport_hunk();
         let mut bar = section_bar()
             .h_auto()
-            .min_h(px(SECTION_HEIGHT))
+            .min_h(scaled(SECTION_HEIGHT))
             .py_1()
             .flex_wrap();
         if let Some((position, scrollable)) = position {
@@ -706,8 +701,8 @@ impl GitCrab {
             }
             bar = bar.child(
                 div()
-                    .text_size(type_size(cx, 12.))
-                    .text_color(rgb(semantic(Role::TextMuted)))
+                    .text_size(scaled(12.))
+                    .text_role(Role::TextMuted)
                     .child(if scrollable || total == 1 {
                         format!("Hunk {} of {total}", position.current + 1)
                     } else {
@@ -795,8 +790,8 @@ impl GitCrab {
         bar.when(writing || refreshing, |bar| {
             bar.child(
                 div()
-                    .text_size(type_size(cx, 12.))
-                    .text_color(rgb(semantic(Role::TextSecondary)))
+                    .text_size(scaled(12.))
+                    .text_role(Role::TextSecondary)
                     .child(if refreshing {
                         "Updating diff…".to_string()
                     } else {
@@ -807,17 +802,17 @@ impl GitCrab {
         .when_some(outcome.filter(|_| !writing), |bar, record| {
             bar.child(
                 div()
-                    .text_size(type_size(cx, 12.))
-                    .text_color(rgb(semantic(if record.failure.is_some() {
+                    .text_size(scaled(12.))
+                    .text_role(if record.failure.is_some() {
                         Role::StatusErrorFg
                     } else {
                         Role::StatusSuccessFg
-                    })))
+                    })
                     .child(record.details.clone()),
             )
         })
         .when_some(p.hunk_blocked.clone(), |bar, reason| {
-            bar.child(div().text_size(type_size(cx, 12.)).child(reason))
+            bar.child(div().text_size(scaled(12.)).child(reason))
         })
         .child(div().flex_1())
         .child(
@@ -874,8 +869,8 @@ impl GitCrab {
             .child(div().w(px(260.)).child(Input::new(&self.diff_search)))
             .child(
                 div()
-                    .text_size(type_size(cx, 12.))
-                    .text_color(rgb(semantic(Role::TextMuted)))
+                    .text_size(scaled(12.))
+                    .text_role(Role::TextMuted)
                     .child(status),
             )
             .child(
@@ -961,16 +956,9 @@ impl GitCrab {
             .justify_center()
             .gap_3()
             .p_4()
-            .child(
-                icon(if loading { "refresh" } else { "check" })
-                    .text_color(rgb(semantic(Role::ActionPrimary))),
-            )
-            .child(div().text_size(type_size(cx, 16.)).child(title))
-            .child(
-                div()
-                    .text_color(rgb(semantic(Role::TextMuted)))
-                    .child(detail),
-            )
+            .child(icon(if loading { "refresh" } else { "check" }).text_role(Role::ActionPrimary))
+            .child(div().text_size(scaled(16.)).child(title))
+            .child(div().text_role(Role::TextMuted).child(detail))
             .child(
                 div()
                     .flex()
@@ -1153,7 +1141,7 @@ impl GitCrab {
                 .on_ok(|_,_,_| true)
                 .footer(move |_,cancel,w,cx| {
                     let cancel=div().track_focus(&cancel_focus).rounded(px(4.))
-                        .focus(|s|s.border_2().border_color(rgb(semantic(Role::InteractionFocus))))
+                        .focus(|s|s.border_2().border_role(Role::InteractionFocus))
                         .child(cancel(w,cx)).into_any_element();
                     let weak=weak.clone();
                     let target=target.clone();
@@ -1234,17 +1222,16 @@ impl GitCrab {
             .gap_2()
             .px_2()
             .overflow_hidden()
-            .bg(rgb(semantic(Role::DiffHunkBg)))
+            .bg_role(Role::DiffHunkBg)
             .when(line > 0, |row| {
-                row.border_t_1()
-                    .border_color(rgb(semantic(Role::BorderDivider)))
+                row.border_t_1().border_role(Role::BorderDivider)
             })
-            .text_size(type_size(cx, 12.))
+            .text_size(scaled(12.))
             .child(
                 div()
                     .flex_none()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(semantic(Role::TextSecondary)))
+                    .text_role(Role::TextSecondary)
                     .child(match index {
                         Some(index) => format!("Hunk {} of {total}", index + 1),
                         None => "Hunk".into(),
@@ -1261,7 +1248,7 @@ impl GitCrab {
                 div()
                     .flex_none()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(semantic(Role::TextSecondary)))
+                    .text_role(Role::TextSecondary)
                     .child(label),
             );
         } else if let Some(index) = actions {
@@ -1280,7 +1267,7 @@ impl GitCrab {
                         .w(px(1.))
                         .h(px(14.))
                         .mx_1()
-                        .bg(rgb(semantic(Role::BorderDivider))),
+                        .bg_role(Role::BorderDivider),
                 );
             }
             row = row.child(
@@ -1321,7 +1308,7 @@ impl GitCrab {
                             .w(px(1.))
                             .h(px(14.))
                             .mx_1()
-                            .bg(rgb(semantic(Role::BorderDivider))),
+                            .bg_role(Role::BorderDivider),
                     )
                     .child(
                         self.semantic_button(
@@ -1344,7 +1331,7 @@ impl GitCrab {
                 .flex_none()
                 .font_family(CODE_FONT)
                 .text_size(px(self.preferences.code_size))
-                .text_color(rgb(semantic(Role::TextMuted)))
+                .text_role(Role::TextMuted)
                 .child(format!("@@ {ranges} @@")),
         )
         .child(
@@ -1353,7 +1340,7 @@ impl GitCrab {
                 .truncate()
                 .font_family(CODE_FONT)
                 .text_size(px(self.preferences.code_size))
-                .text_color(rgb(semantic(Role::TextSecondary)))
+                .text_role(Role::TextSecondary)
                 .child(scope.to_string()),
         )
         .into_any_element()
@@ -1408,12 +1395,11 @@ impl GitCrab {
             .overflow_hidden()
             .when(pending, |row| row.opacity(0.35))
             .when(found, |row| {
-                row.border_l_2()
-                    .border_color(rgb(semantic(if current_match {
-                        Role::InteractionFocus
-                    } else {
-                        Role::StatusWarningFg
-                    })))
+                row.border_l_2().border_role(if current_match {
+                    Role::InteractionFocus
+                } else {
+                    Role::StatusWarningFg
+                })
             });
         let cells = if split {
             let (a, b) = p.content.split[i];
@@ -1465,7 +1451,7 @@ impl GitCrab {
                             .w(px(if split { 45. * scale } else { 90. * scale }))
                             .flex_none()
                             .whitespace_nowrap()
-                            .text_color(rgb(semantic(Role::TextMuted)))
+                            .text_role(Role::TextMuted)
                             .child(if split {
                                 (if side == 0 { l.old } else { l.new })
                                     .map(|n| format!("{n:>4}"))

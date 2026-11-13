@@ -3,6 +3,9 @@ use components::rail::RailDrag;
 use gitcrab_core::history_columns::ColumnLayout;
 
 const RESIZE_HALF_WIDTH: f32 = 5.;
+/// Room at the default font size kept clear at the right of the history table
+/// for the floating Columns button, so it never covers a column header.
+const COLUMNS_BUTTON_ROOM: f32 = 32.;
 const GRAPH_LEGEND: &str = "Graph · Each colored lane is a line of history. A dot is a commit, a diamond is a merge or branch point, and the dashed circle is Working changes. Commit details list each parent.";
 
 #[derive(Clone)]
@@ -135,8 +138,17 @@ impl GitCrab {
         )
     }
 
+    /// The trailing padding of the header and every row, under the Columns button.
+    pub(super) fn history_gutter(&self) -> f32 {
+        COLUMNS_BUTTON_ROOM * self.preferences.font_size / 13.
+    }
+    /// The table's minimum width: its visible columns plus the trailing gutter.
     pub(super) fn history_table_width(&self) -> f32 {
-        self.history_layout.visible().map(|entry| entry.width).sum()
+        self.history_layout
+            .visible()
+            .map(|entry| entry.width)
+            .sum::<f32>()
+            + self.history_gutter()
     }
     pub(super) fn history_cell(&self, entry: &ColumnLayout) -> Div {
         column_frame(div(), entry)
@@ -269,13 +281,14 @@ impl GitCrab {
         ));
         div()
             .id("history-header")
-            .h(type_size(cx, 28.))
+            .h(scaled(28.))
+            .pr(px(self.history_gutter()))
             .flex_none()
             .flex()
             .items_center()
-            .bg(rgb(semantic(Role::SurfaceChrome)))
-            .text_size(type_size(cx, 12.))
-            .text_color(rgb(semantic(Role::TextSecondary)))
+            .bg_role(Role::SurfaceChrome)
+            .text_size(scaled(12.))
+            .text_role(Role::TextSecondary)
             .font_weight(FontWeight::MEDIUM)
             .on_drag_move(
                 cx.listener(move |v, event: &DragMoveEvent<DraggedColumn>, w, cx| {
@@ -329,7 +342,7 @@ impl GitCrab {
                                 .h_full()
                                 .flex()
                                 .items_center()
-                                .when(moving, |el| el.bg(rgb(semantic(Role::SurfaceOverlay))))
+                                .when(moving, |el| el.bg_role(Role::SurfaceOverlay))
                                 .child({
                                     let bounds = bounds.clone();
                                     canvas(
@@ -384,8 +397,8 @@ impl GitCrab {
                                         .when(minimized_graph, |el| {
                                             el.child(
                                                 icon("branch")
-                                                    .size(type_size(cx, 14.))
-                                                    .text_color(rgb(semantic(Role::TextSecondary))),
+                                                    .size(scaled(14.))
+                                                    .text_role(Role::TextSecondary),
                                             )
                                         })
                                         .when(!minimized_graph, |el| {

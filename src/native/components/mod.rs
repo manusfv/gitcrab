@@ -37,9 +37,9 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
     };
     button
         .small()
-        .h(rems(h / 13.))
-        .px(rems(padding / 13.))
-        .text_size(rems(font / 13.))
+        .h(scaled(h))
+        .px(scaled(padding))
+        .text_size(scaled(font))
         .rounded(px(3.))
 }
 /// The role a button plays, which selects its palette everywhere it appears.
@@ -65,9 +65,7 @@ pub enum ButtonKind {
 pub fn basic(button: Button, kind: ButtonKind, size: ControlSize) -> Button {
     let button = sized(button, size);
     match kind {
-        ButtonKind::Primary => button
-            .primary()
-            .text_color(rgb(semantic(Role::SurfaceChrome))),
+        ButtonKind::Primary => button.primary().text_role(Role::SurfaceChrome),
         ButtonKind::Ghost => button.ghost(),
         _ => button.with_variant(ButtonVariant::Secondary).outline(),
     }
@@ -88,9 +86,9 @@ impl ButtonExt for Button {
             return button;
         }
         button
-            .bg(rgb(semantic(Role::SurfaceDisabled)))
-            .text_color(rgb(semantic(Role::TextDisabled)))
-            .border_color(rgb(semantic(Role::BorderDivider)))
+            .bg_role(Role::SurfaceDisabled)
+            .text_role(Role::TextDisabled)
+            .border_role(Role::BorderDivider)
             .cursor_not_allowed()
     }
 }
@@ -124,11 +122,11 @@ pub fn style(button: Button, kind: ButtonKind, size: ControlSize, cx: &App) -> B
     };
     sized(button, size).custom(
         ButtonCustomVariant::new(cx)
-            .foreground(rgb(semantic(fg)).into())
-            .color(rgb(semantic(bg)).into())
-            .border(rgb(semantic(border)).into())
-            .hover(rgb(semantic(hover)).into())
-            .active(rgb(semantic(bg)).into()),
+            .foreground(role_color(fg).into())
+            .color(role_color(bg).into())
+            .border(role_color(border).into())
+            .hover(role_color(hover).into())
+            .active(role_color(bg).into()),
     )
 }
 
@@ -159,10 +157,10 @@ pub fn file_action(
                     ControlSize::FileAction
                 },
             )
-            .w(rems(if persistent {
-                geometry::SIZE_FILE_ACTION_COARSE_TARGET / 13.
+            .w(scaled(if persistent {
+                geometry::SIZE_FILE_ACTION_COARSE_TARGET
             } else {
-                geometry::SIZE_FILE_ACTION_TARGET / 13.
+                geometry::SIZE_FILE_ACTION_TARGET
             })),
         )
 }
@@ -186,8 +184,8 @@ pub fn toolbar_command(
         .tab_stop(true)
         .disabled(disabled)
         .when(disabled, |button| button.cursor_not_allowed().opacity(0.7))
-        .h(rems(42. / 13.))
-        .min_w(rems(if labelled { 46. } else { 32. } / 13.))
+        .h(scaled(42.))
+        .min_w(scaled(if labelled { 46. } else { 32. }))
         .px_1()
         .child(
             div()
@@ -204,7 +202,7 @@ pub fn toolbar_command(
                         .when(caret, |row| row.child(icon("down").size(px(10.)))),
                 )
                 .when(labelled, |column| {
-                    column.child(div().text_size(rems(11. / 13.)).child(label))
+                    column.child(div().text_size(scaled(11.)).child(label))
                 }),
         )
 }
@@ -245,8 +243,8 @@ pub fn selector(
                         .when_some(kicker, |label, kicker| {
                             label.child(
                                 div()
-                                    .text_size(rems(11. / 13.))
-                                    .text_color(rgb(semantic(Role::TextMuted)))
+                                    .text_size(scaled(11.))
+                                    .text_role(Role::TextMuted)
                                     .child(kicker.to_owned()),
                             )
                         })

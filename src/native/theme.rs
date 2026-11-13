@@ -15,6 +15,28 @@ pub fn semantic(role: Role) -> u32 {
         role,
     )
 }
+/// Returns the color for a role in the active native palette.
+pub fn role_color(role: Role) -> Rgba {
+    rgb(semantic(role))
+}
+
+/// Styles an element with palette roles instead of raw colors.
+pub trait RoleStyled: Styled + Sized {
+    /// Sets the text color to a role.
+    fn text_role(self, role: Role) -> Self {
+        self.text_color(role_color(role))
+    }
+    /// Sets the background to a role.
+    fn bg_role(self, role: Role) -> Self {
+        self.bg(role_color(role))
+    }
+    /// Sets the border color to a role.
+    fn border_role(self, role: Role) -> Self {
+        self.border_color(role_color(role))
+    }
+}
+impl<T: Styled> RoleStyled for T {}
+
 pub fn lanes() -> [u32; 8] {
     [
         Role::GraphLane1,
@@ -59,7 +81,16 @@ pub const CONTROL_RADIUS: f32 = 4.;
 pub const GLYPH_SIZE: f32 = 16.;
 pub const SECTION_INSET: f32 = 12.;
 pub const SEAM: f32 = 1.;
-/// Scales a size specified for the default 13-pixel font to the current font size.
+/// Scales a size given in pixels at the default 13-pixel font to the current
+/// font size.
+///
+/// The root view sets the rem to the font size, so every length built with
+/// this grows and shrinks with the font-size preference. Use it for padding,
+/// heights and gaps; keep `px` for hairlines, radii and measured widths.
+pub fn scaled(base: f32) -> Rems {
+    rems(base / 13.)
+}
+/// The pixel value of [`scaled`], for layout arithmetic.
 pub fn type_size(cx: &App, base: f32) -> Pixels {
     px(f32::from(Theme::global(cx).font_size) * base / 13.)
 }
@@ -108,116 +139,116 @@ pub fn install(cx: &mut App) {
     t.font_size = font_size;
     t.radius = px(CONTROL_RADIUS);
     t.radius_lg = px(10.);
-    t.colors.background = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.foreground = rgb(semantic(Role::TextDefault)).into();
+    t.colors.background = role_color(Role::SurfacePanel).into();
+    t.colors.foreground = role_color(Role::TextDefault).into();
     // Resting control outlines share the quiet pane boundary. Focus and
     // semantic actions supply their own stronger, meaningful outlines.
-    t.colors.border = rgb(semantic(Role::BorderDivider)).into();
-    t.colors.primary = rgb(semantic(Role::ActionPrimary)).into();
-    t.colors.input = rgb(semantic(Role::BorderDivider)).into();
-    t.colors.popover = rgb(semantic(Role::SurfaceOverlay)).into();
-    t.colors.popover_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.secondary = rgb(semantic(Role::SurfaceOverlay)).into();
-    t.colors.secondary_hover = rgb(semantic(Role::InteractionHover)).into();
-    t.colors.list = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.list_hover = rgb(semantic(Role::InteractionHover)).into();
-    t.colors.primary_foreground = rgb(semantic(Role::TextOnPrimary)).into();
-    t.colors.primary_hover = rgb(semantic(Role::ActionPrimaryHover)).into();
-    t.colors.muted_foreground = rgb(semantic(Role::TextMuted)).into();
-    t.colors.ring = rgb(semantic(Role::InteractionFocus)).into();
-    t.colors.accent = rgb(semantic(Role::InteractionHover)).into();
-    t.colors.accent_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.caret = rgb(semantic(Role::ActionPrimary)).into();
-    t.colors.selection = rgb(semantic(Role::InteractionSelected)).into();
-    t.colors.secondary_active = rgb(semantic(Role::InteractionSelected)).into();
-    t.colors.secondary_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.primary_active = rgb(semantic(Role::ActionPrimaryPressed)).into();
-    t.colors.danger = rgb(semantic(Role::StatusErrorFg)).into();
-    t.colors.danger_foreground = rgb(semantic(Role::SurfaceCanvas)).into();
-    t.colors.danger_hover = rgb(semantic(Role::StatusErrorFg)).into();
-    t.colors.danger_active = rgb(semantic(Role::StatusErrorFg)).into();
-    t.colors.list_active = rgb(semantic(Role::InteractionSelected)).into();
-    t.colors.list_active_border = rgb(semantic(Role::ActionPrimary)).into();
-    t.colors.success = rgb(semantic(Role::StatusSuccessFg)).into();
-    t.colors.success_foreground = rgb(semantic(Role::StatusSuccessBg)).into();
-    t.colors.warning = rgb(semantic(Role::StatusWarningFg)).into();
-    t.colors.warning_foreground = rgb(semantic(Role::StatusWarningBg)).into();
+    t.colors.border = role_color(Role::BorderDivider).into();
+    t.colors.primary = role_color(Role::ActionPrimary).into();
+    t.colors.input = role_color(Role::BorderDivider).into();
+    t.colors.popover = role_color(Role::SurfaceOverlay).into();
+    t.colors.popover_foreground = role_color(Role::TextDefault).into();
+    t.colors.secondary = role_color(Role::SurfaceOverlay).into();
+    t.colors.secondary_hover = role_color(Role::InteractionHover).into();
+    t.colors.list = role_color(Role::SurfacePanel).into();
+    t.colors.list_hover = role_color(Role::InteractionHover).into();
+    t.colors.primary_foreground = role_color(Role::TextOnPrimary).into();
+    t.colors.primary_hover = role_color(Role::ActionPrimaryHover).into();
+    t.colors.muted_foreground = role_color(Role::TextMuted).into();
+    t.colors.ring = role_color(Role::InteractionFocus).into();
+    t.colors.accent = role_color(Role::InteractionHover).into();
+    t.colors.accent_foreground = role_color(Role::TextDefault).into();
+    t.colors.caret = role_color(Role::ActionPrimary).into();
+    t.colors.selection = role_color(Role::InteractionSelected).into();
+    t.colors.secondary_active = role_color(Role::InteractionSelected).into();
+    t.colors.secondary_foreground = role_color(Role::TextDefault).into();
+    t.colors.primary_active = role_color(Role::ActionPrimaryPressed).into();
+    t.colors.danger = role_color(Role::StatusErrorFg).into();
+    t.colors.danger_foreground = role_color(Role::SurfaceCanvas).into();
+    t.colors.danger_hover = role_color(Role::StatusErrorFg).into();
+    t.colors.danger_active = role_color(Role::StatusErrorFg).into();
+    t.colors.list_active = role_color(Role::InteractionSelected).into();
+    t.colors.list_active_border = role_color(Role::ActionPrimary).into();
+    t.colors.success = role_color(Role::StatusSuccessFg).into();
+    t.colors.success_foreground = role_color(Role::StatusSuccessBg).into();
+    t.colors.warning = role_color(Role::StatusWarningFg).into();
+    t.colors.warning_foreground = role_color(Role::StatusWarningBg).into();
     t.colors.overlay = rgba(semantic(Role::OverlayScrim)).into();
-    t.colors.scrollbar_thumb = rgb(semantic(Role::BorderControl)).into();
-    t.colors.scrollbar_thumb_hover = rgb(semantic(Role::TextSecondary)).into();
-    t.colors.accordion = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.accordion_hover = rgb(semantic(Role::InteractionHover)).into();
-    t.colors.group_box = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.group_box_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.chart_1 = rgb(semantic(Role::GraphLane1)).into();
-    t.colors.chart_2 = rgb(semantic(Role::GraphLane2)).into();
-    t.colors.chart_3 = rgb(semantic(Role::GraphLane3)).into();
-    t.colors.chart_4 = rgb(semantic(Role::GraphLane4)).into();
-    t.colors.chart_5 = rgb(semantic(Role::GraphLane5)).into();
-    t.colors.description_list_label = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.description_list_label_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.drag_border = rgb(semantic(Role::BorderDivider)).into();
-    t.colors.drop_target = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.info = rgb(semantic(Role::StatusInfoFg)).into();
-    t.colors.info_active = rgb(semantic(Role::StatusInfoFg)).into();
-    t.colors.info_foreground = rgb(semantic(Role::StatusInfoBg)).into();
-    t.colors.info_hover = rgb(semantic(Role::StatusInfoFg)).into();
-    t.colors.link = rgb(semantic(Role::ActionPrimary)).into();
-    t.colors.link_active = rgb(semantic(Role::InteractionSelected)).into();
-    t.colors.link_hover = rgb(semantic(Role::InteractionHover)).into();
-    t.colors.list_even = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.list_head = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.muted = rgb(semantic(Role::SurfaceChrome)).into();
-    t.colors.progress_bar = rgb(semantic(Role::ActionPrimary)).into();
-    t.colors.scrollbar = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.sidebar = rgb(semantic(Role::SurfaceNav)).into();
-    t.colors.sidebar_accent = rgb(semantic(Role::InteractionSelected)).into();
-    t.colors.sidebar_accent_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.sidebar_border = rgb(semantic(Role::BorderDivider)).into();
-    t.colors.sidebar_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.sidebar_primary = rgb(semantic(Role::ActionPrimary)).into();
-    t.colors.sidebar_primary_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.skeleton = rgb(semantic(Role::SurfaceChrome)).into();
-    t.colors.slider_bar = rgb(semantic(Role::ActionPrimary)).into();
-    t.colors.slider_thumb = rgb(semantic(Role::ActionPrimary)).into();
-    t.colors.success_hover = rgb(semantic(Role::StatusSuccessFg)).into();
-    t.colors.success_active = rgb(semantic(Role::StatusSuccessFg)).into();
-    t.colors.bullish = rgb(semantic(Role::StatusSuccessFg)).into();
-    t.colors.bearish = rgb(semantic(Role::StatusErrorFg)).into();
-    t.colors.switch = rgb(semantic(Role::SurfaceChrome)).into();
-    t.colors.switch_thumb = rgb(semantic(Role::TextSecondary)).into();
-    t.colors.tab = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.tab_active = rgb(semantic(Role::InteractionSelected)).into();
-    t.colors.tab_active_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.tab_bar = rgb(semantic(Role::SurfaceChrome)).into();
-    t.colors.tab_bar_segmented = rgb(semantic(Role::SurfaceChrome)).into();
-    t.colors.tab_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.table = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.table_active = rgb(semantic(Role::InteractionSelected)).into();
-    t.colors.table_active_border = rgb(semantic(Role::BorderDivider)).into();
-    t.colors.table_even = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.table_head = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.table_head_foreground = rgb(semantic(Role::TextDefault)).into();
-    t.colors.table_hover = rgb(semantic(Role::InteractionHover)).into();
-    t.colors.table_row_border = rgb(semantic(Role::BorderDivider)).into();
-    t.colors.title_bar = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.title_bar_border = rgb(semantic(Role::BorderDivider)).into();
-    t.colors.tiles = rgb(semantic(Role::SurfacePanel)).into();
-    t.colors.warning_active = rgb(semantic(Role::StatusWarningFg)).into();
-    t.colors.warning_hover = rgb(semantic(Role::StatusWarningFg)).into();
-    t.colors.window_border = rgb(semantic(Role::BorderDivider)).into();
-    t.colors.red = rgb(semantic(Role::StatusErrorFg)).into();
-    t.colors.red_light = rgb(semantic(Role::StatusErrorBg)).into();
-    t.colors.green = rgb(semantic(Role::StatusSuccessFg)).into();
-    t.colors.green_light = rgb(semantic(Role::StatusSuccessBg)).into();
-    t.colors.blue = rgb(semantic(Role::StatusInfoFg)).into();
-    t.colors.blue_light = rgb(semantic(Role::StatusInfoBg)).into();
-    t.colors.yellow = rgb(semantic(Role::StatusWarningFg)).into();
-    t.colors.yellow_light = rgb(semantic(Role::StatusWarningBg)).into();
-    t.colors.magenta = rgb(semantic(Role::StatusConflictFg)).into();
-    t.colors.magenta_light = rgb(semantic(Role::StatusConflictBg)).into();
-    t.colors.cyan = rgb(semantic(Role::StatusInfoFg)).into();
-    t.colors.cyan_light = rgb(semantic(Role::StatusInfoBg)).into();
+    t.colors.scrollbar_thumb = role_color(Role::BorderControl).into();
+    t.colors.scrollbar_thumb_hover = role_color(Role::TextSecondary).into();
+    t.colors.accordion = role_color(Role::SurfacePanel).into();
+    t.colors.accordion_hover = role_color(Role::InteractionHover).into();
+    t.colors.group_box = role_color(Role::SurfacePanel).into();
+    t.colors.group_box_foreground = role_color(Role::TextDefault).into();
+    t.colors.chart_1 = role_color(Role::GraphLane1).into();
+    t.colors.chart_2 = role_color(Role::GraphLane2).into();
+    t.colors.chart_3 = role_color(Role::GraphLane3).into();
+    t.colors.chart_4 = role_color(Role::GraphLane4).into();
+    t.colors.chart_5 = role_color(Role::GraphLane5).into();
+    t.colors.description_list_label = role_color(Role::SurfacePanel).into();
+    t.colors.description_list_label_foreground = role_color(Role::TextDefault).into();
+    t.colors.drag_border = role_color(Role::BorderDivider).into();
+    t.colors.drop_target = role_color(Role::SurfacePanel).into();
+    t.colors.info = role_color(Role::StatusInfoFg).into();
+    t.colors.info_active = role_color(Role::StatusInfoFg).into();
+    t.colors.info_foreground = role_color(Role::StatusInfoBg).into();
+    t.colors.info_hover = role_color(Role::StatusInfoFg).into();
+    t.colors.link = role_color(Role::ActionPrimary).into();
+    t.colors.link_active = role_color(Role::InteractionSelected).into();
+    t.colors.link_hover = role_color(Role::InteractionHover).into();
+    t.colors.list_even = role_color(Role::SurfacePanel).into();
+    t.colors.list_head = role_color(Role::SurfacePanel).into();
+    t.colors.muted = role_color(Role::SurfaceChrome).into();
+    t.colors.progress_bar = role_color(Role::ActionPrimary).into();
+    t.colors.scrollbar = role_color(Role::SurfacePanel).into();
+    t.colors.sidebar = role_color(Role::SurfaceNav).into();
+    t.colors.sidebar_accent = role_color(Role::InteractionSelected).into();
+    t.colors.sidebar_accent_foreground = role_color(Role::TextDefault).into();
+    t.colors.sidebar_border = role_color(Role::BorderDivider).into();
+    t.colors.sidebar_foreground = role_color(Role::TextDefault).into();
+    t.colors.sidebar_primary = role_color(Role::ActionPrimary).into();
+    t.colors.sidebar_primary_foreground = role_color(Role::TextDefault).into();
+    t.colors.skeleton = role_color(Role::SurfaceChrome).into();
+    t.colors.slider_bar = role_color(Role::ActionPrimary).into();
+    t.colors.slider_thumb = role_color(Role::ActionPrimary).into();
+    t.colors.success_hover = role_color(Role::StatusSuccessFg).into();
+    t.colors.success_active = role_color(Role::StatusSuccessFg).into();
+    t.colors.bullish = role_color(Role::StatusSuccessFg).into();
+    t.colors.bearish = role_color(Role::StatusErrorFg).into();
+    t.colors.switch = role_color(Role::SurfaceChrome).into();
+    t.colors.switch_thumb = role_color(Role::TextSecondary).into();
+    t.colors.tab = role_color(Role::SurfacePanel).into();
+    t.colors.tab_active = role_color(Role::InteractionSelected).into();
+    t.colors.tab_active_foreground = role_color(Role::TextDefault).into();
+    t.colors.tab_bar = role_color(Role::SurfaceChrome).into();
+    t.colors.tab_bar_segmented = role_color(Role::SurfaceChrome).into();
+    t.colors.tab_foreground = role_color(Role::TextDefault).into();
+    t.colors.table = role_color(Role::SurfacePanel).into();
+    t.colors.table_active = role_color(Role::InteractionSelected).into();
+    t.colors.table_active_border = role_color(Role::BorderDivider).into();
+    t.colors.table_even = role_color(Role::SurfacePanel).into();
+    t.colors.table_head = role_color(Role::SurfacePanel).into();
+    t.colors.table_head_foreground = role_color(Role::TextDefault).into();
+    t.colors.table_hover = role_color(Role::InteractionHover).into();
+    t.colors.table_row_border = role_color(Role::BorderDivider).into();
+    t.colors.title_bar = role_color(Role::SurfacePanel).into();
+    t.colors.title_bar_border = role_color(Role::BorderDivider).into();
+    t.colors.tiles = role_color(Role::SurfacePanel).into();
+    t.colors.warning_active = role_color(Role::StatusWarningFg).into();
+    t.colors.warning_hover = role_color(Role::StatusWarningFg).into();
+    t.colors.window_border = role_color(Role::BorderDivider).into();
+    t.colors.red = role_color(Role::StatusErrorFg).into();
+    t.colors.red_light = role_color(Role::StatusErrorBg).into();
+    t.colors.green = role_color(Role::StatusSuccessFg).into();
+    t.colors.green_light = role_color(Role::StatusSuccessBg).into();
+    t.colors.blue = role_color(Role::StatusInfoFg).into();
+    t.colors.blue_light = role_color(Role::StatusInfoBg).into();
+    t.colors.yellow = role_color(Role::StatusWarningFg).into();
+    t.colors.yellow_light = role_color(Role::StatusWarningBg).into();
+    t.colors.magenta = role_color(Role::StatusConflictFg).into();
+    t.colors.magenta_light = role_color(Role::StatusConflictBg).into();
+    t.colors.cyan = role_color(Role::StatusInfoFg).into();
+    t.colors.cyan_light = role_color(Role::StatusInfoBg).into();
 }
 pub fn panel() -> Div {
     div()
@@ -226,20 +257,20 @@ pub fn panel() -> Div {
         .size_full()
         .min_w_0()
         .min_h_0()
-        .bg(rgb(semantic(Role::SurfacePanel)))
+        .bg_role(Role::SurfacePanel)
         .overflow_hidden()
 }
 pub fn section_bar() -> Div {
     div()
-        .h(px(SECTION_HEIGHT))
+        .h(scaled(SECTION_HEIGHT))
         .flex_none()
         .flex()
         .items_center()
         .gap_2()
-        .px(px(SECTION_INSET))
-        .bg(rgb(semantic(Role::SurfaceChrome)))
+        .px(scaled(SECTION_INSET))
+        .bg_role(Role::SurfaceChrome)
         .border_b_1()
-        .border_color(rgb(semantic(Role::BorderDivider)))
+        .border_role(Role::BorderDivider)
 }
 
 pub fn segmented_group() -> Div {
@@ -249,8 +280,8 @@ pub fn segmented_group() -> Div {
         .items_center()
         .rounded(px(CONTROL_RADIUS))
         .border_1()
-        .border_color(rgb(semantic(Role::BorderDivider)))
-        .bg(rgb(semantic(Role::SurfaceChrome)))
+        .border_role(Role::BorderDivider)
+        .bg_role(Role::SurfaceChrome)
 }
 
 pub fn icon(name: &str) -> gpui_component::Icon {
@@ -265,7 +296,7 @@ pub fn badge(label: impl Into<SharedString>, color: u32) -> Div {
         .rounded(px(4.))
         .bg(tint(color, 0x18))
         .text_color(rgb(color))
-        .text_size(rems(12. / 13.))
+        .text_size(scaled(12.))
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .child(label.into())
@@ -288,5 +319,5 @@ pub fn separator() -> Div {
         .h(px(22.))
         .mx_2()
         .flex_none()
-        .bg(rgb(semantic(Role::BorderDivider)))
+        .bg_role(Role::BorderDivider)
 }

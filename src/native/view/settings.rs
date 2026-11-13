@@ -26,7 +26,7 @@ impl GitCrab {
                 .w(px(480.))
                 .p_4()
                 .child(div().children(content))
-                .footer(move |_, _, _, cx| {
+                .footer(move |_, _, _, _| {
                     let (text, role) = match &status {
                         AppearanceStatus::Idle => (
                             "Changes apply immediately and save automatically.".to_owned(),
@@ -44,15 +44,15 @@ impl GitCrab {
                             .id("appearance-save-status")
                             .flex_1()
                             .min_w_0()
-                            .text_size(type_size(cx, 12.))
-                            .text_color(rgb(semantic(role)))
+                            .text_size(scaled(12.))
+                            .text_role(role)
                             .child(text)
                             .into_any_element(),
                         Button::new("settings-close")
                             .label("Close")
                             .primary()
                             .small()
-                            .h(px(CONTROL_HEIGHT))
+                            .h(scaled(CONTROL_HEIGHT))
                             .tab_stop(true)
                             .on_click(move |_, w, cx| {
                                 // The same persistence path as Escape and dismissal.
@@ -84,12 +84,12 @@ impl GitCrab {
         cx.notify();
     }
 
-    fn settings_group(&self, title: &'static str, cx: &mut Context<Self>) -> Div {
+    fn settings_group(&self, title: &'static str) -> Div {
         div().flex().flex_col().gap_2().child(
             div()
-                .text_size(type_size(cx, 12.))
+                .text_size(scaled(12.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(semantic(Role::TextSecondary)))
+                .text_role(Role::TextSecondary)
                 .child(title),
         )
     }
@@ -165,17 +165,17 @@ impl GitCrab {
     }
 
     pub(super) fn settings_dialog(&self, height: f32, cx: &mut Context<Self>) -> AnyElement {
-        let small = type_size(cx, 12.);
+        let small = scaled(12.);
         let muted = |text: &'static str| {
             div()
                 .text_size(small)
-                .text_color(rgb(semantic(Role::TextMuted)))
+                .text_role(Role::TextMuted)
                 .child(text)
         };
         // Every preference resolves to the dark palette, so state it plainly
         // instead of offering a choice with no effect.
         let theme = self
-            .settings_group("Theme", cx)
+            .settings_group("Theme")
             .child("Dark")
             .child(muted("GitCrab currently has one theme."));
         #[cfg(feature = "native-evidence")]
@@ -186,14 +186,14 @@ impl GitCrab {
             )
             .on_click(|_, _, cx| super::super::theme::toggle_validation_palette(cx)),
         );
-        let text = self.settings_group("Text", cx).child(self.settings_stepper(
+        let text = self.settings_group("Text").child(self.settings_stepper(
             0,
             "Text size",
             self.preferences.font_size,
             cx,
         ));
         let code = self
-            .settings_group("Code", cx)
+            .settings_group("Code")
             .child(self.settings_stepper(3, "Code text size", self.preferences.code_size, cx))
             .child(
                 self.action_button(
@@ -213,7 +213,7 @@ impl GitCrab {
                 })),
             );
         let layout = self
-            .settings_group("Panel layout", cx)
+            .settings_group("Panel layout")
             .child(
                 self.action_button(
                     "settings-density",
@@ -278,7 +278,7 @@ impl GitCrab {
                         cx.notify();
                     })),
             );
-        let about = self.settings_group("About", cx).child(muted(concat!(
+        let about = self.settings_group("About").child(muted(concat!(
             "GitCrab ",
             env!("CARGO_PKG_VERSION"),
             " · ",
@@ -290,9 +290,9 @@ impl GitCrab {
             .overflow_y_scroll()
             .w(px(430.))
             .rounded(px(10.))
-            .bg(rgb(semantic(Role::SurfaceOverlay)))
+            .bg_role(Role::SurfaceOverlay)
             .border_1()
-            .border_color(rgb(semantic(Role::BorderDivider)))
+            .border_role(Role::BorderDivider)
             .p_4()
             .flex()
             .flex_col()

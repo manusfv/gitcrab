@@ -77,24 +77,24 @@ impl GitCrab {
             ));
         }
         let view = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, _, _| {
             let accepted = view.clone();
             let closed = view.clone();
             let location = location.clone();
-            let small = type_size(cx, 12.);
+            let small = scaled(12.);
             let content = div()
                 .flex()
                 .flex_col()
                 .gap_2()
                 .child(
                     div()
-                        .text_size(type_size(cx, 16.))
+                        .text_size(scaled(16.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(name.clone()),
                 )
                 .child(
                     div()
-                        .text_color(rgb(semantic(Role::TextSecondary)))
+                        .text_role(Role::TextSecondary)
                         .child(shown.clone()),
                 )
                 .child(
@@ -104,7 +104,7 @@ impl GitCrab {
                     div()
                         .mt_1()
                         .text_size(small)
-                        .text_color(rgb(semantic(Role::TextMuted)))
+                        .text_role(Role::TextMuted)
                         .font_weight(FontWeight::MEDIUM)
                         .child("Details"),
                 )
@@ -115,13 +115,13 @@ impl GitCrab {
                         .flex_col()
                         .child(
                             div()
-                                .text_color(rgb(semantic(Role::TextMuted)))
+                                .text_role(Role::TextMuted)
                                 .child(*label),
                         )
                         .child(
                             div()
                                 .font_family(CODE_FONT)
-                                .text_color(rgb(semantic(Role::TextSecondary)))
+                                .text_role(Role::TextSecondary)
                                 .child(path.clone()),
                         )
                 }))
@@ -129,7 +129,7 @@ impl GitCrab {
                     div()
                         .mt_2()
                         .text_size(small)
-                        .text_color(rgb(semantic(Role::TextSecondary)))
+                        .text_role(Role::TextSecondary)
                         .child("Trust and open remembers this approval for these paths, including after restart. Cancel opens nothing."),
                 );
             dialog

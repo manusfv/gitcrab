@@ -287,9 +287,9 @@ impl GitCrab {
                 .px_3()
                 .py_2()
                 .rounded(px(6.))
-                .bg(rgb(semantic(Role::SurfacePanel)))
+                .bg_role(Role::SurfacePanel)
                 .border_1()
-                .border_color(rgb(semantic(Role::ActionPrimary)))
+                .border_role(Role::ActionPrimary)
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -304,7 +304,7 @@ impl GitCrab {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(icon("branch-plus").size(px(GLYPH_SIZE)))
+                        .child(icon("branch-plus").size(scaled(GLYPH_SIZE)))
                         .child(
                             div()
                                 .flex_none()
@@ -339,8 +339,8 @@ impl GitCrab {
                 .when_some(prompt.error.clone(), |el, error| {
                     el.child(
                         div()
-                            .text_size(type_size(cx, 12.))
-                            .text_color(rgb(semantic(Role::StatusErrorFg)))
+                            .text_size(scaled(12.))
+                            .text_role(Role::StatusErrorFg)
                             .child(error),
                     )
                 })

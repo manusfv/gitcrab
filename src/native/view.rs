@@ -1011,7 +1011,7 @@ impl GitCrab {
     }
     fn inspector_editor_width(&self) -> f32 {
         (self.actual_inspector_width[usize::from(self.state.diff_context.is_some())]
-            - (2. * INSPECTOR_INSET + SEAM))
+            - (2. * INSPECTOR_INSET * self.preferences.font_size / 13. + SEAM))
             .max(100.)
     }
     fn search_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1569,7 +1569,7 @@ impl GitCrab {
         Button::new("toolbar-pull-menu")
             .ghost()
             .tab_stop(true)
-            .h(rems(42. / 13.))
+            .h(scaled(42.))
             .w(px(12. * ui_scale.max(0.5)))
             .px_0()
             .child(icon("down").size(px(10.)))
@@ -1667,7 +1667,7 @@ impl GitCrab {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_color(rgb(semantic(Role::TextSecondary)))
+                                .text_role(Role::TextSecondary)
                                 .child(repo.clone()),
                         )
                         .child(
@@ -1692,7 +1692,7 @@ impl GitCrab {
                                 .flex()
                                 .gap_2()
                                 .border_b_1()
-                                .border_color(rgb(semantic(Role::BorderDivider)))
+                                .border_role(Role::BorderDivider)
                                 .child(
                                     div()
                                         .flex_1()
@@ -1715,28 +1715,26 @@ impl GitCrab {
                                                 })
                                                 .child(
                                                     div()
-                                                        .text_color(rgb(semantic(
-                                                            if r.failure.is_some() {
-                                                                Role::StatusErrorFg
-                                                            } else {
-                                                                Role::StatusSuccessFg
-                                                            },
-                                                        )))
+                                                        .text_role(if r.failure.is_some() {
+                                                            Role::StatusErrorFg
+                                                        } else {
+                                                            Role::StatusSuccessFg
+                                                        })
                                                         .child(r.status()),
                                                 ),
                                         )
                                         .child(
                                             div()
-                                                .text_size(type_size(cx, 12.))
-                                                .text_color(rgb(semantic(Role::TextMuted)))
+                                                .text_size(scaled(12.))
+                                                .text_role(Role::TextMuted)
                                                 .child(gitcrab_core::presentation::elapsed_label(
                                                     r.at.elapsed().as_secs(),
                                                 )),
                                         )
                                         .child(
                                             div()
-                                                .text_size(type_size(cx, 12.))
-                                                .text_color(rgb(semantic(Role::TextSecondary)))
+                                                .text_size(scaled(12.))
+                                                .text_role(Role::TextSecondary)
                                                 .child(r.details.clone()),
                                         ),
                                 )
@@ -2023,8 +2021,8 @@ impl GitCrab {
             .selected(selected)
             .when(selected, |button| {
                 button
-                    .bg(rgb(semantic(Role::InteractionSelected)))
-                    .text_color(rgb(semantic(Role::TextDefault)))
+                    .bg_role(Role::InteractionSelected)
+                    .text_role(Role::TextDefault)
             })
     }
 
@@ -2035,8 +2033,8 @@ impl GitCrab {
         name: impl Into<SharedString>,
     ) -> Button {
         self.button(id, "")
-            .icon(icon(glyph).size(px(GLYPH_SIZE)))
-            .size(px(CONTROL_HEIGHT))
+            .icon(icon(glyph).size(scaled(GLYPH_SIZE)))
+            .size(scaled(CONTROL_HEIGHT))
             .flex_none()
             .tooltip(name)
     }
@@ -2055,9 +2053,9 @@ impl GitCrab {
                 .h(px(height))
                 .px_2()
                 .rounded(px(6.))
-                .bg(rgb(semantic(Role::SurfaceChrome)))
+                .bg_role(Role::SurfaceChrome)
                 .overflow_hidden()
-                .text_color(rgb(semantic(Role::TextMuted)))
+                .text_role(Role::TextMuted)
                 .child(if value.is_empty() {
                     placeholder.to_string()
                 } else {
@@ -2074,8 +2072,8 @@ impl GitCrab {
     fn highlight_sidebar_row(button: Button, highlighted: bool) -> Button {
         button.selected(highlighted).when(highlighted, |button| {
             button
-                .bg(rgb(semantic(Role::ActionAccentTintHover)))
-                .text_color(rgb(semantic(Role::TextDefault)))
+                .bg_role(Role::ActionAccentTintHover)
+                .text_role(Role::TextDefault)
         })
     }
 
@@ -2090,8 +2088,8 @@ impl GitCrab {
         panel()
             .relative()
             .track_focus(&self.focus)
-            .bg(rgb(semantic(Role::SurfaceCanvas)))
-            .text_color(rgb(semantic(Role::TextDefault)))
+            .bg_role(Role::SurfaceCanvas)
+            .text_role(Role::TextDefault)
             .text_size(px(self.preferences.font_size))
             .items_center()
             .justify_center()
@@ -2100,7 +2098,7 @@ impl GitCrab {
             .child(super::assets::logo(!Theme::global(cx).is_dark()).size(px(52.)))
             .child(
                 div()
-                    .text_size(type_size(cx, 22.))
+                    .text_size(scaled(22.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(if loading {
                         "Opening repository…"
@@ -2110,7 +2108,7 @@ impl GitCrab {
             )
             .when(!loading, |el| {
                 el.child(
-                    div().text_color(rgb(semantic(Role::TextSecondary))).child(
+                    div().text_role(Role::TextSecondary).child(
                         "Choose a local Git repository to browse history and review changes.",
                     ),
                 )
@@ -2134,13 +2132,13 @@ impl GitCrab {
                             .gap_1()
                             .child(
                                 div()
-                                    .text_color(rgb(semantic(Role::TextMuted)))
+                                    .text_role(Role::TextMuted)
                                     .child("Recent repositories"),
                             )
                             .child(
                                 div()
                                     .id("new-tab-recent-list")
-                                    .max_h(type_size(cx, 180.))
+                                    .max_h(scaled(180.))
                                     .overflow_y_scroll()
                                     .children(
                                         path_labels(&recent)
@@ -2151,7 +2149,7 @@ impl GitCrab {
                                                 self.button(("new-tab-recent", index), "")
                                                     .icon(icon("history"))
                                                     .w_full()
-                                                    .h(type_size(cx, 40.))
+                                                    .h(scaled(40.))
                                                     .justify_start()
                                                     .overflow_hidden()
                                                     .child(
@@ -2168,10 +2166,8 @@ impl GitCrab {
                                                             .child(
                                                                 div()
                                                                     .truncate()
-                                                                    .text_size(type_size(cx, 11.))
-                                                                    .text_color(rgb(semantic(
-                                                                        Role::TextMuted,
-                                                                    )))
+                                                                    .text_size(scaled(11.))
+                                                                    .text_role(Role::TextMuted)
                                                                     .child(label.location),
                                                             ),
                                                     )
@@ -2192,8 +2188,8 @@ impl GitCrab {
                             .child(
                                 div()
                                     .pt_1()
-                                    .text_size(type_size(cx, 11.))
-                                    .text_color(rgb(semantic(Role::TextMuted)))
+                                    .text_size(scaled(11.))
+                                    .text_role(Role::TextMuted)
                                     .child(SESSION_NOTE),
                             ),
                     )
@@ -2226,9 +2222,9 @@ impl GitCrab {
                         .w(px(380.))
                         .p_3()
                         .rounded(px(8.))
-                        .bg(rgb(semantic(Role::SurfacePanel)))
+                        .bg_role(Role::SurfacePanel)
                         .border_1()
-                        .border_color(rgb(semantic(Role::BorderDivider)))
+                        .border_role(Role::BorderDivider)
                         .shadow_lg()
                         .child(
                             div()
@@ -2239,7 +2235,7 @@ impl GitCrab {
                                     div()
                                         .size(px(6.))
                                         .rounded_full()
-                                        .bg(rgb(semantic(Role::StatusWarningFg))),
+                                        .bg_role(Role::StatusWarningFg),
                                 )
                                 .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(
                                     if !path.is_empty() {
@@ -2282,7 +2278,7 @@ impl GitCrab {
                                 div()
                                     .overflow_hidden()
                                     .truncate()
-                                    .text_size(type_size(cx, 12.))
+                                    .text_size(scaled(12.))
                                     .child(name),
                             )
                         })
@@ -2292,8 +2288,8 @@ impl GitCrab {
                                 .mt_1()
                                 .max_h(px(80.))
                                 .overflow_y_scroll()
-                                .text_size(type_size(cx, 12.))
-                                .text_color(rgb(semantic(Role::TextSecondary)))
+                                .text_size(scaled(12.))
+                                .text_role(Role::TextSecondary)
                                 .child(details.to_owned()),
                         ),
                 )
@@ -2375,7 +2371,7 @@ impl Render for GitCrab {
                 .flex_col()
                 .items_center()
                 .size_full()
-                .bg(rgb(semantic(Role::SurfaceChrome)))
+                .bg_role(Role::SurfaceChrome)
                 .gap_2()
                 .when(in_diff, |rail| {
                     rail.child(
@@ -2442,7 +2438,7 @@ impl Render for GitCrab {
         // Appearance button, match navigation while searching and, in the
         // single-pane layout, References. Single-pane widths never centre the
         // actions, so References can be counted on this side too.
-        let icon_slot = CONTROL_HEIGHT + 4.;
+        let icon_slot = CONTROL_HEIGHT * ui_scale + 4.;
         let toolbar_extra = icon_slot
             + search_status.as_ref().map_or(0., |status| {
                 status.chars().count() as f32 * 6.5 * ui_scale + 4. + 2. * icon_slot
@@ -2528,8 +2524,8 @@ impl Render for GitCrab {
         let menu_focus = self.focus.clone();
         let mut toolbar = div()
             .relative()
-            .min_h(type_size(cx, TOOLBAR_HEIGHT))
-            .bg(rgb(semantic(Role::SurfaceChrome)))
+            .min_h(scaled(TOOLBAR_HEIGHT))
+            .bg_role(Role::SurfaceChrome)
             .flex_none()
             .flex()
             .flex_wrap()
@@ -2538,7 +2534,7 @@ impl Render for GitCrab {
             .px_3()
             .py_1()
             .border_b_1()
-            .border_color(rgb(semantic(Role::BorderDivider)))
+            .border_role(Role::BorderDivider)
             // The single-pane layout has no sidebar or rail, so References
             // opens from here.
             .when(single_pane, |bar| {
@@ -2585,8 +2581,8 @@ impl Render for GitCrab {
                                     .child(suffix.clone())
                                     .child(
                                         div()
-                                            .text_size(rems(11. / 13.))
-                                            .text_color(rgb(semantic(Role::TextMuted)))
+                                            .text_size(scaled(11.))
+                                            .text_role(Role::TextMuted)
                                             .child(location.clone()),
                                     )
                                     .tooltip(move |w, cx| Tooltip::new(full.clone()).build(w, cx))
@@ -2619,8 +2615,8 @@ impl Render for GitCrab {
             .when_some(search_status, |bar, status| {
                 bar.child(
                     div()
-                        .text_size(type_size(cx, 12.))
-                        .text_color(rgb(semantic(Role::TextMuted)))
+                        .text_size(scaled(12.))
+                        .text_role(Role::TextMuted)
                         .child(status),
                 )
                 .child(
@@ -2669,7 +2665,7 @@ impl Render for GitCrab {
             div()
                 .flex_1()
                 .min_h_0()
-                .bg(rgb(semantic(Role::BorderDivider)))
+                .bg_role(Role::BorderDivider)
                 .child(
                     h_resizable(SharedString::from(format!(
                         "workspace-{rail}-{collapsed}-{}",
@@ -2724,8 +2720,8 @@ impl Render for GitCrab {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(semantic(Role::SurfaceCanvas)))
-            .text_color(rgb(semantic(Role::TextDefault)))
+            .bg_role(Role::SurfaceCanvas)
+            .text_role(Role::TextDefault)
             .text_size(px(self.preferences.font_size))
             .track_focus(&self.focus)
             .key_context("GitCrab")
@@ -2813,7 +2809,7 @@ impl Render for GitCrab {
                     "Working changes"
                 };
                 el.child(
-                    section_bar().h(type_size(cx, 36.)).child(
+                    section_bar().h(scaled(36.)).child(
                         segmented_group()
                             .child(
                                 self.segment_button(
@@ -2853,9 +2849,9 @@ impl Render for GitCrab {
                         .mx_2()
                         .mt_2()
                         .rounded(px(6.))
-                        .bg(rgb(semantic(Role::SurfacePanel)))
+                        .bg_role(Role::SurfacePanel)
                         .border_1()
-                        .border_color(rgb(semantic(Role::BorderDivider)))
+                        .border_role(Role::BorderDivider)
                         .child(
                             div()
                                 .flex()
@@ -2865,7 +2861,7 @@ impl Render for GitCrab {
                                     div()
                                         .size(px(6.))
                                         .rounded_full()
-                                        .bg(rgb(semantic(Role::StatusErrorFg))),
+                                        .bg_role(Role::StatusErrorFg),
                                 )
                                 .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(
                                     if self.error_heading.is_empty() {
@@ -2895,8 +2891,8 @@ impl Render for GitCrab {
                                 .mt_1()
                                 .max_h(px(240.))
                                 .overflow_y_scroll()
-                                .text_size(type_size(cx, 12.))
-                                .text_color(rgb(semantic(Role::TextSecondary)))
+                                .text_size(scaled(12.))
+                                .text_role(Role::TextSecondary)
                                 .child(self.state.notice.clone()),
                         ),
                 )
@@ -2905,18 +2901,18 @@ impl Render for GitCrab {
             .child(main_content)
             .child(
                 div()
-                    .h(type_size(cx, 28.))
-                    .bg(rgb(semantic(Role::SurfaceChrome)))
+                    .h(scaled(28.))
+                    .bg_role(Role::SurfaceChrome)
                     .border_t_1()
-                    .border_color(rgb(semantic(Role::BorderDivider)))
+                    .border_role(Role::BorderDivider)
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_between()
                     .px_3()
                     .gap_2()
-                    .text_size(type_size(cx, 12.))
-                    .text_color(rgb(semantic(Role::TextMuted)))
+                    .text_size(scaled(12.))
+                    .text_role(Role::TextMuted)
                     .child(div().flex_1().truncate().child(if self.state.busy {
                         self.running_label()
                     } else if let Some(pending) = self.pending_label() {
@@ -2975,7 +2971,7 @@ impl Render for GitCrab {
                     .when_some(self.watch_warning.clone(), |bar, warning| {
                         bar.child(
                             self.button("watch-warning", "Live refresh unavailable")
-                                .text_color(rgb(semantic(Role::StatusWarningFg)))
+                                .text_role(Role::StatusWarningFg)
                                 .tooltip(warning),
                         )
                     }),
