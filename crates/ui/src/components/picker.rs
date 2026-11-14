@@ -11,7 +11,6 @@ use super::layout::{overflows_vertically, scroll_area};
 use super::list_row::ListRow;
 use crate::theme::Role;
 use crate::theme::*;
-use gitcrab_core::presentation::filter_branches;
 use gpui::component::{
     input::{Enter, Escape, Input, InputState, MoveDown, MoveUp},
     popover::{Popover, PopoverState},
@@ -123,10 +122,81 @@ struct Nav {
 }
 
 /// What is on screen, in order.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Shown {
+    /// A heading or rule, by position among the entries.
     Entry(usize),
+    /// A choosable row, by position among the items.
     Item(usize),
+}
+
+/// What an entry is, for deciding what is shown and what the keyboard reaches.
+#[derive(Clone, Copy)]
+enum Kind {
+    Item { disabled: bool },
+    Other,
+}
+
+/// The rows on screen, and the ones the keyboard can land on as
+/// `(item, position on screen)`. `matched` lists the items a search kept, best
+/// first; with it only those items show and headings and rules are dropped.
+fn plan(kinds: &[Kind], matched: Option<Vec<usize>>) -> (Vec<Shown>, Vec<(usize, usize)>) {
+    let disabled: Vec<bool> = kinds
+        .iter()
+        .filter_map(|k| match k {
+            Kind::Item { disabled } => Some(*disabled),
+            Kind::Other => None,
+        })
+        .collect();
+    let shown: Vec<Shown> = match matched {
+        Some(items) => items.into_iter().map(Shown::Item).collect(),
+        None => {
+            let mut next = 0;
+            kinds
+                .iter()
+                .enumerate()
+                .map(|(i, k)| match k {
+                    Kind::Item { .. } => {
+                        next += 1;
+                        Shown::Item(next - 1)
+                    }
+                    Kind::Other => Shown::Entry(i),
+                })
+                .collect()
+        }
+    };
+    let selectable = shown
+        .iter()
+        .enumerate()
+        .filter_map(|(at, s)| match s {
+            Shown::Item(i) if !disabled[*i] => Some((*i, at)),
+            _ => None,
+        })
+        .collect();
+    (shown, selectable)
+}
+
+/// Moves a highlight position by `delta`, staying within `len` rows.
+fn step_index(current: usize, delta: isize, len: usize) -> usize {
+    let last = len.saturating_sub(1) as isize;
+    (current as isize + delta).clamp(0, last) as usize
+}
+
+/// The labels containing `query`, best first: those starting with it, then the
+/// rest, each in their given order. Case is ignored.
+fn rank(labels: &[&str], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    let (mut prefix, mut inner) = (vec![], vec![]);
+    for (i, label) in labels.iter().enumerate() {
+        let label = label.to_lowercase();
+        if label.starts_with(&query) {
+            prefix.push(i);
+        } else if label.contains(&query) {
+            inner.push(i);
+        }
+    }
+    prefix.extend(inner);
+    prefix
 }
 
 pub struct Picker<T> {
@@ -226,13 +296,12 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
             scroll: ScrollHandle::new(),
         });
         // Without a search field the list itself takes keyboard focus.
-        let own_focus = window
-            .use_keyed_state(key("focus"), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
         let key_focus = match &query {
             Some(query) => query.read(cx).focus_handle(cx),
-            None => own_focus,
+            None => window
+                .use_keyed_state(key("focus"), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone(),
         };
         let entries = Rc::new(entries);
         let has_search = query.is_some();
@@ -268,51 +337,31 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
                     .map(|q| q.read(cx).value().to_string())
                     .unwrap_or_default();
 
-                // Items in the order they were given, and where each sits among
-                // the entries.
-                let item_entry: Vec<usize> = entries
+                // Items in the order they were given.
+                let items: Vec<&PickerItem> = entries
                     .iter()
-                    .enumerate()
-                    .filter_map(|(i, e)| matches!(e, PickerEntry::Item(_)).then_some(i))
+                    .filter_map(|e| match e {
+                        PickerEntry::Item(item) => Some(item),
+                        _ => None,
+                    })
                     .collect();
-                let item = |index: usize| match &entries[item_entry[index]] {
-                    PickerEntry::Item(item) => item,
-                    _ => unreachable!("item_entry only holds items"),
-                };
+                let item = |index: usize| items[index];
                 let filtering = has_search && !text.trim().is_empty();
-                let shown: Vec<Shown> = if filtering {
-                    let labels: Vec<&str> = (0..item_entry.len())
-                        .map(|i| item(i).label.as_ref())
-                        .collect();
-                    filter_branches(&labels, &text)
-                        .into_iter()
-                        .map(Shown::Item)
-                        .collect()
-                } else {
-                    let mut next = 0;
-                    entries
-                        .iter()
-                        .enumerate()
-                        .map(|(i, e)| match e {
-                            PickerEntry::Item(_) => {
-                                next += 1;
-                                Shown::Item(next - 1)
-                            }
-                            _ => Shown::Entry(i),
-                        })
-                        .collect()
-                };
-                // The rows the keyboard can land on: item index and child position.
-                let selectable: Rc<Vec<(usize, usize)>> = Rc::new(
-                    shown
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(child, s)| match s {
-                            Shown::Item(i) if !item(*i).disabled => Some((*i, child)),
-                            _ => None,
-                        })
-                        .collect(),
-                );
+                let kinds: Vec<Kind> = entries
+                    .iter()
+                    .map(|e| match e {
+                        PickerEntry::Item(item) => Kind::Item {
+                            disabled: item.disabled,
+                        },
+                        _ => Kind::Other,
+                    })
+                    .collect();
+                let matched = filtering.then(|| {
+                    let labels: Vec<&str> = items.iter().map(|i| i.label.as_ref()).collect();
+                    rank(&labels, &text)
+                });
+                let (shown, selectable) = plan(&kinds, matched);
+                let selectable = Rc::new(selectable);
 
                 let (index, scroll) = nav.update(cx, |nav, _| {
                     if nav.query != text {
@@ -349,8 +398,7 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
                     let selectable = selectable.clone();
                     move |delta, window, cx| {
                         nav.update(cx, |nav, _| {
-                            let last = selectable.len().saturating_sub(1) as isize;
-                            nav.index = (nav.index as isize + delta).clamp(0, last) as usize;
+                            nav.index = step_index(nav.index, delta, selectable.len());
                             if let Some(&(_, child)) = selectable.get(nav.index) {
                                 nav.scroll.scroll_to_item(child);
                             }
@@ -450,7 +498,7 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
                     }
                 });
 
-                let note = if item_entry.is_empty() {
+                let note = if items.is_empty() {
                     empty.clone()
                 } else if filtering && shown.is_empty() {
                     Some(format!("No {noun} match “{}”", text.trim()).into())
@@ -550,4 +598,66 @@ fn muted(text: SharedString) -> Div {
         .text_size(scaled(12.))
         .text_role(Role::TextMuted)
         .child(text)
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: that would bring gpui's `test` macro in over `#[test]`.
+    use super::{plan, rank, step_index, Kind, Shown};
+
+    const ITEM: Kind = Kind::Item { disabled: false };
+    const OFF: Kind = Kind::Item { disabled: true };
+
+    #[test]
+    fn headings_and_rules_are_shown_but_not_selectable() {
+        // heading, item, rule, item
+        let (shown, selectable) = plan(&[Kind::Other, ITEM, Kind::Other, ITEM], None);
+        assert_eq!(
+            shown,
+            [
+                Shown::Entry(0),
+                Shown::Item(0),
+                Shown::Entry(2),
+                Shown::Item(1)
+            ]
+        );
+        // (item, position on screen)
+        assert_eq!(selectable, [(0, 1), (1, 3)]);
+    }
+
+    #[test]
+    fn disabled_items_show_but_the_keyboard_skips_them() {
+        let (shown, selectable) = plan(&[ITEM, OFF, ITEM], None);
+        assert_eq!(shown.len(), 3);
+        assert_eq!(selectable, [(0, 0), (2, 2)]);
+    }
+
+    #[test]
+    fn a_search_keeps_only_matches_in_ranked_order_and_drops_headings() {
+        let (shown, selectable) = plan(&[Kind::Other, ITEM, ITEM, ITEM], Some(vec![2, 0]));
+        assert_eq!(shown, [Shown::Item(2), Shown::Item(0)]);
+        assert_eq!(selectable, [(2, 0), (0, 1)]);
+    }
+
+    #[test]
+    fn a_search_with_no_matches_shows_nothing() {
+        let (shown, selectable) = plan(&[ITEM], Some(vec![]));
+        assert!(shown.is_empty() && selectable.is_empty());
+    }
+
+    #[test]
+    fn stepping_stays_inside_the_list() {
+        assert_eq!(step_index(0, -1, 3), 0);
+        assert_eq!(step_index(0, 1, 3), 1);
+        assert_eq!(step_index(2, 1, 3), 2);
+        assert_eq!(step_index(0, 1, 0), 0);
+    }
+
+    #[test]
+    fn rank_puts_prefix_matches_first_and_ignores_case() {
+        let labels = ["main", "feat/topic", "Topic-1", "other"];
+        assert_eq!(rank(&labels, "topic"), [2, 1]);
+        assert_eq!(rank(&labels, "  MAIN "), [0]);
+        assert!(rank(&labels, "zzz").is_empty());
+    }
 }

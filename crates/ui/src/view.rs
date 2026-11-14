@@ -2620,6 +2620,7 @@ impl Render for GitCrab {
                     .iter()
                     .map(|(path, _)| path.clone())
                     .collect::<Vec<_>>();
+                let action_focus = menu_focus.clone();
                 let entries = std::iter::once(
                     PickerItem::new("Browse for a repository…")
                         .icon("folder")
@@ -2655,12 +2656,16 @@ impl Render for GitCrab {
                     .set_disabled(self.state.blocking_write()),
                     selector_width.max(px(320.)),
                     &menu_focus,
+                    // Dispatch from this view's own focus node, as the old menu's
+                    // action context did, so it does not depend on where focus
+                    // happens to be once the list has closed.
                     move |index, window, cx| match index.checked_sub(1) {
-                        None => window.dispatch_action(Box::new(Open), cx),
+                        None => action_focus.dispatch_action(&Open, window, cx),
                         Some(recent) => {
                             if let Some(path) = choices.get(recent) {
-                                window.dispatch_action(
-                                    Box::new(super::workspace::OpenRecent(path.clone())),
+                                action_focus.dispatch_action(
+                                    &super::workspace::OpenRecent(path.clone()),
+                                    window,
                                     cx,
                                 );
                             }

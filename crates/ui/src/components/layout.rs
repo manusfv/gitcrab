@@ -79,20 +79,21 @@ pub const SCROLLBAR_GUTTER: Pixels = px(8.);
 /// cap (`max_h`, including a percentage) or flex sizing set on the returned
 /// element limits the content. A cap on `content` itself works for pixel
 /// values only, because the wrapper has no definite height of its own.
+///
+/// While the content overflows it gets [`SCROLLBAR_GUTTER`] of right padding,
+/// unless it already sets its own right padding, which is kept.
 pub fn scroll_area(id: &'static str, handle: &ScrollHandle, content: Stateful<Div>) -> Div {
     let overflowing = overflows_vertically(handle);
+    let mut content = content.overflow_y_scroll();
+    if overflowing && content.style().padding.right.is_none() {
+        content = content.pr(SCROLLBAR_GUTTER);
+    }
     track_overflow(div(), handle, overflowing)
         .relative()
         .flex()
         .flex_col()
         .min_h_0()
-        .child(
-            content
-                .overflow_y_scroll()
-                .when(overflowing, |c| c.pr(SCROLLBAR_GUTTER))
-                .min_h_0()
-                .track_scroll(handle),
-        )
+        .child(content.min_h_0().track_scroll(handle))
         .child(scrollbar_overlay(id, handle))
 }
 
@@ -102,11 +103,19 @@ pub fn scrollbar_overlay<H>(id: &'static str, handle: &H) -> Div
 where
     H: gpui::component::scroll::ScrollbarHandle + Clone,
 {
-    div().absolute().inset_0().child(slim_scrollbar(
+    div().absolute().inset_0().child(vertical_bar(id, handle))
+}
+
+/// The always-visible slim vertical scrollbar every overlay is built from.
+fn vertical_bar<H>(id: &'static str, handle: &H) -> gpui::component::scroll::Scrollbar
+where
+    H: gpui::component::scroll::ScrollbarHandle + Clone,
+{
+    slim_scrollbar(
         gpui::component::scroll::Scrollbar::vertical(handle)
             .id(SharedString::from(format!("{id}-scrollbar")))
             .mode(gpui::component::scroll::ScrollbarMode::Always),
-    ))
+    )
 }
 
 /// Gives a scrollbar GitCrab's slim look: a rounded thumb with no gutter that
@@ -155,12 +164,7 @@ where
         .left_0()
         .right_0()
         .bottom_0()
-        .child(slim_scrollbar(
-            gpui::component::scroll::Scrollbar::vertical(handle)
-                .id(SharedString::from(format!("{id}-scrollbar")))
-                .mode(gpui::component::scroll::ScrollbarMode::Always)
-                .viewport_from_layout(),
-        ))
+        .child(vertical_bar(id, handle).viewport_from_layout())
 }
 
 /// Whether a region has more content than fits, as of the last layout.
@@ -179,8 +183,11 @@ where
     H: gpui::component::scroll::ScrollbarHandle + Clone,
 {
     let handle = handle.clone();
+    // One request per render. If the mismatch outlives the repaint (a cached
+    // view that is not rebuilt), asking again every frame would never settle.
+    let asked = std::cell::Cell::new(false);
     el.on_children_prepainted(move |_, _, cx| {
-        if overflows_vertically(&handle) != was {
+        if overflows_vertically(&handle) != was && !asked.replace(true) {
             // `Window::refresh` is ignored while the window is drawing, so
             // ask for the repaint once this frame is done.
             cx.defer(|cx| cx.refresh_windows());
