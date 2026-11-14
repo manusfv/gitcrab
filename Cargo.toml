@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/git", "crates/ui", "crates/app"]
+members = ["crates/core", "crates/git", "crates/settings", "crates/ui", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 gitcrab-core = { path = "crates/core" }
 gitcrab-git = { path = "crates/git" }
+gitcrab-settings = { path = "crates/settings" }
 gitcrab-ui = { path = "crates/ui" }
 
 serde = { version = "1", features = ["derive"] }

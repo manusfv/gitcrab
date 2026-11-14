@@ -535,7 +535,7 @@ impl GitCrab {
             }),
         ];
         let backend = crate::backend::get(cx);
-        let preferences = Preferences::current(cx);
+        let preferences = crate::preferences::current(cx);
         gpui_component::Theme::global_mut(cx).font_size = px(preferences.font_size);
         let mut v = Self {
             state: Controller::default(),
@@ -583,7 +583,7 @@ impl GitCrab {
             saved_preferences: preferences.clone(),
             preferences,
             settings_open: false,
-            last_repository: Preferences::last_repository(),
+            last_repository: crate::preferences::last_repository(cx),
             awaiting_trust: false,
             open_failure: None,
             repository_location: None,
@@ -804,7 +804,7 @@ impl GitCrab {
                 self.last_repository = Some(self.state.path.clone());
             } else if self.state.error {
                 let path = std::mem::take(&mut self.state.path);
-                match Preferences::forget_last_repository(&path, cx) {
+                match crate::preferences::forget_last_repository(&path, cx) {
                     Ok(result) => {
                         if self.last_repository.as_deref() == Some(path.as_str()) {
                             self.last_repository = None;
@@ -847,7 +847,7 @@ impl GitCrab {
             self.update_search(cx);
             self.install_watch(window, cx);
             if opening {
-                match Preferences::add_recent(&self.state.path, cx) {
+                match crate::preferences::add_recent(&self.state.path, cx) {
                     Ok(Some(result)) => self.observe_persistence(result, "recent repositories", cx),
                     Err(error) => self.persistence_error("recent repositories", error),
                     _ => {}
@@ -939,7 +939,8 @@ impl GitCrab {
         self.store_history_columns();
         self.preferences.compact = self.compact;
         self.preferences.split = self.split;
-        let result = self.preferences.save_changes(&self.saved_preferences, cx)?;
+        let result =
+            crate::preferences::save_changes(&self.preferences, &self.saved_preferences, cx)?;
         let save = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.appearance_status = AppearanceStatus::Saving(save);
         cx.spawn(async move |view, cx| {
@@ -995,7 +996,7 @@ impl GitCrab {
     }
 
     /// Queues any unsaved tab preferences immediately.
-    /// Use [`Preferences::flush`] to wait for the settings writer.
+    /// Use [`crate::preferences::flush`] to wait for the settings writer.
     pub fn flush_preferences(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         self.store_history_columns();
         if self.preference_save.take().is_some() || self.preferences != self.saved_preferences {
@@ -1028,7 +1029,7 @@ impl GitCrab {
             self.preferences.columns_for(&key)
         } else {
             // Another tab may have saved a newer layout for this repository.
-            Preferences::current(cx).columns_for(&key)
+            crate::preferences::current(cx).columns_for(&key)
         };
         self.history_columns_repository = Some(key);
     }
@@ -1125,7 +1126,7 @@ impl GitCrab {
     pub fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.active = true;
         self.unread_result = false;
-        let app = Preferences::current(cx);
+        let app = crate::preferences::current(cx);
         self.preferences.theme = app.theme;
         self.preferences.font_size = app.font_size;
         self.focus.focus(window);
@@ -2125,7 +2126,7 @@ impl GitCrab {
 
     fn new_tab(&self, cx: &mut Context<Self>) -> AnyElement {
         let loading = self.state.loading();
-        let recent = Preferences::current(cx).recent;
+        let recent = crate::preferences::current(cx).recent;
         let notice = self
             .open_failure
             .as_ref()
@@ -2467,7 +2468,7 @@ impl Render for GitCrab {
         } else {
             self.history(window, cx)
         };
-        let recent_paths = Preferences::current(cx)
+        let recent_paths = crate::preferences::current(cx)
             .recent
             .iter()
             .filter(|path| !gitcrab_core::presentation::same_path(path, &self.state.path))

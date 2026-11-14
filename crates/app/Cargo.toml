@@ -15,6 +15,7 @@ native-evidence = ["gitcrab-ui/native-evidence", "gitcrab-git/git-trace"]
 [dependencies]
 gitcrab-ui.workspace = true
 gitcrab-git.workspace = true
+gitcrab-settings.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 

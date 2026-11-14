@@ -21,7 +21,7 @@ impl GitCrab {
                     Ok(location) => v.open_repository(location, window, cx),
                     Err(details) => {
                         if v.last_repository.as_deref() == Some(path.as_str()) {
-                            match Preferences::forget_last_repository(&path, cx) {
+                            match crate::preferences::forget_last_repository(&path, cx) {
                                 Ok(result) => {
                                     v.last_repository = None;
                                     v.observe_persistence(result, "last repository", cx);
@@ -57,7 +57,7 @@ impl GitCrab {
             cx.notify();
             return;
         };
-        if Preferences::trusts_repository(&location) {
+        if crate::preferences::trusts_repository(&location, cx) {
             self.open_trusted(location, window, cx);
             return;
         }
@@ -143,7 +143,7 @@ impl GitCrab {
                 .on_ok(move |_, w, cx| {
                     let _ = accepted.update(cx, |v, cx| {
                         v.open_trusted(location.clone(), w, cx);
-                        match Preferences::remember_trust(&location, cx) {
+                        match crate::preferences::remember_trust(&location, cx) {
                             Ok(result) => v.observe_persistence(result, "repository trust", cx),
                             Err(error) => v.persistence_error("repository trust", error),
                         }

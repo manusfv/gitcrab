@@ -16,7 +16,6 @@ native-evidence = []
 gitcrab-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 notify.workspace = true

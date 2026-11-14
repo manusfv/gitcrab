@@ -1,6 +1,6 @@
 # Application state and effects
 
-The workspace has four crates:
+The workspace has five crates:
 
 - `crates/core` (`gitcrab-core`): the controller, presentation, diff and graph
   logic, the repository data types, and the request/response protocol with the
@@ -9,10 +9,13 @@ The workspace has four crates:
 - `crates/git` (`gitcrab-git`): the Git worker that implements those traits:
   `git/`, `process.rs`, `service.rs`, `journal.rs` and `platform.rs` below.
   Its tests run real Git in isolated repositories.
+- `crates/settings` (`gitcrab-settings`): preferences, session and trust files
+  behind core's `SettingsStore` trait.
 - `crates/ui` (`gitcrab-ui`): GPUI views and components. Depends on core only
-  and reaches Git through the `GitBackend` the app installs.
+  and reaches Git and settings through the `GitBackend` and `SettingsStore`
+  the app installs.
 - `crates/app` (`gitcrab`): the binary. Installs `gitcrab_git::Backend` and
-  opens the window.
+  `gitcrab_settings::FileStore`, then opens the window.
 
 Paths below are relative to each crate's `src/`.
 
@@ -59,9 +62,13 @@ Paths below are relative to each crate's `src/`.
   `ListRow` used by every list and tree, `Badge`, and pane containers
   (`layout`). Views import them through `components::prelude` and compose
   panes from them instead of styling raw elements.
-- `ui/preferences.rs` owns the application appearance source and a
-  serialized persistence worker. Closing flushes pending saves. File replacement
-  uses an owned temporary file beside the destination.
+- `preferences.rs` (core) owns `Preferences` and its rules: clamping on load,
+  merging one tab's edits into the shared copy, the recent list, session entries
+  and trust matching. It also defines the `SettingsStore` trait.
+  `gitcrab-settings` implements it with a serialized writer thread; closing
+  flushes pending saves, and file replacement uses an owned temporary file beside
+  the destination. `ui/preferences.rs` only keeps the shared copy in a gpui
+  global and applies the font size to the theme.
 
 The Serde request/reply envelope is an internal diagnostic format. GitCrab does
 not expose it as a supported external protocol. Its tests continue to exercise

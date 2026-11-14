@@ -94,7 +94,7 @@ jobs:
           # `-D warnings` applies to GitCrab only, not the vendored path dependencies.
           # Core must stay free of UI and I/O dependencies.
           Check core-tree @('tree', '--locked', '-p', 'gitcrab-core', '--all-features', '-e', 'normal,build,dev', '--target', 'all')
-          if (Select-String -Path check-logs/core-tree.log -Pattern 'gpui|notify|async-channel|windows-sys|libc|gitcrab-git' -Quiet) {
+          if (Select-String -Path check-logs/core-tree.log -Pattern 'gpui|notify|async-channel|windows-sys|libc|gitcrab-git|gitcrab-settings' -Quiet) {
             throw 'gitcrab-core depends on a UI, platform or I/O crate'
           }
           Check clippy-core @('clippy', '--locked', '-p', 'gitcrab-core', '--lib', '--tests', '--', '-D', 'warnings')

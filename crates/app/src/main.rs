@@ -18,6 +18,10 @@ fn main() {
     Application::new().with_assets(assets::Assets).run(|cx| {
         gpui_component::init(cx);
         gitcrab_ui::backend::install(std::sync::Arc::new(gitcrab_git::Backend), cx);
+        gitcrab_ui::preferences::install(
+            std::sync::Arc::new(gitcrab_settings::FileStore::new()),
+            cx,
+        );
         Theme::change(ThemeMode::Dark, None, cx);
         theme::initialize(cx);
         cx.set_menus(vec![Menu {
@@ -79,7 +83,7 @@ fn main() {
             KeyBinding::new("ctrl-y", view::RedoLast, Some("GitCrab")),
         ]);
         #[cfg(not(feature = "native-evidence"))]
-        let saved = preferences::Preferences::current(cx).window;
+        let saved = preferences::current(cx).window;
         #[cfg(not(feature = "native-evidence"))]
         let viewport = {
             let (width, height) = saved.map_or((1280., 800.), |s| (s.width, s.height));

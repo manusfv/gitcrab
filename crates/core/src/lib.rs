@@ -27,6 +27,7 @@ pub mod highlight;
 pub mod history_columns;
 pub mod journal;
 pub mod platform;
+pub mod preferences;
 pub mod presentation;
 pub mod service;
 

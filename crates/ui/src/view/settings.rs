@@ -133,7 +133,7 @@ impl GitCrab {
                         0 => {
                             v.preferences.font_size =
                                 (v.preferences.font_size + direction).clamp(11., 26.);
-                            Preferences::set_app_appearance(
+                            crate::preferences::set_app_appearance(
                                 v.preferences.font_size,
                                 v.preferences.theme,
                                 cx,
@@ -269,7 +269,7 @@ impl GitCrab {
                         v.split = false;
                         v.layout_revision += 1;
                         v.reset_panels(cx);
-                        Preferences::set_app_appearance(
+                        crate::preferences::set_app_appearance(
                             v.preferences.font_size,
                             v.preferences.theme,
                             cx,

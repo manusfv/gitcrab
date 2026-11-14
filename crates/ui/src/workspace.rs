@@ -1,6 +1,5 @@
 use super::components;
 use super::{
-    preferences::Preferences,
     theme::*,
     view::{GitCrab, Open, Quit},
 };
@@ -138,7 +137,7 @@ impl Workspace {
         };
         let paths = match path {
             Some(path) => vec![path],
-            None if picker_error.is_none() => Preferences::session_repositories(),
+            None if picker_error.is_none() => crate::preferences::session_repositories(cx),
             None => vec![],
         };
         let mut tabs: Vec<_> = paths
@@ -194,7 +193,7 @@ impl Workspace {
         if paths.is_empty() && self.last_session.is_none() {
             return;
         }
-        if Preferences::remember_repositories(&paths, cx).is_ok() {
+        if crate::preferences::remember_repositories(&paths, cx).is_ok() {
             self.last_session = Some(paths);
         }
     }
@@ -350,7 +349,7 @@ impl Workspace {
             .tabs
             .iter()
             .try_for_each(|tab| tab.update(cx, |tab, cx| tab.flush_preferences(cx)))
-            .and_then(|()| Preferences::flush(cx));
+            .and_then(|()| crate::preferences::flush(cx));
         let result = match result {
             Ok(result) => result,
             Err(error) => {
@@ -427,7 +426,7 @@ impl Workspace {
             height: f32::from(size.height),
             maximized: matches!(bounds, WindowBounds::Maximized(_)),
         };
-        if let Err(error) = Preferences::remember_window(saved, cx) {
+        if let Err(error) = crate::preferences::remember_window(saved, cx) {
             self.picker_error = Some(format!("Could not save the window size: {error}"));
         }
     }
