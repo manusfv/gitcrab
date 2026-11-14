@@ -70,16 +70,97 @@ enum ReferenceSide {
     Right,
 }
 
-fn paint_reference_link(w: &mut Window, start: Pixels, end: Pixels, y: Pixels, color: usize) {
+fn paint_reference_link(
+    w: &mut Window,
+    start: Pixels,
+    end: Pixels,
+    y: Pixels,
+    color: usize,
+    checked_out: bool,
+) {
     let scale = w.scale_factor();
-    let top = px((f32::from(y) * scale - 0.5).round() / scale);
+    // The checked-out branch gets a thick, stronger link; others stay hairline.
+    // It matches the lane lines exactly: same stroke width, opaque lane colour.
+    let (thickness, fill_color) = if checked_out {
+        (
+            graph_stroke(scale),
+            rgba(lanes()[color % lanes().len()] << 8 | 0xFF),
+        )
+    } else {
+        (px(1. / scale), branch_tint(color, 0x70))
+    };
+    let top = snap_graph_stroke_center(y, scale) - thickness / 2.;
+    let top = if checked_out {
+        top
+    } else {
+        px((f32::from(y) * scale - 0.5).round() / scale)
+    };
     w.paint_quad(fill(
         Bounds::new(
             point(start.min(end), top),
-            size((end - start).abs(), px(1. / scale)),
+            size((end - start).abs(), thickness),
         ),
-        branch_tint(color, 0x70),
+        fill_color,
     ));
+}
+
+/// Radius of the dashed working-changes marker, matching the commit avatars.
+const WIP_RADIUS: f32 = 11.;
+
+/// The dashed ring that stands for uncommitted work, drawn with the same
+/// stroke width as the lane lines.
+fn paint_dashed_circle(w: &mut Window, center: Point<Pixels>, radius: Pixels, color: u32) {
+    const DASHES: usize = 12;
+    const STEPS: usize = 6;
+    let stroke = graph_stroke(w.scale_factor());
+    let r = f32::from(radius - stroke / 2.);
+    let step = std::f32::consts::TAU / DASHES as f32;
+    for dash in 0..DASHES {
+        // Each dash covers 55% of its slot and is centred on the slot's angle,
+        // so there is one dash dead-centre at the top and bottom (even count).
+        let start = dash as f32 * step - std::f32::consts::FRAC_PI_2 - step * 0.275;
+        let mut path = PathBuilder::stroke(stroke);
+        for i in 0..=STEPS {
+            let a = start + step * 0.55 * i as f32 / STEPS as f32;
+            let p = point(center.x + px(r * a.cos()), center.y + px(r * a.sin()));
+            if i == 0 {
+                path.move_to(p);
+            } else {
+                path.line_to(p);
+            }
+        }
+        if let Ok(path) = path.build() {
+            w.paint_path(path, rgb(color));
+        }
+    }
+}
+
+/// A dotted lane line, used from the working-changes marker down to the first
+/// commit. `travelled` is how far the pattern already ran above `top`, so the
+/// dots continue unbroken across the row boundary.
+fn paint_dotted_lane(
+    w: &mut Window,
+    x: Pixels,
+    top: Pixels,
+    bottom: Pixels,
+    color: u32,
+    travelled: Pixels,
+) {
+    let stroke = graph_stroke(w.scale_factor());
+    let (dash, gap) = (stroke, stroke * 1.5);
+    let period = dash + gap;
+    let phase = px(f32::from(travelled).rem_euclid(f32::from(period)));
+    let mut y = top - phase;
+    while y < bottom {
+        let (from, to) = (y.max(top), (y + dash).min(bottom));
+        if to > from {
+            w.paint_quad(fill(
+                Bounds::new(point(x - stroke / 2., from), size(stroke, to - from)),
+                rgb(color),
+            ));
+        }
+        y += period;
+    }
 }
 
 fn paint_lane_corner(
@@ -370,26 +451,18 @@ impl GitCrab {
                                 let x =
                                     graph_lane_positions(bounds, lane_count, w.scale_factor())(0);
                                 let y = bounds.origin.y + px(height / 2.);
+                                let radius = px(WIP_RADIUS);
                                 if has_head {
-                                    paint_vertical_lane(
+                                    paint_dotted_lane(
                                         w,
                                         x,
-                                        y + px(5.),
+                                        y + radius,
                                         bounds.bottom(),
                                         lanes()[0],
+                                        px(0.),
                                     );
                                 }
-                                w.paint_quad(
-                                    outline(
-                                        Bounds::new(
-                                            point(x - px(9.), y - px(9.)),
-                                            size(px(18.), px(18.)),
-                                        ),
-                                        rgb(lanes()[0]),
-                                        BorderStyle::Dashed,
-                                    )
-                                    .corner_radii(px(9.)),
-                                );
+                                paint_dashed_circle(w, point(x, y), radius, lanes()[0]);
                             },
                         )
                         .w_full()
@@ -556,6 +629,9 @@ impl GitCrab {
             .join(" · ");
         let others = decorations.len().saturating_sub(1);
         let primary = primary.map(|index| decorations[index].clone());
+        let checked_out = primary
+            .as_ref()
+            .is_some_and(|d| d.kind == DecorationKind::HeadBranch);
         let refs = primary.as_ref().map(|d| d.name.clone()).unwrap_or_default();
         let columns = &self.history_layout;
         let reference_side = if refs.is_empty() {
@@ -570,6 +646,7 @@ impl GitCrab {
                     _ => None,
                 })
         };
+        let wip_link = i == 0 && !snap.head_id.is_empty();
         let color = row.color;
         let junction = row.is_junction(&incoming);
         let mut el = div()
@@ -622,28 +699,28 @@ impl GitCrab {
                                     Role::TextDefault,
                                     cx,
                                 )
-                                    .children(marker)
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_role(Role::TextDefault)
-                                            .child(refs),
-                                    )
-                                    .flex_1()
-                                    .min_w_0()
-                                    .justify_start()
-                                    .overflow_hidden()
-                                    .px_1()
-                                    .h(scaled(REF_BADGE_HEIGHT))
-                                    .tooltip(format!("{label} · Click to preview"))
-                                    .on_click(cx.listener({
-                                        let id = c.id.clone();
-                                        move |v, _, w, cx| {
-                                            v.activate_decoration(&primary, id.clone(), w, cx)
-                                        }
-                                    })),
+                                .children(marker)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_role(Role::TextDefault)
+                                        .child(refs),
+                                )
+                                .flex_1()
+                                .min_w_0()
+                                .justify_start()
+                                .overflow_hidden()
+                                .px_1()
+                                .h(scaled(REF_BADGE_HEIGHT))
+                                .tooltip(format!("{label} · Click to preview"))
+                                .on_click(cx.listener({
+                                    let id = c.id.clone();
+                                    move |v, _, w, cx| {
+                                        v.activate_decoration(&primary, id.clone(), w, cx)
+                                    }
+                                })),
                             )
                         })
                         .when(others > 0, |e| {
@@ -658,11 +735,12 @@ impl GitCrab {
                                     Role::TextDefault,
                                     cx,
                                 )
-                                    .flex_none()
-                                    .h(scaled(REF_BADGE_HEIGHT))
-                                    .px(px(4.))
-                                    .tooltip(format!("{others} more · Open the list of references"))
-                                    .dropdown_menu(move |mut menu, _, _| {
+                                .flex_none()
+                                .h(scaled(REF_BADGE_HEIGHT))
+                                .px(px(4.))
+                                .tooltip(format!("{others} more · Open the list of references"))
+                                .dropdown_menu(
+                                    move |mut menu, _, _| {
                                         for entry in &entries {
                                             let weak = weak.clone();
                                             let entry_for_click = entry.clone();
@@ -682,7 +760,8 @@ impl GitCrab {
                                             );
                                         }
                                         menu
-                                    }),
+                                    },
+                                ),
                             )
                         })
                         .tooltip(move |w, cx| Tooltip::new(full_refs.clone()).build(w, cx)))
@@ -721,7 +800,14 @@ impl GitCrab {
                                             ReferenceSide::Left => bounds.left(),
                                             ReferenceSide::Right => bounds.right(),
                                         };
-                                        paint_reference_link(w, edge, center_x, center_y, color);
+                                        paint_reference_link(
+                                            w,
+                                            edge,
+                                            center_x,
+                                            center_y,
+                                            color,
+                                            checked_out,
+                                        );
                                     }
                                     let edges = incoming
                                         .iter()
@@ -754,7 +840,16 @@ impl GitCrab {
                                             ));
                                         } else {
                                             let lane_x = if turns_below { from } else { to };
-                                            paint_vertical_lane(w, lane_x, top, bottom, edge_color);
+                                            if wip_link && above {
+                                                let travelled = px(height / 2. - WIP_RADIUS);
+                                                paint_dotted_lane(
+                                                    w, lane_x, top, bottom, edge_color, travelled,
+                                                );
+                                            } else {
+                                                paint_vertical_lane(
+                                                    w, lane_x, top, bottom, edge_color,
+                                                );
+                                            }
                                         }
                                     }
                                     // Paint longer runs first so each nearer branch keeps its color at the turn.
@@ -873,6 +968,7 @@ impl GitCrab {
                                             edge,
                                             bounds.center().y,
                                             color,
+                                            checked_out,
                                         );
                                     },
                                 )
