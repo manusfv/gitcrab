@@ -1,5 +1,8 @@
 use super::*;
-use gitcrab_core::{git::FileChange, presentation::ordinal};
+use gitcrab_core::{
+    git::FileChange,
+    presentation::{ordinal, reflow_body},
+};
 
 fn inspector_bar() -> Div {
     section_bar().h(scaled(32.)).px(scaled(INSPECTOR_INSET))
@@ -140,16 +143,65 @@ impl GitCrab {
             .take(2)
             .filter_map(|s| s.chars().next())
             .collect::<String>();
+        let short_id = c.id.chars().take(7).collect::<String>();
+        let date_tooltip = c.date.clone();
+        // Counts per kind of change: added, modified, deleted, renamed.
+        let mut counts = [0usize; 4];
+        for file in &self.state.files {
+            match file.index {
+                'A' | '?' => counts[0] += 1,
+                'D' => counts[2] += 1,
+                'R' | 'C' => counts[3] += 1,
+                _ => counts[1] += 1,
+            }
+        }
+        let summary = [
+            ('A', "added"),
+            ('M', "modified"),
+            ('D', "deleted"),
+            ('R', "renamed"),
+        ]
+        .into_iter()
+        .zip(counts)
+        .filter(|(_, n)| *n > 0)
+        .map(|((letter, word), n)| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    Badge::new(letter.to_string(), file_status_color(letter))
+                        .fixed_width(18.)
+                        .text_size(scaled(11.))
+                        .px_0(),
+                )
+                .child(
+                    div()
+                        .text_size(scaled(12.))
+                        .text_role(Role::TextSecondary)
+                        .child(format!("{n} {word}")),
+                )
+        })
+        .collect::<Vec<_>>();
         el = el
             .child(
                 inspector_bar()
-                    .child(icon("changes").small().text_role(Role::TextMuted))
                     .child(
                         div()
-                            .flex_1()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Commit details"),
+                            .text_size(scaled(12.))
+                            .text_role(Role::TextMuted)
+                            .child("commit:"),
                     )
+                    .child(
+                        self.button("copy-id", short_id)
+                            .font_family(CODE_FONT)
+                            .text_size(scaled(12.))
+                            .tooltip(format!("Copy full commit SHA {}", c.id))
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy_id.clone()))
+                            }),
+                    )
+                    .child(div().flex_1())
                     .child(
                         self.icon_button(
                             "copy-commit-info",
@@ -169,64 +221,75 @@ impl GitCrab {
                         .id("commit-information")
                         .flex()
                         .flex_col()
+                        .gap(scaled(10.))
+                        .py(scaled(10.))
+                        // The message, framed so it reads as one block.
                         .child(
                             div()
-                                .px(scaled(INSPECTOR_INSET))
-                                .pt_2()
-                                .pb_1()
-                                .text_size(scaled(15.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(c.subject.clone()),
+                                .id("commit-message")
+                                .mx(scaled(INSPECTOR_INSET))
+                                .p(scaled(10.))
+                                .flex()
+                                .flex_col()
+                                .gap(scaled(6.))
+                                .rounded(px(CONTROL_RADIUS))
+                                .border_1()
+                                .border_role(Role::BorderDivider)
+                                .bg_role(Role::SurfaceChrome)
+                                .child(
+                                    div()
+                                        .text_size(scaled(15.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .whitespace_normal()
+                                        .child(c.subject.clone()),
+                                )
+                                .when(!self.state.commit_body.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .id("commit-body")
+                                            .text_size(scaled(12.))
+                                            .text_role(Role::TextSecondary)
+                                            .whitespace_normal()
+                                            .children(
+                                                reflow_body(&self.state.commit_body)
+                                                    .into_iter()
+                                                    .map(|line| {
+                                                        div().min_h(scaled(16.)).child(line)
+                                                    })
+                                                    .collect::<Vec<_>>(),
+                                            ),
+                                    )
+                                })
+                                .when(loading && self.state.commit_body.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .text_size(scaled(12.))
+                                            .text_role(Role::TextMuted)
+                                            .child("Loading description…"),
+                                    )
+                                }),
                         )
-                        .when(!self.state.commit_body.is_empty(), |el| {
-                            el.child(
-                                div()
-                                    .id("commit-body")
-                                    .px(scaled(INSPECTOR_INSET))
-                                    .pb_2()
-                                    .text_size(scaled(12.))
-                                    .text_role(Role::TextSecondary)
-                                    .whitespace_normal()
-                                    .children(
-                                        self.state
-                                            .commit_body
-                                            .lines()
-                                            .map(|line| {
-                                                div().min_h(scaled(16.)).child(line.to_owned())
-                                            })
-                                            .collect::<Vec<_>>(),
-                                    ),
-                            )
-                        })
-                        .when(loading && self.state.commit_body.is_empty(), |el| {
-                            el.child(
-                                div()
-                                    .px(scaled(INSPECTOR_INSET))
-                                    .pb_2()
-                                    .text_size(scaled(12.))
-                                    .text_role(Role::TextMuted)
-                                    .child("Loading description…"),
-                            )
-                        })
+                        // Author on the left, parents on the right.
                         .child(
                             div()
                                 .id("commit-author")
                                 .px(scaled(INSPECTOR_INSET))
-                                .pb_2()
                                 .flex()
-                                .items_center()
-                                .gap_2()
+                                .items_start()
+                                .gap(scaled(10.))
                                 .child(
                                     div()
-                                        .size(px(26.))
+                                        .size(scaled(36.))
                                         .relative()
                                         .flex_none()
-                                        .rounded_full()
+                                        .rounded(px(CONTROL_RADIUS))
+                                        .overflow_hidden()
                                         .bg_role(Role::SurfaceOverlay)
                                         .flex()
                                         .items_center()
                                         .justify_center()
                                         .text_role(Role::ActionPrimary)
+                                        .font_weight(FontWeight::SEMIBOLD)
                                         .child(initials)
                                         .when_some(
                                             self.author_images.get(&c.author).cloned(),
@@ -236,7 +299,6 @@ impl GitCrab {
                                                         .absolute()
                                                         .inset_0()
                                                         .size_full()
-                                                        .rounded_full()
                                                         .object_fit(ObjectFit::Cover),
                                                 )
                                             },
@@ -248,96 +310,130 @@ impl GitCrab {
                                         .min_w_0()
                                         .flex()
                                         .flex_col()
-                                        .child(div().truncate().child(c.author.clone()))
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .child(c.author.clone()),
+                                                )
+                                                .child(
+                                                    self.icon_button(
+                                                        "copy-author",
+                                                        "copy",
+                                                        "Copy author name and email",
+                                                    )
+                                                    .on_click(move |_, _, cx| {
+                                                        cx.write_to_clipboard(
+                                                            ClipboardItem::new_string(
+                                                                copy_author.clone(),
+                                                            ),
+                                                        )
+                                                    }),
+                                                ),
+                                        )
                                         .when(!email.is_empty(), |el| {
                                             el.child(
                                                 div()
                                                     .truncate()
                                                     .text_size(scaled(12.))
-                                                    .text_role(Role::TextSecondary)
+                                                    .text_role(Role::TextMuted)
                                                     .child(email.clone()),
                                             )
                                         })
                                         .child(
                                             div()
+                                                .id("commit-date")
+                                                .flex()
+                                                .gap_1()
                                                 .text_size(scaled(12.))
-                                                .text_role(Role::TextMuted)
-                                                .child(format!(
-                                                    "{} · {}",
-                                                    display_date(&c.date),
-                                                    c.date
-                                                )),
+                                                .child(
+                                                    div()
+                                                        .text_role(Role::TextMuted)
+                                                        .child("authored"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_role(Role::TextSecondary)
+                                                        .child(display_date(&c.date)),
+                                                )
+                                                .tooltip(move |w, cx| {
+                                                    Tooltip::new(date_tooltip.clone()).build(w, cx)
+                                                }),
                                         ),
                                 )
                                 .child(
-                                    self.icon_button(
-                                        "copy-author",
-                                        "copy",
-                                        "Copy author name and email",
-                                    )
-                                    .on_click(
-                                        move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                copy_author.clone(),
-                                            ))
-                                        },
-                                    ),
-                                ),
-                        )
-                        .child(
-                            self.button("copy-id", c.id.chars().take(10).collect::<String>())
-                                .icon(icon("copy"))
-                                .font_family(CODE_FONT)
-                                .text_size(scaled(12.))
-                                .mx(scaled(INSPECTOR_INSET))
-                                .justify_start()
-                                .tooltip("Copy full commit SHA")
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        copy_id.clone(),
-                                    ))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .px(scaled(INSPECTOR_INSET))
-                                .flex()
-                                .flex_wrap()
-                                .items_center()
-                                .gap_1()
-                                .child(
                                     div()
-                                        .text_size(scaled(12.))
-                                        .text_role(Role::TextMuted)
-                                        .child(match c.parents.len() {
-                                            0 => "Root commit · no parents".to_string(),
-                                            1 => "Parent".to_string(),
-                                            n => format!("Merge commit · {n} parents"),
-                                        }),
-                                )
-                                .children(c.parents.iter().enumerate().map(|(i, parent)| {
-                                    let id = parent.clone();
-                                    let loaded =
-                                        self.state.snapshot.as_ref().is_some_and(|s| {
-                                            s.commits.iter().any(|c| c.id == *parent)
-                                        });
-                                    let short = parent.chars().take(8).collect::<String>();
-                                    let label = if c.parents.len() > 1 {
-                                        format!("{} {short}", ordinal(i))
-                                    } else {
-                                        short
-                                    };
-                                    self.button(("parent", i), label)
-                                        .font_family(CODE_FONT)
-                                        .tooltip(if loaded {
-                                            format!("Select parent {parent}")
-                                        } else {
-                                            format!("Load more history and select parent {parent}")
+                                        .flex_none()
+                                        .flex()
+                                        .flex_col()
+                                        .items_end()
+                                        .gap(px(2.))
+                                        .when(c.parents.is_empty(), |el| {
+                                            el.child(
+                                                div()
+                                                    .text_size(scaled(12.))
+                                                    .text_role(Role::TextMuted)
+                                                    .child("root commit"),
+                                            )
                                         })
-                                        .on_click(cx.listener(move |v, _, w, cx| {
-                                            v.seek_commit(id.clone(), w, cx)
-                                        }))
-                                })),
+                                        .children(c.parents.iter().enumerate().map(
+                                            |(i, parent)| {
+                                                let id = parent.clone();
+                                                let loaded =
+                                                    self.state.snapshot.as_ref().is_some_and(|s| {
+                                                        s.commits.iter().any(|c| c.id == *parent)
+                                                    });
+                                                let short =
+                                                    parent.chars().take(7).collect::<String>();
+                                                let what = if c.parents.len() > 1 {
+                                                    format!("{} parent", ordinal(i).to_lowercase())
+                                                } else {
+                                                    "parent".to_string()
+                                                };
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .when(i == 0, |row| {
+                                                        row.child(
+                                                            div()
+                                                                .text_size(scaled(12.))
+                                                                .text_role(Role::TextMuted)
+                                                                .child(if c.parents.len() > 1 {
+                                                                    "parents:"
+                                                                } else {
+                                                                    "parent:"
+                                                                }),
+                                                        )
+                                                    })
+                                                    .child(
+                                                        self.button(("parent", i), short)
+                                                            .font_family(CODE_FONT)
+                                                            .text_size(scaled(12.))
+                                                            .tooltip(if loaded {
+                                                                format!("Select {what} {parent}")
+                                                            } else {
+                                                                format!(
+                                                                    "Load more history and select {what} {parent}"
+                                                                )
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                move |v, _, w, cx| {
+                                                                    v.seek_commit(id.clone(), w, cx)
+                                                                },
+                                                            )),
+                                                    )
+                                            },
+                                        )),
+                                ),
                         )
                         .when(!c.refs.is_empty(), |el| {
                             el.child(
@@ -362,23 +458,31 @@ impl GitCrab {
                 )
                 .flex_none()
                 // Leave room for the changed files and commit actions at large text sizes.
-                .max_h(relative(0.35)),
+                .max_h(relative(0.45)),
             )
             .child(
                 inspector_bar()
-                    .justify_between()
-                    .child(if loading {
-                        "Changed files · loading…".to_string()
-                    } else if self.state.details_failed {
-                        "Changed files · unavailable".to_string()
-                    } else {
-                        format!("Changed files · {}", self.state.files.len())
-                    })
+                    .border_t_1()
+                    .gap(scaled(12.))
+                    .when(loading, |bar| bar.child("Loading changes…"))
                     .when(self.state.details_failed && !loading, |bar| {
                         let id = id.clone();
-                        bar.child(self.button("retry-details", "Retry").on_click(
-                            cx.listener(move |v, _, w, cx| v.select(Some(id.clone()), w, cx)),
-                        ))
+                        bar.child(div().flex_1().child("Changes unavailable")).child(
+                            self.button("retry-details", "Retry").on_click(cx.listener(
+                                move |v, _, w, cx| v.select(Some(id.clone()), w, cx),
+                            )),
+                        )
+                    })
+                    .when(!loading && !self.state.details_failed, |bar| {
+                        bar.children(summary).child(div().flex_1()).child(
+                            div()
+                                .text_size(scaled(12.))
+                                .text_role(Role::TextMuted)
+                                .child(match self.state.files.len() {
+                                    1 => "1 file".to_string(),
+                                    n => format!("{n} files"),
+                                }),
+                        )
                     }),
             );
         let empty_files = if loading {

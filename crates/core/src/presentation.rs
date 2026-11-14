@@ -491,9 +491,63 @@ pub fn ordinal(index: usize) -> String {
     }
 }
 
+/// Joins a commit body's hard-wrapped lines so the text reflows to its pane.
+///
+/// Blank lines stay as paragraph breaks. List items, indented lines and
+/// trailer lines such as `Co-Authored-By:` keep their own line.
+pub fn reflow_body(body: &str) -> Vec<String> {
+    fn starts_own_line(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        line.starts_with([' ', '\t'])
+            || trimmed.starts_with(['-', '*', '+', '>', '|'])
+            || trimmed
+                .split_once(". ")
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            || trimmed
+                .split_once(": ")
+                .is_some_and(|(key, _)| !key.is_empty() && !key.contains(' ') && key.contains('-'))
+    }
+    let mut lines: Vec<String> = vec![];
+    let mut joinable = false;
+    for line in body.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            lines.push(String::new());
+            joinable = false;
+        } else if joinable && !starts_own_line(line) {
+            let last = lines.last_mut().unwrap();
+            last.push(' ');
+            last.push_str(line.trim_start());
+        } else {
+            lines.push(line.to_owned());
+            joinable = true;
+        }
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_bodies_reflow_paragraphs_but_keep_lists_and_trailers() {
+        let body = "History rows follow the subject\njoined onto one line.\n\n- first item\n  continued\n- second\n1. numbered\n\nCo-Authored-By: A <a@b>\nSigned-off-by: B <b@c>";
+        assert_eq!(
+            reflow_body(body),
+            [
+                "History rows follow the subject joined onto one line.",
+                "",
+                "- first item",
+                "  continued",
+                "- second",
+                "1. numbered",
+                "",
+                "Co-Authored-By: A <a@b>",
+                "Signed-off-by: B <b@c>",
+            ]
+        );
+    }
 
     #[test]
     fn commit_dates_use_day_month_year_and_24_hour_time() {
