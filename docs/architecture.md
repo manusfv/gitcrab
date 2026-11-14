@@ -17,6 +17,10 @@ The workspace has five crates:
 - `crates/app` (`gitcrab`): the binary. Installs `gitcrab_git::Backend` and
   `gitcrab_settings::FileStore`, then opens the window.
 
+`scripts/check-boundaries.sh` enforces this layout: core has no UI, platform or
+I/O dependency, the UI depends on neither I/O crate, the I/O crates do not
+depend on the UI, and core tests pass. CI runs it on every platform.
+
 Paths below are relative to each crate's `src/`.
 
 - `git/` owns Git arguments, machine patches, repository identity, and write

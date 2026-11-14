@@ -81,6 +81,11 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "RUSTUP_TOOLCHAIN=${env:RUST_VERSION}-${{ matrix.target }}" >> $env:GITHUB_ENV
           git --version
+      - name: Crate boundaries
+        # Core stays free of UI and I/O; the UI reaches I/O only through core's traits.
+        # The core tests run in the next step.
+        shell: bash
+        run: scripts/check-boundaries.sh --skip-tests
       - name: Verify clean checkout
         shell: pwsh
         run: |
@@ -92,11 +97,6 @@ jobs:
           }
           # Lint per target: much of the platform code sits behind cfg(windows)/cfg(unix).
           # `-D warnings` applies to GitCrab only, not the vendored path dependencies.
-          # Core must stay free of UI and I/O dependencies.
-          Check core-tree @('tree', '--locked', '-p', 'gitcrab-core', '--all-features', '-e', 'normal,build,dev', '--target', 'all')
-          if (Select-String -Path check-logs/core-tree.log -Pattern 'gpui|notify|async-channel|windows-sys|libc|gitcrab-git|gitcrab-settings' -Quiet) {
-            throw 'gitcrab-core depends on a UI, platform or I/O crate'
-          }
           Check clippy-core @('clippy', '--locked', '-p', 'gitcrab-core', '--lib', '--tests', '--', '-D', 'warnings')
           Check clippy-native @('clippy', '--locked', '--workspace', '--all-features', '--all-targets', '--', '-D', 'warnings')
           Check core @('test', '--locked', '-p', 'gitcrab-core')

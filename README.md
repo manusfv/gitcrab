@@ -114,7 +114,7 @@ To open a specific local repository, append `-- "/path/to/repository"` to the `c
 
 ```sh
 cargo fmt --all -- --check
-cargo test --locked -p gitcrab-core
+scripts/check-boundaries.sh   # crate boundaries + core tests; run before each commit
 cargo test --locked --workspace --all-features
 cargo build --locked --release --bin gitcrab
 ```
