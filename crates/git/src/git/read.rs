@@ -158,7 +158,7 @@ impl Git {
             &count,
             &skip_arg,
             "-z",
-            "--format=%H%x00%P%x00%s%x00%an%x00%aI",
+            "--format=%H%x00%P%x00%s%x00%an%x00%aI%x00%b",
         ];
         if head_exists.is_ok() {
             log_args.push("HEAD");
@@ -182,7 +182,7 @@ impl Git {
         })?;
         let fields: Vec<_> = log.split('\0').collect();
         let mut commits: Vec<_> = fields
-            .as_chunks::<5>()
+            .as_chunks::<6>()
             .0
             .iter()
             .filter(|f| !f[0].is_empty())
@@ -190,6 +190,7 @@ impl Git {
                 id: f[0].into(),
                 parents: f[1].split_whitespace().map(String::from).collect(),
                 subject: f[2].into(),
+                body_preview: body_preview(f[5]),
                 author: f[3].into(),
                 date: f[4].into(),
                 refs: labels.remove(f[0]).unwrap_or_default(),

@@ -800,6 +800,20 @@ impl GitCrab {
                     }
                     HistoryColumn::Message => {
                         let subject = c.subject.clone();
+                        // The body follows the subject in a quieter color, as a
+                        // hint of what the rest of the message says.
+                        let text = if c.body_preview.is_empty() {
+                            SharedString::from(c.subject.clone())
+                        } else {
+                            SharedString::from(format!("{}  {}", c.subject, c.body_preview))
+                        };
+                        let preview = HighlightStyle {
+                            color: Some(role_color(Role::TextSecondary).into()),
+                            font_weight: Some(FontWeight::NORMAL),
+                            ..Default::default()
+                        };
+                        let highlights = (!c.body_preview.is_empty())
+                            .then(|| (c.subject.len()..text.len(), preview));
                         (div()
                             .id(("subject", i))
                             .flex_1()
@@ -807,7 +821,7 @@ impl GitCrab {
                             .truncate()
                             .when(selected, |e| e.font_weight(FontWeight::MEDIUM))
                             .py(px(3.))
-                            .child(c.subject.clone())
+                            .child(StyledText::new(text).with_highlights(highlights))
                             // The full subject stays available when the column clips it.
                             .tooltip(move |w, cx| Tooltip::new(subject.clone()).build(w, cx)))
                         .into_any_element()

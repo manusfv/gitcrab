@@ -10,6 +10,10 @@ pub struct Commit {
     /// Parent object IDs in Git's order, with the first parent first.
     pub parents: Vec<String>,
     pub subject: String,
+    /// The message body on one line, whitespace collapsed and capped, shown
+    /// dimmed after the subject in the history list. Empty when there is none.
+    #[serde(default)]
+    pub body_preview: String,
     pub author: String,
     /// Author date in strict ISO 8601 format.
     pub date: String,
@@ -37,6 +41,29 @@ impl Commit {
     pub fn matches_search(&self, normalized_query: &str) -> bool {
         self.search_key.contains(normalized_query)
     }
+}
+
+/// Longest body preview kept per commit, in characters. A history row never
+/// shows more than this, and the cap keeps long messages out of memory.
+const BODY_PREVIEW_CHARS: usize = 200;
+
+/// Joins a commit body onto one line for [`Commit::body_preview`].
+pub fn body_preview(body: &str) -> String {
+    let mut preview = String::new();
+    for word in body.split_whitespace() {
+        if !preview.is_empty() {
+            preview.push(' ');
+        }
+        preview.push_str(word);
+        if preview.len() > BODY_PREVIEW_CHARS * 4 {
+            break;
+        }
+    }
+    if let Some((end, _)) = preview.char_indices().nth(BODY_PREVIEW_CHARS) {
+        preview.truncate(end);
+        preview.push('…');
+    }
+    preview
 }
 
 /// Trims and lowercases a query for [`Commit::matches_search`].

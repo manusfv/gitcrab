@@ -154,6 +154,18 @@ fn history_search_matches_reference_only_with_normalized_whitespace() {
 }
 
 #[test]
+fn body_preview_joins_lines_and_caps_length() {
+    assert_eq!(body_preview(""), "");
+    assert_eq!(
+        body_preview("First line\n\n  Second\tline\n\nCo-Authored-By: A <a@b>\n"),
+        "First line Second line Co-Authored-By: A <a@b>"
+    );
+    let long = body_preview(&"é ".repeat(500));
+    assert_eq!(long.chars().count(), 201);
+    assert!(long.ends_with('…'));
+}
+
+#[test]
 #[ignore = "repeatable history search timing fixture"]
 fn benchmark_history_search() {
     let commits: Vec<_> = (0..20_000)
