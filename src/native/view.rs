@@ -415,6 +415,10 @@ pub struct GitCrab {
     single_pane: bool,
     /// History columns as displayed this frame, adapted to the pane width.
     history_layout: gitcrab_core::history_columns::HistoryColumns,
+    /// The open repository's own history column layout, as the user edits it.
+    history_columns: gitcrab_core::history_columns::HistoryColumns,
+    /// Preference key of the repository `history_columns` belongs to.
+    history_columns_repository: Option<String>,
     /// Estimated width of the history pane, in logical pixels.
     history_available: f32,
     author_images: std::collections::HashMap<String, std::path::PathBuf>,
@@ -602,6 +606,8 @@ impl GitCrab {
             references_open: false,
             single_pane: false,
             history_layout: Default::default(),
+            history_columns: Default::default(),
+            history_columns_repository: None,
             history_available: 0.,
             author_images: local_author_images(),
             #[cfg(feature = "native-evidence")]
@@ -772,6 +778,9 @@ impl GitCrab {
         }
         let opening = lane == Lane::Snapshot && self.state.snapshot.is_none();
         let jobs = self.state.complete(lane, response);
+        if opening && self.state.snapshot.is_some() {
+            self.load_history_columns(cx);
+        }
         // A write that returned the working changes read them like a
         // refresh would, so earlier watcher events are already reflected.
         if let Some(read) = self.state.worktree_read_at.take() {
@@ -923,6 +932,7 @@ impl GitCrab {
     /// Saved only after the settings writer acknowledges this exact save.
     fn save_preferences(&mut self, announce: bool, cx: &mut Context<Self>) -> Result<(), String> {
         static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.store_history_columns();
         self.preferences.compact = self.compact;
         self.preferences.split = self.split;
         let result = self.preferences.save_changes(&self.saved_preferences, cx)?;
@@ -983,10 +993,40 @@ impl GitCrab {
     /// Queues any unsaved tab preferences immediately.
     /// Use [`Preferences::flush`] to wait for the settings writer.
     pub fn flush_preferences(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        self.store_history_columns();
         if self.preference_save.take().is_some() || self.preferences != self.saved_preferences {
             self.save_preferences(false, cx)?;
         }
         Ok(())
+    }
+
+    /// Records the column layout under its repository when the user changed it,
+    /// so repositories that keep the shared layout gain no entry.
+    fn store_history_columns(&mut self) {
+        let Some(key) = self.history_columns_repository.clone() else {
+            return;
+        };
+        if self.preferences.columns_for(&key) != self.history_columns {
+            self.preferences
+                .repository_columns
+                .insert(key, self.history_columns.clone());
+        }
+    }
+
+    /// Switches the history columns to the layout saved for the repository just opened.
+    /// Edits made for the previous repository are kept under that repository.
+    fn load_history_columns(&mut self, cx: &mut Context<Self>) {
+        self.store_history_columns();
+        let key = Preferences::repository_key(&self.state.path);
+        let unsaved = self.preferences.repository_columns.get(&key)
+            != self.saved_preferences.repository_columns.get(&key);
+        self.history_columns = if unsaved {
+            self.preferences.columns_for(&key)
+        } else {
+            // Another tab may have saved a newer layout for this repository.
+            Preferences::current(cx).columns_for(&key)
+        };
+        self.history_columns_repository = Some(key);
     }
 
     fn reset_panels(&mut self, cx: &mut Context<Self>) {

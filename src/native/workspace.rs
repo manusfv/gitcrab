@@ -1,4 +1,4 @@
-use super::components::{self, prelude::*};
+use super::components;
 use super::{
     preferences::Preferences,
     theme::*,
@@ -9,6 +9,7 @@ use gpui::{prelude::*, *};
 use gpui_component::{
     button::*,
     menu::{DropdownMenu, PopupMenuItem},
+    tooltip::Tooltip,
     Disableable, Sizable, WindowExt,
 };
 use std::{cell::RefCell, rc::Rc};
@@ -64,13 +65,14 @@ fn tab_chrome(selected: bool) -> Div {
         })
 }
 
-fn tab_label(id: impl Into<ElementId>, label: String) -> Button {
-    Button::new(id)
-        .ghost()
-        .cursor_default()
-        .interaction_highlight(false)
-        .small()
+/// The tab's name. It is part of the tab, which handles clicks, drags and focus.
+fn tab_label(label: String) -> Div {
+    div()
         .h(scaled(28.))
+        .pl(scaled(10.))
+        .pr(scaled(2.))
+        .flex()
+        .items_center()
         .child(
             div()
                 .max_w(px(170.))
@@ -81,19 +83,31 @@ fn tab_label(id: impl Into<ElementId>, label: String) -> Button {
         )
 }
 
-fn tab_close(id: impl Into<ElementId>) -> Button {
-    components::sized(
-        Button::new(id).child(
-            div()
-                .text_size(scaled(16.))
-                .line_height(scaled(16.))
-                .child("×"),
-        ),
-        ControlSize::TabClose,
-    )
-    .ghost()
-    .cursor_default()
-    .w(scaled(32.))
+/// The tab's close mark. It is not a separate focus stop: the tab is one control.
+fn tab_close(id: impl Into<ElementId>, enabled: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(scaled(24.))
+        .h(scaled(24.))
+        .mr(scaled(4.))
+        .rounded(px(4.))
+        .text_size(scaled(16.))
+        .line_height(scaled(16.))
+        .map(|el| {
+            if enabled {
+                el.text_role(Role::TextSecondary).hover(|s| {
+                    s.bg_role(Role::InteractionHover)
+                        .text_role(Role::TextDefault)
+                })
+            } else {
+                el.text_role(Role::TextDisabled)
+            }
+        })
+        .child("×")
 }
 
 /// The window's repository tabs and their shared open and close actions.
@@ -107,6 +121,8 @@ pub struct Workspace {
     scroll: ScrollHandle,
     tab_drag: Option<RailDrag<EntityId>>,
     tab_drag_start: Option<(EntityId, Pixels)>,
+    /// One keyboard focus stop per tab, kept across renders.
+    tab_focus: std::collections::HashMap<EntityId, FocusHandle>,
 }
 
 impl Workspace {
@@ -143,6 +159,7 @@ impl Workspace {
             scroll: ScrollHandle::new(),
             tab_drag: None,
             tab_drag_start: None,
+            tab_focus: Default::default(),
         }
     }
 
@@ -379,6 +396,7 @@ impl Workspace {
     }
 
     fn quit_after_flush(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember_window_size(window, cx);
         let identities: Vec<_> = self
             .tabs
             .iter()
@@ -397,6 +415,21 @@ impl Workspace {
                 w.remove_window();
             }
         });
+    }
+
+    /// Queues the window's size so the next launch opens at it. The flush that
+    /// follows waits for this write. Full screen keeps the windowed size.
+    fn remember_window_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let bounds = window.window_bounds();
+        let size = bounds.get_bounds().size;
+        let saved = crate::preferences::WindowSize {
+            width: f32::from(size.width),
+            height: f32::from(size.height),
+            maximized: matches!(bounds, WindowBounds::Maximized(_)),
+        };
+        if let Err(error) = Preferences::remember_window(saved, cx) {
+            self.picker_error = Some(format!("Could not save the window size: {error}"));
+        }
     }
 
     fn cycle(&mut self, direction: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -619,8 +652,16 @@ impl Render for Workspace {
                 }
             })
             .collect();
+        let tab_ids: Vec<EntityId> = self.tabs.iter().map(|tab| tab.entity_id()).collect();
+        self.tab_focus.retain(|id, _| tab_ids.contains(id));
+        for id in &tab_ids {
+            self.tab_focus
+                .entry(*id)
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
         for (index, entity) in self.tabs.iter().enumerate() {
             let tab_id = entity.entity_id();
+            let focus = self.tab_focus[&tab_id].clone();
 
             let tab = entity.read(cx);
             let (mut label, tooltip) = tab_labels[index].clone();
@@ -628,9 +669,91 @@ impl Render for Workspace {
                 label = format!("● {label}");
             }
             let selected = index == self.active;
+            let closable = !blocked && !tab.mutating();
+            // The name, close mark and padding form one tab: it takes the
+            // focus, drags and clicks as a whole, like a browser tab.
             strip = strip.child(components::rail::item(
                 tab_chrome(selected)
                     .id(("repository-tab", tab_id))
+                    .track_focus(&focus)
+                    .when(focus.is_focused(window), |el| {
+                        // One ring around the whole tab.
+                        el.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .rounded(px(4.))
+                                .border_2()
+                                .border_role(Role::InteractionFocus),
+                        )
+                    })
+                    .tooltip({
+                        let tooltip = tooltip.clone();
+                        move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx)
+                    })
+                    .on_click(cx.listener(move |v, _, w, cx| {
+                        if !cx.has_active_drag() && !v.blocked(w, cx) {
+                            v.activate(index, w, cx);
+                        }
+                    }))
+                    .on_key_down(cx.listener(move |v, event: &KeyDownEvent, w, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.keystroke.modifiers.modified()
+                        {
+                            cx.stop_propagation();
+                            if !v.blocked(w, cx) {
+                                v.activate(index, w, cx);
+                            }
+                        }
+                    }))
+                    .when(!blocked, |el| {
+                        el.cursor_grab().active(|el| el.cursor_grabbing())
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |v, event: &MouseDownEvent, _, _| {
+                            v.tab_drag_start = Some((tab_id, event.position.x));
+                        }),
+                    )
+                    .when(!blocked, |el| {
+                        let weak = cx.weak_entity();
+                        let bounds = drop_bounds.clone();
+                        el.on_drag(
+                            DraggedTab {
+                                workspace: workspace_id,
+                                tab: tab_id,
+                            },
+                            move |drag, _, w, cx| {
+                                let _ = weak.update(cx, |v, cx| {
+                                    let pointer = v
+                                        .tab_drag_start
+                                        .filter(|(id, _)| *id == tab_id)
+                                        .map(|(_, x)| x)
+                                        .unwrap_or(w.mouse_position().x);
+                                    v.tab_drag =
+                                        RailDrag::new(&bounds.borrow(), tab_id, pointer, 4.);
+                                    v.move_tab_drag(w.mouse_position().x, cx);
+                                });
+                                cx.stop_propagation();
+                                cx.new(|_| drag.clone())
+                            },
+                        )
+                    })
+                    // Middle click closes the tab, as in browsers and editors,
+                    // without focusing it first.
+                    .capture_any_mouse_down(|event, window, _| {
+                        if event.button == MouseButton::Middle {
+                            window.prevent_default();
+                        }
+                    })
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(move |v, _, w, cx| {
+                            if !cx.has_active_drag() {
+                                v.close(index, w, cx);
+                            }
+                        }),
+                    )
                     .child({
                         let drop_bounds = drop_bounds.clone();
                         canvas(
@@ -643,67 +766,23 @@ impl Render for Workspace {
                         .size_full()
                     })
                     .child(
-                        div()
-                            .id(("drag-repository-tab", tab_id))
-                            .cursor_grab()
-                            .active(|el| el.cursor_grabbing())
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |v, event: &MouseDownEvent, _, _| {
-                                    v.tab_drag_start = Some((tab_id, event.position.x));
-                                }),
-                            )
-                            .when(!blocked, |el| {
-                                let weak = cx.weak_entity();
-                                let bounds = drop_bounds.clone();
-                                el.on_drag(
-                                    DraggedTab {
-                                        workspace: workspace_id,
-                                        tab: tab_id,
-                                    },
-                                    move |drag, _, w, cx| {
-                                        let _ = weak.update(cx, |v, cx| {
-                                            let pointer = v
-                                                .tab_drag_start
-                                                .filter(|(id, _)| *id == tab_id)
-                                                .map(|(_, x)| x)
-                                                .unwrap_or(w.mouse_position().x);
-                                            v.tab_drag = RailDrag::new(
-                                                &bounds.borrow(),
-                                                tab_id,
-                                                pointer,
-                                                4.,
-                                            );
-                                            v.move_tab_drag(w.mouse_position().x, cx);
-                                        });
-                                        cx.stop_propagation();
-                                        cx.new(|_| drag.clone())
-                                    },
-                                )
-                            })
-                            .child(
-                                tab_label(
-                                    ("select-repository-tab", entity.entity_id()),
-                                    label.clone(),
-                                )
-                                .tab_stop(true)
-                                .disabled(blocked)
-                                .tooltip(tooltip)
-                                .on_click(cx.listener(
-                                    move |v, _, w, cx| {
-                                        if !cx.has_active_drag() && !v.blocked(w, cx) {
-                                            v.activate(index, w, cx);
-                                        }
-                                    },
-                                )),
-                            ),
+                        tab_label(label.clone())
+                            .when(blocked, |el| el.text_role(Role::TextDisabled)),
                     )
                     .child(
-                        tab_close(("close-repository-tab", entity.entity_id()))
-                            .tab_stop(true)
-                            .disabled(blocked || tab.mutating())
-                            .tooltip(format!("Close {label} tab"))
-                            .on_click(cx.listener(move |v, _, w, cx| v.close(index, w, cx))),
+                        tab_close(("close-repository-tab", tab_id), closable)
+                            .tooltip({
+                                let text = format!("Close {label} tab");
+                                move |w, cx| Tooltip::new(text.clone()).build(w, cx)
+                            })
+                            .on_click(cx.listener(move |v, _, w, cx| {
+                                // The close mark acts alone; the tab's own
+                                // click would select a tab that is closing.
+                                cx.stop_propagation();
+                                if !cx.has_active_drag() {
+                                    v.close(index, w, cx);
+                                }
+                            })),
                     ),
                 self.tab_drag.as_ref(),
                 tab_id,

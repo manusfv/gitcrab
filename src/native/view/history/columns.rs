@@ -41,9 +41,9 @@ fn column_frame<E: Styled>(el: E, entry: &ColumnLayout) -> E {
 impl GitCrab {
     /// Saves the displayed, width-adapted layout as the user's own before editing it.
     fn materialize_columns(&mut self) {
-        if !self.preferences.history_columns.customized {
-            self.preferences.history_columns = self.history_layout.clone();
-            self.preferences.history_columns.customized = true;
+        if !self.history_columns.customized {
+            self.history_columns = self.history_layout.clone();
+            self.history_columns.customized = true;
         }
     }
 
@@ -73,7 +73,7 @@ impl GitCrab {
                     .on_click(move |_, w, cx| {
                         let _ = weak.update(cx, |v, cx| {
                             v.materialize_columns();
-                            v.preferences.history_columns.toggle(column);
+                            v.history_columns.toggle(column);
                             v.columns_changed(w, cx);
                         });
                     }),
@@ -96,7 +96,7 @@ impl GitCrab {
                                 .on_click(move |_, w, cx| {
                                     let _ = weak.update(cx, |v, cx| {
                                         v.materialize_columns();
-                                        v.preferences.history_columns.move_visible(column, delta);
+                                        v.history_columns.move_visible(column, delta);
                                         v.columns_changed(w, cx);
                                     });
                                 }),
@@ -115,7 +115,7 @@ impl GitCrab {
                             move |_, w, cx| {
                                 let _ = weak.update(cx, |v, cx| {
                                     v.materialize_columns();
-                                    v.preferences.history_columns.resize_by(column, delta);
+                                    v.history_columns.resize_by(column, delta);
                                     v.columns_changed(w, cx);
                                 });
                             },
@@ -129,7 +129,7 @@ impl GitCrab {
         menu.separator().item(
             PopupMenuItem::new("Reset columns · fit to window").on_click(move |_, w, cx| {
                 let _ = weak.update(cx, |v, cx| {
-                    v.preferences.history_columns = HistoryColumns::default();
+                    v.history_columns = HistoryColumns::default();
                     v.history_horizontal_scroll
                         .set_offset(point(px(0.), px(0.)));
                     v.columns_changed(w, cx);
@@ -170,12 +170,7 @@ impl GitCrab {
     }
     fn order_columns(&mut self, order: &[HistoryColumn]) {
         // Hidden entries retain their positions and width/visibility settings.
-        let mut visible: Vec<_> = self
-            .preferences
-            .history_columns
-            .visible()
-            .cloned()
-            .collect();
+        let mut visible: Vec<_> = self.history_columns.visible().cloned().collect();
         visible.sort_by_key(|entry| {
             order
                 .iter()
@@ -183,7 +178,7 @@ impl GitCrab {
                 .unwrap_or(usize::MAX)
         });
         let mut next = visible.into_iter();
-        for entry in &mut self.preferences.history_columns.columns {
+        for entry in &mut self.history_columns.columns {
             if entry.visible {
                 *entry = next.next().unwrap();
             }
@@ -237,7 +232,7 @@ impl GitCrab {
             .filter(|_| cx.has_active_drag())
         {
             let width = width + f32::from(event.position.x - start);
-            self.preferences.history_columns.resize(column, width);
+            self.history_columns.resize(column, width);
             self.columns_changed(window, cx);
             return;
         }
@@ -317,8 +312,7 @@ impl GitCrab {
                     if drag.column != column {
                         return;
                     }
-                    v.preferences
-                        .history_columns
+                    v.history_columns
                         .resize(column, width + f32::from(event.event.position.x - start));
                     cx.notify();
                 }),

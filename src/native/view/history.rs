@@ -191,7 +191,7 @@ impl GitCrab {
 
     pub(super) fn history(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.prepare_column_drag(window, cx);
-        self.history_layout = self.preferences.history_columns.adapted(
+        self.history_layout = self.history_columns.adapted(
             self.history_available - self.history_gutter(),
             self.preferences.font_size / 13.,
         );

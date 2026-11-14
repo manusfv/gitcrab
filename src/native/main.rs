@@ -86,7 +86,19 @@ fn main() {
             KeyBinding::new("ctrl-y", view::RedoLast, Some("GitCrab")),
         ]);
         #[cfg(not(feature = "native-evidence"))]
-        let viewport = size(px(1280.), px(800.));
+        let saved = preferences::Preferences::current(cx).window;
+        #[cfg(not(feature = "native-evidence"))]
+        let viewport = {
+            let (width, height) = saved.map_or((1280., 800.), |s| (s.width, s.height));
+            // A size saved on a larger display still fits on this one.
+            let display = cx.primary_display().map(|d| d.bounds().size);
+            size(
+                display.map_or(px(width), |d| px(width).min(d.width)),
+                display.map_or(px(height), |d| px(height).min(d.height)),
+            )
+        };
+        #[cfg(feature = "native-evidence")]
+        let saved: Option<preferences::WindowSize> = None;
         #[cfg(feature = "native-evidence")]
         let viewport = size(
             px(std::env::var("GITCRAB_CAPTURE_WIDTH")
@@ -105,8 +117,15 @@ fn main() {
         let bounds = Bounds::centered(None, viewport, cx);
         cx.open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(960.), px(600.))),
+                window_bounds: Some(if saved.is_some_and(|s| s.maximized) {
+                    WindowBounds::Maximized(bounds)
+                } else {
+                    WindowBounds::Windowed(bounds)
+                }),
+                window_min_size: Some(size(
+                    px(preferences::WindowSize::MIN_WIDTH),
+                    px(preferences::WindowSize::MIN_HEIGHT),
+                )),
                 titlebar: Some(TitlebarOptions {
                     title: Some("GitCrab".into()),
                     ..Default::default()

@@ -129,8 +129,38 @@ pub struct Preferences {
     pub always_show_file_actions: bool,
     pub collapsed: std::collections::BTreeSet<String>,
     pub recent: Vec<String>,
+    /// Column layout for repositories without their own saved layout.
+    /// Older versions saved one layout for every repository here.
     pub history_columns: gitcrab_core::history_columns::HistoryColumns,
+    /// Column layouts saved per repository, keyed by its familiar path.
+    pub repository_columns: BTreeMap<String, gitcrab_core::history_columns::HistoryColumns>,
+    /// Main window size when GitCrab last closed.
+    pub window: Option<WindowSize>,
 }
+
+/// Saved main window size in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowSize {
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+impl WindowSize {
+    pub const MIN_WIDTH: f32 = 960.;
+    pub const MIN_HEIGHT: f32 = 600.;
+
+    /// Drops sizes that are not finite and keeps the rest within supported bounds.
+    fn normalized(self) -> Option<Self> {
+        (self.width.is_finite() && self.height.is_finite()).then(|| Self {
+            width: self.width.clamp(Self::MIN_WIDTH, 16384.),
+            height: self.height.clamp(Self::MIN_HEIGHT, 16384.),
+            maximized: self.maximized,
+        })
+    }
+}
+
 impl Default for Preferences {
     fn default() -> Self {
         Self {
@@ -146,6 +176,8 @@ impl Default for Preferences {
             collapsed: Default::default(),
             recent: vec![],
             history_columns: Default::default(),
+            repository_columns: Default::default(),
+            window: None,
         }
     }
 }
@@ -193,6 +225,27 @@ impl Preferences {
         shared.save(cx).map(Some)
     }
 
+    /// Returns the key under which a repository's own settings are saved.
+    pub fn repository_key(repository: &str) -> String {
+        gitcrab_core::presentation::display_path(repository)
+    }
+
+    /// Returns the history column layout saved for `repository`, or the shared fallback.
+    pub fn columns_for(&self, repository: &str) -> gitcrab_core::history_columns::HistoryColumns {
+        self.repository_columns
+            .get(&Self::repository_key(repository))
+            .unwrap_or(&self.history_columns)
+            .clone()
+    }
+
+    /// Records the main window size in shared preferences and queues a save.
+    pub fn remember_window(size: WindowSize, cx: &mut App) -> Result<PersistenceResult, String> {
+        let mut shared = Self::current(cx);
+        shared.window = size.normalized();
+        cx.set_global(SharedPreferences(shared.clone()));
+        shared.save(cx)
+    }
+
     /// Merges this tab's edits since `previous` into shared preferences and queues a save.
     /// Changes made by other tabs to fields this tab left alone are preserved.
     pub fn save_changes(&self, previous: &Self, cx: &mut App) -> Result<PersistenceResult, String> {
@@ -220,8 +273,11 @@ impl Preferences {
             compact_diff,
             always_show_file_actions
         );
-        if edited.history_columns != previous.history_columns {
-            self.history_columns = edited.history_columns.clone();
+        for (repository, columns) in &edited.repository_columns {
+            if previous.repository_columns.get(repository) != Some(columns) {
+                self.repository_columns
+                    .insert(repository.clone(), columns.clone());
+            }
         }
         for key in previous.collapsed.difference(&edited.collapsed) {
             self.collapsed.remove(key);
@@ -355,6 +411,10 @@ impl Preferences {
         p.recent = gitcrab_core::presentation::unique_paths(std::mem::take(&mut p.recent));
         p.recent.truncate(10);
         p.history_columns.normalize();
+        p.repository_columns
+            .values_mut()
+            .for_each(|c| c.normalize());
+        p.window = p.window.and_then(WindowSize::normalized);
         p
     }
     fn save(&self, cx: &mut App) -> Result<PersistenceResult, String> {
@@ -656,5 +716,50 @@ mod tests {
         let p: Preferences = serde_json::from_str(r#"{"theme":"missing","code_size":17}"#).unwrap();
         assert_eq!(p.code_size, 17.);
         assert_eq!(p.theme.resolve(false), "dark");
+    }
+
+    #[::core::prelude::v1::test]
+    fn column_layouts_are_kept_per_repository() {
+        use gitcrab_core::history_columns::{HistoryColumn, HistoryColumns};
+        let mut legacy = HistoryColumns::default();
+        legacy.toggle(HistoryColumn::Sha);
+        let previous = Preferences {
+            history_columns: legacy.clone(),
+            ..Default::default()
+        };
+        // Repositories without their own layout use the one older versions saved.
+        assert_eq!(previous.columns_for("one"), legacy);
+
+        let mut one = HistoryColumns::default();
+        one.toggle(HistoryColumn::Author);
+        let mut edited = previous.clone();
+        edited.repository_columns.insert("one".into(), one.clone());
+
+        // Another tab saved a layout for a different repository meanwhile.
+        let mut shared = previous.clone();
+        let mut two = HistoryColumns::default();
+        two.toggle(HistoryColumn::Graph);
+        shared.repository_columns.insert("two".into(), two.clone());
+        shared.merge_tab_changes(&previous, &edited);
+
+        assert_eq!(shared.columns_for("one"), one);
+        assert_eq!(shared.columns_for("two"), two);
+        assert_eq!(shared.columns_for("three"), legacy);
+        assert_eq!(shared.history_columns, legacy);
+    }
+
+    #[::core::prelude::v1::test]
+    fn window_size_is_normalized() {
+        let p: Preferences =
+            serde_json::from_str(r#"{"window":{"width":100,"height":5000}}"#).unwrap();
+        let size = p.window.and_then(WindowSize::normalized).unwrap();
+        assert_eq!((size.width, size.height), (WindowSize::MIN_WIDTH, 5000.));
+        assert!(!size.maximized);
+        let nan = WindowSize {
+            width: f32::NAN,
+            height: 800.,
+            maximized: true,
+        };
+        assert_eq!(nan.normalized(), None);
     }
 }
