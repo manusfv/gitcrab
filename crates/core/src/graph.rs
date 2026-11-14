@@ -216,6 +216,16 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
                     pass_start: row_index + 1,
                 });
                 parent_lanes.push(lane);
+            } else if index == 0 && dest > lane {
+                // A branch to the right already waits for this first parent.
+                // Claim it here too so the first-parent chain keeps its lane;
+                // the branch lane joins in when the parent arrives.
+                lanes[lane] = Some(Lane {
+                    target: parent,
+                    color,
+                    pass_start: row_index + 1,
+                });
+                parent_lanes.push(lane);
             } else {
                 parent_lanes.push(dest);
             }
@@ -410,6 +420,30 @@ mod tests {
         assert!(base.is_junction(&graph.edges_at(4)));
         assert!(graph.edges_at(5).is_empty());
         assert_eq!(graph.rows[6].lane, 0);
+    }
+    #[test]
+    fn first_parent_chain_keeps_its_lane_when_a_branch_reaches_the_base_first() {
+        let mut merge = c("merge", &["main2", "fix"]);
+        merge.refs.push("HEAD".into());
+        let graph = layout(&[
+            merge,
+            c("fix", &["base"]),
+            c("main2", &["main1"]),
+            c("main1", &["base"]),
+            c("base", &["root"]),
+            c("root", &[]),
+        ]);
+        let main = (graph.rows[0].lane, graph.rows[0].color);
+        assert_eq!(main, (0, 0));
+        for row in [2, 3, 4, 5] {
+            assert_eq!((graph.rows[row].lane, graph.rows[row].color), main);
+        }
+        assert_eq!(graph.rows[1].lane, 1);
+        assert!(graph.rows[4].is_junction(&graph.edges_at(3)));
+        assert!(graph
+            .edges_at(3)
+            .iter()
+            .any(|edge| edge.from_lane == 1 && edge.to_lane == 0));
     }
     #[test]
     fn loading_more_history_does_not_move_existing_rows() {
