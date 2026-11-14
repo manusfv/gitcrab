@@ -826,6 +826,33 @@ fn real_git_merge_refs_root_diff_and_detached_head() {
         .any(|c| c.id == root && c.refs.contains(&"HEAD".into())));
 }
 #[test]
+fn checked_out_branch_is_the_primary_decoration_among_shared_refs() {
+    use gitcrab_core::presentation::{resolve_decorations, DecorationKind};
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    fixture.write("file", "base\n");
+    git.stage("file").unwrap();
+    git.commit("Base").unwrap();
+    git.run(&["branch", "feature/a"]).unwrap();
+    git.run(&["branch", "feature/b"]).unwrap();
+    git.run(&["tag", "v1"]).unwrap();
+    let state = git.snapshot(100).unwrap();
+    let branch = state.checked_out_branch().unwrap().to_owned();
+    let decorations = resolve_decorations(&state, &state.commits[0].refs);
+    let labels: Vec<_> = decorations.iter().map(|d| d.label()).collect();
+    assert_eq!(decorations[0].kind, DecorationKind::HeadBranch);
+    assert_eq!(decorations[0].name, branch);
+    assert_eq!(
+        labels,
+        [
+            format!("{branch} · HEAD, checked out"),
+            "Branch feature/a".into(),
+            "Branch feature/b".into(),
+            "Tag v1".into(),
+        ]
+    );
+}
+#[test]
 fn real_git_cherry_pick_revert_stash_and_conflict_feedback() {
     let fixture = Fixture::new();
     let git = &fixture.git;
