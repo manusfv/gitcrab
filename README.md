@@ -114,8 +114,8 @@ To open a specific local repository, append `-- "/path/to/repository"` to the `c
 
 ```sh
 cargo fmt --all -- --check
-cargo test --locked --no-default-features --lib
-cargo test --locked --all-features --bin gitcrab
+cargo test --locked -p gitcrab-core
+cargo test --locked --workspace --all-features
 cargo build --locked --release --bin gitcrab
 ```
 

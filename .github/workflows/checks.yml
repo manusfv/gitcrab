@@ -92,10 +92,15 @@ jobs:
           }
           # Lint per target: much of the platform code sits behind cfg(windows)/cfg(unix).
           # `-D warnings` applies to GitCrab only, not the vendored path dependencies.
-          Check clippy-core @('clippy', '--locked', '--no-default-features', '--lib', '--tests', '--', '-D', 'warnings')
-          Check clippy-native @('clippy', '--locked', '--all-features', '--all-targets', '--', '-D', 'warnings')
-          Check core @('test', '--locked', '--no-default-features', '--lib')
-          Check native @('test', '--locked', '--all-features', '--bin', 'gitcrab')
+          # Core must stay free of UI dependencies.
+          Check core-tree @('tree', '--locked', '-p', 'gitcrab-core', '--all-features', '-e', 'normal,build,dev')
+          if (Select-String -Path check-logs/core-tree.log -Pattern 'gpui|notify|async-channel' -Quiet) {
+            throw 'gitcrab-core depends on a UI crate'
+          }
+          Check clippy-core @('clippy', '--locked', '-p', 'gitcrab-core', '--lib', '--tests', '--', '-D', 'warnings')
+          Check clippy-native @('clippy', '--locked', '--workspace', '--all-features', '--all-targets', '--', '-D', 'warnings')
+          Check core @('test', '--locked', '-p', 'gitcrab-core')
+          Check native @('test', '--locked', '--workspace', '--all-features', '--exclude', 'gitcrab-core')
           $env:GITCRAB_BUILD_REVISION = git rev-parse HEAD
           if ($LASTEXITCODE -or $env:GITCRAB_BUILD_REVISION -ne $env:GITHUB_SHA) {
             throw 'Checked-out revision differs from the CI revision'

@@ -1,2 +1,2 @@
 // GPUI loads icon resource 1 for the Windows window class.
-1 ICON "icons/gitcrab.ico"
+1 ICON "../../icons/gitcrab.ico"

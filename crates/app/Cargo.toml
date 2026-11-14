@@ -1,0 +1,21 @@
+[package]
+name = "gitcrab"
+description = "An independent Git desktop client with a lane-based history graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gitcrab"
+path = "src/main.rs"
+
+[features]
+native-evidence = ["gitcrab-ui/native-evidence"]
+
+[dependencies]
+gitcrab-ui.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0.12"

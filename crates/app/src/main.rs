@@ -3,15 +3,7 @@
     windows_subsystem = "windows"
 )]
 
-mod assets;
-mod components;
-mod preferences;
-mod theme;
-#[cfg(feature = "native-evidence")]
-mod trace;
-mod view;
-mod watch;
-mod workspace;
+use gitcrab_ui::{assets, preferences, theme, view, workspace};
 use gpui::{prelude::*, *};
 use gpui_component::{Root, Theme, ThemeMode};
 fn main() {
@@ -19,7 +11,7 @@ fn main() {
         println!(
             "GitCrab {} · {}",
             env!("CARGO_PKG_VERSION"),
-            env!("GITCRAB_BUILD")
+            gitcrab_ui::BUILD
         );
         return;
     }

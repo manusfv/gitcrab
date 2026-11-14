@@ -1,6 +1,11 @@
 # Application state and effects
 
-The Rust core remains usable with `cargo test --locked --no-default-features --lib`.
+The workspace has three crates. `crates/core` (`gitcrab-core`) holds domain
+logic and the Git worker and has no UI dependencies; `crates/ui`
+(`gitcrab-ui`) holds the GPUI views and components and depends on core;
+`crates/app` (`gitcrab`) is the binary that wires them together. Core tests run
+without a window: `cargo test --locked -p gitcrab-core`. Paths below are
+relative to each crate's `src/`.
 
 - `git/` owns Git arguments, machine patches, repository identity, and write
   preflight/verification. Write errors carry a phase. Read results never grant
@@ -34,18 +39,18 @@ The Rust core remains usable with `cargo test --locked --no-default-features --l
   Obsolete replies still release their worker lane and dispatch pending work.
   Native refresh triggers apply cancellation only when the controller
   accepts or queues a replacement refresh.
-- `native/view/operations.rs` owns one-click operations and the inline branch-name bar. A worker resolves and checks the
+- `ui/view/operations.rs` owns one-click operations and the inline branch-name bar. A worker resolves and checks the
   target, then the write starts and rechecks it before Git runs.
-  `native/view/repository.rs` owns trust prompts and watcher lifecycle.
-  `native/view/evidence.rs` contains diagnostic navigation.
-- `native/theme.rs` holds design tokens: palette roles (`role_color`, the
+  `ui/view/repository.rs` owns trust prompts and watcher lifecycle.
+  `ui/view/evidence.rs` contains diagnostic navigation.
+- `ui/theme.rs` holds design tokens: palette roles (`role_color`, the
   `RoleStyled` helpers `text_role`, `bg_role` and `border_role`), the
-  font-scaled size helper `scaled`, and geometry constants. `native/components/`
+  font-scaled size helper `scaled`, and geometry constants. `ui/components/`
   holds the reusable UI built on them: button roles and sizes (`buttons`), the
   `ListRow` used by every list and tree, `Badge`, and pane containers
   (`layout`). Views import them through `components::prelude` and compose
   panes from them instead of styling raw elements.
-- `native/preferences.rs` owns the application appearance source and a
+- `ui/preferences.rs` owns the application appearance source and a
   serialized persistence worker. Closing flushes pending saves. File replacement
   uses an owned temporary file beside the destination.
 

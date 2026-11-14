@@ -7,7 +7,7 @@
 //! the open diff is usable again ("ready").
 //!
 //! ```text
-//! cargo run --release --no-default-features --features git-trace --example latency -- \
+//! cargo run --release -p gitcrab-core --features git-trace --example latency -- \
 //!     --repo <dir> [--make small|large] [--iterations 5] [--out <dir>] \
 //!     [--read-only] [--git-config key=value ...]
 //! ```
