@@ -2614,67 +2614,62 @@ impl Render for GitCrab {
                         .on_click(cx.listener(|v, _, w, cx| v.show_references(w, cx))),
                 )
             })
-            .child(
-                components::selector(
-                    "repository-selector",
-                    Some("Open repository"),
-                    title.clone(),
-                    "folder",
-                    selector_width,
-                    selector_height,
+            .child({
+                // Index 0 is "Browse", the rest follow `recent`.
+                let choices = recent
+                    .iter()
+                    .map(|(path, _)| path.clone())
+                    .collect::<Vec<_>>();
+                let entries = std::iter::once(
+                    PickerItem::new("Browse for a repository…")
+                        .icon("folder")
+                        .note("Ctrl/Cmd+O")
+                        .into(),
                 )
-                .tooltip(format!(
-                    "{} · Open another repository in a tab · Ctrl/Cmd+O",
-                    display_path(&self.state.path)
-                ))
-                .set_disabled(self.state.blocking_write())
-                .dropdown_menu(move |menu, _, _| {
-                    let mut menu = menu.action_context(menu_focus.clone()).item(
-                        components::menu_item("Browse for a repository… · Ctrl/Cmd+O", true)
-                            .action(Box::new(Open)),
-                    );
-                    if !recent.is_empty() {
-                        menu = menu.separator().item(PopupMenuItem::label(
-                            "Recent · opens in a new tab or switches to its tab",
-                        ));
-                    }
-                    for (path, label) in &recent {
-                        let full = display_path(path);
-                        let suffix = label.suffix.clone();
-                        let location = label.location.clone();
-                        menu = menu.item(
-                            PopupMenuItem::element(move |_, _| {
-                                let full = full.clone();
-                                div()
-                                    .id(SharedString::from(format!("recent-{full}")))
-                                    // Cover the entry's padding so the whole row shows the pointer.
-                                    .mx(rems(-0.5))
-                                    .my(rems(-0.25))
-                                    .px(rems(0.5))
-                                    .py(rems(0.25))
-                                    .max_w(components::menu_text_width())
-                                    .cursor_pointer()
-                                    .flex()
-                                    .flex_col()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .child(suffix.clone())
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_size(scaled(11.))
-                                            .text_role(Role::TextMuted)
-                                            .child(location.clone()),
-                                    )
-                                    .tooltip(move |w, cx| Tooltip::new(full.clone()).build(w, cx))
-                            })
-                            .action(Box::new(super::workspace::OpenRecent(path.clone()))),
-                        );
-                    }
-                    menu
-                }),
-            )
+                .chain((!recent.is_empty()).then(|| {
+                    PickerEntry::Heading(
+                        "Recent · opens in a new tab or switches to its tab".into(),
+                    )
+                }))
+                .chain(recent.iter().map(|(path, label)| {
+                    PickerItem::new(label.suffix.clone())
+                        .icon("history")
+                        .detail(label.location.clone())
+                        .tooltip(display_path(path))
+                        .into()
+                }));
+                Picker::new(
+                    "repository-picker",
+                    components::selector(
+                        "repository-selector",
+                        Some("Open repository"),
+                        title.clone(),
+                        "folder",
+                        selector_width,
+                        selector_height,
+                    )
+                    .tooltip(format!(
+                        "{} · Open another repository in a tab · Ctrl/Cmd+O",
+                        display_path(&self.state.path)
+                    ))
+                    .set_disabled(self.state.blocking_write()),
+                    selector_width.max(px(320.)),
+                    &menu_focus,
+                    move |index, window, cx| match index.checked_sub(1) {
+                        None => window.dispatch_action(Box::new(Open), cx),
+                        Some(recent) => {
+                            if let Some(path) = choices.get(recent) {
+                                window.dispatch_action(
+                                    Box::new(super::workspace::OpenRecent(path.clone())),
+                                    cx,
+                                );
+                            }
+                        }
+                    },
+                )
+                .entries(entries)
+                .build(window, cx)
+            })
             .child(separator())
             .child(self.branch_picker(selector_width, selector_height, &commands, window, cx))
             .when_some(inline_actions, |bar, actions| {

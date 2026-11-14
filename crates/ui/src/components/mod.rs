@@ -8,6 +8,7 @@
 //! - [`badge`]: tinted labels for counts, statuses and markers.
 //! - [`layout`]: pane surfaces, header strips, groups and dividers.
 //! - [`menu`]: popup menu entries with the pointer cursor.
+//! - [`picker`]: the searchable popup list for choosing a branch, repository or tab.
 //! - [`rail`]: drag-to-reorder for tab strips and column headers.
 //!
 //! Views import everything through [`prelude`].
@@ -16,10 +17,11 @@ pub mod buttons;
 pub mod layout;
 pub mod list_row;
 pub mod menu;
+pub mod picker;
 pub mod rail;
 
 pub use buttons::*;
-pub use menu::{menu_item, menu_text_width};
+pub use menu::menu_item;
 
 /// The components and helpers views use, for a single glob import.
 pub mod prelude {
@@ -27,6 +29,7 @@ pub mod prelude {
     pub use super::buttons::{ButtonExt as _, ControlSize};
     pub use super::layout::*;
     pub use super::list_row::{disclosure, ListRow};
+    pub use super::picker::{Picker, PickerEntry, PickerItem};
 }
 
 /// Applies a caller's style overrides on top of a component's defaults.

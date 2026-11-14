@@ -2,12 +2,6 @@
 use gpui::component::menu::PopupMenuItem;
 use gpui::{prelude::*, *};
 
-/// Widest a menu entry's text gets. Menus cap at 31.25rem, and an entry wider
-/// than that is clipped at the menu's edge instead of truncated.
-pub fn menu_text_width() -> Rems {
-    rems(28.)
-}
-
 /// A popup menu entry whose row shows the pointer cursor while it is enabled.
 ///
 /// Library menu entries keep the arrow cursor and accept no styling, so the
