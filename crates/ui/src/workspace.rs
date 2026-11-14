@@ -502,9 +502,10 @@ impl Workspace {
 
     fn open_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         self.picking = true;
-        let task = cx.background_executor().spawn(async move {
-            gitcrab_core::platform::RepositoryLocation::discover(std::path::Path::new(&path))
-        });
+        let backend = crate::backend::get(cx);
+        let task = cx
+            .background_executor()
+            .spawn(async move { backend.discover(std::path::Path::new(&path)) });
         cx.spawn_in(window, async move |workspace, cx| {
             let result = task.await;
             let _ = workspace.update_in(cx, |v, w, cx| {

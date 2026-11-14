@@ -18,7 +18,8 @@ use gitcrab_core::{
     git::ReferenceKind,
     presentation::{display_path, path_labels, ToolbarActions},
     service::{
-        Action, Failure, Operation, ReadKind, Request, Response, ReviewedOperation, Service,
+        Action, Failure, GitBackend, GitWorker, Operation, ReadKind, Request, Response,
+        ReviewedOperation,
     },
 };
 use gpui::{prelude::*, *};
@@ -331,7 +332,8 @@ struct OpenFailure {
 pub struct GitCrab {
     state: Controller,
     active: bool,
-    service: Service,
+    service: Box<dyn GitWorker>,
+    backend: std::sync::Arc<dyn GitBackend>,
     focus: FocusHandle,
     draft: Entity<InputState>,
     wip_summary: Entity<InputState>,
@@ -532,12 +534,14 @@ impl GitCrab {
                 }
             }),
         ];
+        let backend = crate::backend::get(cx);
         let preferences = Preferences::current(cx);
         gpui_component::Theme::global_mut(cx).font_size = px(preferences.font_size);
         let mut v = Self {
             state: Controller::default(),
             active,
-            service: Service::new(),
+            service: backend.worker(),
+            backend,
             focus: cx.focus_handle(),
             draft,
             wip_summary,

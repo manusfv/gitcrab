@@ -17,6 +17,7 @@ fn main() {
     }
     Application::new().with_assets(assets::Assets).run(|cx| {
         gpui_component::init(cx);
+        gitcrab_ui::backend::install(std::sync::Arc::new(gitcrab_git::Backend), cx);
         Theme::change(ThemeMode::Dark, None, cx);
         theme::initialize(cx);
         cx.set_menus(vec![Menu {

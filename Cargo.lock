@@ -2075,6 +2075,7 @@ name = "gitcrab"
 version = "0.1.0"
 dependencies = [
  "embed-resource",
+ "gitcrab-git",
  "gitcrab-ui",
  "gpui",
  "gpui-component",
@@ -2084,6 +2085,16 @@ dependencies = [
 name = "gitcrab-core"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "gitcrab-git"
+version = "0.1.0"
+dependencies = [
+ "gitcrab-core",
  "libc",
  "serde",
  "serde_json",

@@ -1,11 +1,20 @@
 # Application state and effects
 
-The workspace has three crates. `crates/core` (`gitcrab-core`) holds domain
-logic and the Git worker and has no UI dependencies; `crates/ui`
-(`gitcrab-ui`) holds the GPUI views and components and depends on core;
-`crates/app` (`gitcrab`) is the binary that wires them together. Core tests run
-without a window: `cargo test --locked -p gitcrab-core`. Paths below are
-relative to each crate's `src/`.
+The workspace has four crates:
+
+- `crates/core` (`gitcrab-core`): the controller, presentation, diff and graph
+  logic, the repository data types, and the request/response protocol with the
+  `GitWorker` and `GitBackend` traits. No UI and no I/O; its tests run without
+  a window or Git: `cargo test --locked -p gitcrab-core`.
+- `crates/git` (`gitcrab-git`): the Git worker that implements those traits:
+  `git/`, `process.rs`, `service.rs`, `journal.rs` and `platform.rs` below.
+  Its tests run real Git in isolated repositories.
+- `crates/ui` (`gitcrab-ui`): GPUI views and components. Depends on core only
+  and reaches Git through the `GitBackend` the app installs.
+- `crates/app` (`gitcrab`): the binary. Installs `gitcrab_git::Backend` and
+  opens the window.
+
+Paths below are relative to each crate's `src/`.
 
 - `git/` owns Git arguments, machine patches, repository identity, and write
   preflight/verification. Write errors carry a phase. Read results never grant

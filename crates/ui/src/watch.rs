@@ -247,7 +247,7 @@ mod tests {
         let git = root.join(".git");
         assert!(start_with_dirs(root.clone(), git.clone(), git.clone()).is_err());
         std::fs::create_dir_all(&git).unwrap();
-        let location = RepositoryLocation::discover(&root).unwrap();
+        let location = RepositoryLocation::test_path(root.canonicalize().unwrap());
         let (watcher, events) = start(location).unwrap();
         std::fs::write(root.join("normal.lock"), b"worktree event").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

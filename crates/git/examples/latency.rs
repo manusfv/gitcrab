@@ -7,7 +7,7 @@
 //! the open diff is usable again ("ready").
 //!
 //! ```text
-//! cargo run --release -p gitcrab-core --features git-trace --example latency -- \
+//! cargo run --release -p gitcrab-git --features git-trace --example latency -- \
 //!     --repo <dir> [--make small|large] [--iterations 5] [--out <dir>] \
 //!     [--read-only] [--git-config key=value ...]
 //! ```
@@ -19,10 +19,10 @@
 
 use gitcrab_core::{
     controller::{Controller, Lane},
-    git_trace::{self, GitCall},
     platform::RepositoryLocation,
-    service::{Action, Operation, Request, Response, Service},
+    service::{Action, GitCall, Operation, Request, Response},
 };
+use gitcrab_git::{git_trace, platform::RepositoryLocationExt, service::Service};
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Write as _,

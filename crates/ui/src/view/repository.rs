@@ -9,9 +9,10 @@ impl GitCrab {
         }
         self.awaiting_trust = true;
         let selected = path.clone();
+        let backend = self.backend.clone();
         let task = cx
             .background_executor()
-            .spawn(async move { RepositoryLocation::discover(std::path::Path::new(&selected)) });
+            .spawn(async move { backend.discover(std::path::Path::new(&selected)) });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
             let _ = view.update_in(cx, |v, window, cx| {

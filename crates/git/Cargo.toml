@@ -1,0 +1,36 @@
+[package]
+name = "gitcrab-git"
+description = "GitCrab's Git worker: runs Git and answers gitcrab-core requests."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gitcrab_git"
+
+[features]
+# Records every Git process with its timing. Diagnostic builds only.
+git-trace = []
+
+# Headless latency benchmark of the controller and Git worker:
+# cargo run --release -p gitcrab-git --features git-trace --example latency -- --help
+[[example]]
+name = "latency"
+required-features = ["git-trace"]
+
+[dependencies]
+gitcrab-core.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_System_ProcessStatus"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

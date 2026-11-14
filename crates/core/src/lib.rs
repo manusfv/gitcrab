@@ -1,10 +1,11 @@
-//! Repository and presentation models for the GitCrab desktop client.
+//! Domain logic for the GitCrab desktop client. No UI and no I/O.
 //!
-//! Use [`platform::RepositoryLocation::discover`] to identify a worktree for
-//! trust confirmation. Once confirmed, a [`controller::Controller`] tracks
-//! the tab's state and produces requests for its [`service::Service`] worker.
-//! The controller applies the worker's responses and returns follow-up requests
-//! for the caller to dispatch.
+//! A [`controller::Controller`] tracks a tab's state and produces
+//! [`service::Request`]s. The caller hands them to a [`service::GitWorker`]
+//! (implemented by the `gitcrab-git` crate), applies each
+//! [`service::Response`] through the controller, and dispatches the follow-up
+//! requests it returns. Repositories are found for trust confirmation through
+//! [`service::GitBackend::discover`].
 //!
 //! Patch presentation can also be used on its own.
 //!
@@ -34,10 +35,3 @@ pub mod design_tokens;
 pub mod appearance;
 
 pub mod hunk_edit;
-mod process;
-/// Per-Git-process timings, for latency measurements only.
-#[cfg(feature = "git-trace")]
-pub use process::trace as git_trace;
-
-#[cfg(test)]
-mod test_repo;

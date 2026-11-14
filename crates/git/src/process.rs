@@ -20,17 +20,7 @@ pub mod trace {
         time::Instant,
     };
 
-    /// One Git invocation: when it started, how long the spawn took and how
-    /// long the whole call took, in milliseconds since the trace epoch.
-    #[derive(Clone, Debug)]
-    pub struct GitCall {
-        pub args: String,
-        pub thread: String,
-        pub start_ms: f64,
-        pub spawn_ms: f64,
-        pub total_ms: f64,
-        pub stdout_bytes: usize,
-    }
+    pub use gitcrab_core::service::GitCall;
 
     static CALLS: Mutex<Vec<GitCall>> = Mutex::new(Vec::new());
     static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();

@@ -120,8 +120,8 @@ cargo build --locked --release --bin gitcrab
 ```
 
 The clean-checkout CI matrix pins Rust 1.99.1 and runs these checks on Windows
-MSVC, Linux x64, Apple Silicon, and Intel macOS. Core tests create isolated
-repositories using the Git on PATH. Set `GITCRAB_TEST_GIT` to an absolute
+MSVC, Linux x64, Apple Silicon, and Intel macOS. Git worker tests (`gitcrab-git`) create
+isolated repositories using the Git on PATH. Set `GITCRAB_TEST_GIT` to an absolute
 executable path to test a specific Git installation.
 
 The [architecture notes](docs/architecture.md) describe which module owns

@@ -1,5 +1,6 @@
 //! Repository data parsed from Git output: status, history, refs and patches.
 use super::*;
+use std::path::PathBuf;
 
 /// A commit and its decorations in the loaded history.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -20,7 +21,7 @@ pub struct Commit {
 }
 
 impl Commit {
-    pub(super) fn index_search(mut self) -> Self {
+    pub fn index_search(mut self) -> Self {
         self.search_key = format!(
             "{} {} {} {}",
             self.subject,
@@ -517,26 +518,6 @@ pub struct DiffComparison {
     pub original_path: Option<String>,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum HistoryRead {
-    Full,
-    Worktree,
-    More,
-}
-
-pub(crate) struct HistoryCache {
-    pub(super) refs: String,
-    pub(super) head: String,
-    pub(super) limit: usize,
-    pub(super) commits: Vec<Commit>,
-    pub(super) graph: crate::graph::Graph,
-    pub(super) metadata: u64,
-}
-
-pub(super) struct RepositoryMetadata {
-    pub(super) operations: Vec<String>,
-    pub(super) history_stamp: u64,
-}
 impl Hunk {
     /// Returns a reason to use a whole-file action based on the patch headers.
     pub fn blocked_reason(&self) -> Option<&'static str> {
@@ -582,7 +563,7 @@ const REV_PARSE_RULES: [(&str, &str); 6] = [
 /// Git's `shorten_unambiguous_ref` in strict mode: try the most specific rule
 /// first, and keep a short name only if no other rule turns it back into a
 /// ref for which `exists` holds. Falls back to the full name.
-pub(super) fn shorten_ref(full: &str, exists: &dyn Fn(&str) -> bool) -> String {
+pub fn shorten_ref(full: &str, exists: &dyn Fn(&str) -> bool) -> String {
     for (i, (prefix, suffix)) in REV_PARSE_RULES.iter().enumerate().skip(1).rev() {
         let Some(short) = full
             .strip_prefix(prefix)
@@ -602,7 +583,7 @@ pub(super) fn shorten_ref(full: &str, exists: &dyn Fn(&str) -> bool) -> String {
     full.to_owned()
 }
 
-pub(super) fn parse_status(data: &[u8]) -> Vec<FileChange> {
+pub fn parse_status(data: &[u8]) -> Vec<FileChange> {
     let mut out = Vec::new();
     let mut records = data.split(|b| *b == 0);
     while let Some(record) = records.next() {
@@ -621,7 +602,7 @@ pub(super) fn parse_status(data: &[u8]) -> Vec<FileChange> {
     out
 }
 
-pub(super) fn file_change(
+pub fn file_change(
     path: &[u8],
     original: Option<&[u8]>,
     index: char,
@@ -656,7 +637,7 @@ pub fn split_hunks(diff: &str) -> Vec<Hunk> {
         .collect()
 }
 
-pub(crate) struct HunkRange {
+pub struct HunkRange {
     header: std::ops::Range<usize>,
     body: std::ops::Range<usize>,
 }
@@ -684,7 +665,7 @@ impl HunkRange {
     }
 }
 
-pub(crate) fn hunk_ranges(diff: &str) -> Vec<HunkRange> {
+pub fn hunk_ranges(diff: &str) -> Vec<HunkRange> {
     let mut ranges = Vec::new();
     let (mut offset, mut file_start) = (0, 0);
     let mut header_end = None;

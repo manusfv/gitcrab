@@ -4,6 +4,7 @@
 //! turns user input into core requests.
 
 pub mod assets;
+pub mod backend;
 mod components;
 pub mod preferences;
 pub mod theme;

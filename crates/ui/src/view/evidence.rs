@@ -60,7 +60,7 @@ impl GitCrab {
         };
         self.stage_bench.path = Some(file.path.clone());
         self.stage_bench.staged_last = !unstage;
-        let _ = gitcrab_core::git_trace::drain();
+        let _ = self.backend.drain_git_calls();
         let click = std::time::Instant::now();
         self.mutate(
             Action::StageFile {
@@ -126,7 +126,7 @@ impl GitCrab {
         };
         let settled_ms = sample.click.elapsed().as_secs_f64() * 1000.;
         self.stage_bench.settled_at = Some(std::time::Instant::now());
-        let calls = gitcrab_core::git_trace::drain();
+        let calls = self.backend.drain_git_calls();
         let samples = self.stage_bench.samples.clone();
         self.stage_bench.remaining -= 1;
         let more = self.stage_bench.remaining > 0;
@@ -240,7 +240,7 @@ impl GitCrab {
                 "settled_ms": sample.click.elapsed().as_secs_f64() * 1000.,
                 "error": self.state.error.then(|| self.state.notice.clone()),
                 "left_on_clicked_side": still_on_side,
-                "git_processes": gitcrab_core::git_trace::drain().len(),
+                "git_processes": self.backend.drain_git_calls().len(),
             }));
         if self.evidence_phase == 8 {
             self.evidence_phase = 9;

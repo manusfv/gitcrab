@@ -10,7 +10,7 @@ name = "gitcrab_ui"
 
 [features]
 # Diagnostic capture: frame timings and Git process records.
-native-evidence = ["gitcrab-core/git-trace"]
+native-evidence = []
 
 [dependencies]
 gitcrab-core.workspace = true
