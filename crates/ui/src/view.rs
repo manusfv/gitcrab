@@ -358,6 +358,11 @@ pub struct GitCrab {
     history_column_drag_start: Option<(gitcrab_core::history_columns::HistoryColumn, Pixels)>,
     history_column_resize: Option<(gitcrab_core::history_columns::HistoryColumn, Pixels, f32)>,
     diff_scroll: UniformListScrollHandle,
+    settings_scroll: ScrollHandle,
+    activity_scroll: ScrollHandle,
+    recent_scroll: ScrollHandle,
+    failure_scroll: ScrollHandle,
+    error_scroll: ScrollHandle,
     selection: Option<Range<usize>>,
     anchor: usize,
     _subscriptions: Vec<Subscription>,
@@ -555,6 +560,11 @@ impl GitCrab {
             history_column_drag_start: None,
             history_column_resize: None,
             diff_scroll: UniformListScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
+            activity_scroll: ScrollHandle::new(),
+            recent_scroll: ScrollHandle::new(),
+            failure_scroll: ScrollHandle::new(),
+            error_scroll: ScrollHandle::new(),
             selection: None,
             anchor: 0,
             _subscriptions: subscriptions,
@@ -1679,6 +1689,7 @@ impl GitCrab {
     fn show_activity(&self, window: &mut Window, cx: &mut Context<Self>) {
         let repo = display_path(&self.state.path);
         let weak = cx.weak_entity();
+        let scroll = self.activity_scroll.clone();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let records = weak
                 .read_with(cx, |v, _| v.activity.clone())
@@ -1719,12 +1730,11 @@ impl GitCrab {
                             }),
                         ),
                 )
-                .child(
-                    div()
-                        .id("activity-records")
-                        .max_h(px(360.))
-                        .overflow_y_scroll()
-                        .children(records.iter().enumerate().map(|(i, r)| {
+                .child(scroll_area(
+                    "activity-records",
+                    &scroll,
+                    div().id("activity-records").max_h(px(360.)).children(
+                        records.iter().enumerate().map(|(i, r)| {
                             let copy = r.summary();
                             div()
                                 .py_2()
@@ -1793,8 +1803,9 @@ impl GitCrab {
                                         },
                                     ),
                                 )
-                        })),
-                )
+                        }),
+                    ),
+                ))
         });
     }
     fn can_commit(&self) -> bool {
@@ -2180,11 +2191,12 @@ impl GitCrab {
                                     .text_role(Role::TextMuted)
                                     .child("Recent repositories"),
                             )
-                            .child(
+                            .child(scroll_area(
+                                "new-tab-recent-list",
+                                &self.recent_scroll,
                                 div()
                                     .id("new-tab-recent-list")
                                     .max_h(scaled(180.))
-                                    .overflow_y_scroll()
                                     .children(
                                         path_labels(&recent)
                                             .into_iter()
@@ -2239,7 +2251,7 @@ impl GitCrab {
                                                     })
                                             }),
                                     ),
-                            )
+                            ))
                             .child(
                                 div()
                                     .pt_1()
@@ -2338,14 +2350,17 @@ impl GitCrab {
                             )
                         })
                         .child(
-                            div()
-                                .id("open-failure-details")
-                                .mt_1()
-                                .max_h(px(80.))
-                                .overflow_y_scroll()
-                                .text_size(scaled(12.))
-                                .text_role(Role::TextSecondary)
-                                .child(details.to_owned()),
+                            scroll_area(
+                                "open-failure-details",
+                                &self.failure_scroll,
+                                div()
+                                    .id("open-failure-details")
+                                    .max_h(px(80.))
+                                    .text_size(scaled(12.))
+                                    .text_role(Role::TextSecondary)
+                                    .child(details.to_owned()),
+                            )
+                            .mt_1(),
                         ),
                 )
             })
@@ -2599,62 +2614,67 @@ impl Render for GitCrab {
                         .on_click(cx.listener(|v, _, w, cx| v.show_references(w, cx))),
                 )
             })
-            .child(
-                components::selector(
-                    "repository-selector",
-                    Some("Open repository"),
-                    title.clone(),
-                    "folder",
-                    selector_width,
-                    selector_height,
+            .child({
+                // Index 0 is "Browse", the rest follow `recent`.
+                let choices = recent
+                    .iter()
+                    .map(|(path, _)| path.clone())
+                    .collect::<Vec<_>>();
+                let action_focus = menu_focus.clone();
+                let entries = std::iter::once(
+                    PickerItem::new("Browse for a repository…")
+                        .icon("folder")
+                        .note("Ctrl/Cmd+O")
+                        .into(),
                 )
-                .tooltip(format!(
-                    "{} · Open another repository in a tab · Ctrl/Cmd+O",
-                    display_path(&self.state.path)
-                ))
-                .set_disabled(self.state.blocking_write())
-                .dropdown_menu(move |menu, _, _| {
-                    let mut menu = menu.action_context(menu_focus.clone()).item(
-                        components::menu_item("Browse for a repository… · Ctrl/Cmd+O", true)
-                            .action(Box::new(Open)),
-                    );
-                    if !recent.is_empty() {
-                        menu = menu.separator().item(PopupMenuItem::label(
-                            "Recent · opens in a new tab or switches to its tab",
-                        ));
-                    }
-                    for (path, label) in &recent {
-                        let full = display_path(path);
-                        let suffix = label.suffix.clone();
-                        let location = label.location.clone();
-                        menu = menu.item(
-                            PopupMenuItem::element(move |_, _| {
-                                let full = full.clone();
-                                div()
-                                    .id(SharedString::from(format!("recent-{full}")))
-                                    // Cover the entry's padding so the whole row shows the pointer.
-                                    .mx(rems(-0.5))
-                                    .my(rems(-0.25))
-                                    .px(rems(0.5))
-                                    .py(rems(0.25))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .flex_col()
-                                    .child(suffix.clone())
-                                    .child(
-                                        div()
-                                            .text_size(scaled(11.))
-                                            .text_role(Role::TextMuted)
-                                            .child(location.clone()),
-                                    )
-                                    .tooltip(move |w, cx| Tooltip::new(full.clone()).build(w, cx))
-                            })
-                            .action(Box::new(super::workspace::OpenRecent(path.clone()))),
-                        );
-                    }
-                    menu
-                }),
-            )
+                .chain((!recent.is_empty()).then(|| {
+                    PickerEntry::Heading(
+                        "Recent · opens in a new tab or switches to its tab".into(),
+                    )
+                }))
+                .chain(recent.iter().map(|(path, label)| {
+                    PickerItem::new(label.suffix.clone())
+                        .icon("history")
+                        .detail(label.location.clone())
+                        .tooltip(display_path(path))
+                        .into()
+                }));
+                Picker::new(
+                    "repository-picker",
+                    components::selector(
+                        "repository-selector",
+                        Some("Open repository"),
+                        title.clone(),
+                        "folder",
+                        selector_width,
+                        selector_height,
+                    )
+                    .tooltip(format!(
+                        "{} · Open another repository in a tab · Ctrl/Cmd+O",
+                        display_path(&self.state.path)
+                    ))
+                    .set_disabled(self.state.blocking_write()),
+                    selector_width.max(px(320.)),
+                    &menu_focus,
+                    // Dispatch from this view's own focus node, as the old menu's
+                    // action context did, so it does not depend on where focus
+                    // happens to be once the list has closed.
+                    move |index, window, cx| match index.checked_sub(1) {
+                        None => action_focus.dispatch_action(&Open, window, cx),
+                        Some(recent) => {
+                            if let Some(path) = choices.get(recent) {
+                                action_focus.dispatch_action(
+                                    &super::workspace::OpenRecent(path.clone()),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
+                    },
+                )
+                .entries(entries)
+                .build(window, cx)
+            })
             .child(separator())
             .child(self.branch_picker(selector_width, selector_height, &commands, window, cx))
             .when_some(inline_actions, |bar, actions| {
@@ -2948,14 +2968,17 @@ impl Render for GitCrab {
                                 )),
                         )
                         .child(
-                            div()
-                                .id("error-details")
-                                .mt_1()
-                                .max_h(px(240.))
-                                .overflow_y_scroll()
-                                .text_size(scaled(12.))
-                                .text_role(Role::TextSecondary)
-                                .child(self.state.notice.clone()),
+                            scroll_area(
+                                "error-details",
+                                &self.error_scroll,
+                                div()
+                                    .id("error-details")
+                                    .max_h(px(240.))
+                                    .text_size(scaled(12.))
+                                    .text_role(Role::TextSecondary)
+                                    .child(self.state.notice.clone()),
+                            )
+                            .mt_1(),
                         ),
                 )
             })

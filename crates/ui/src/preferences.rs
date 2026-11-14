@@ -50,6 +50,7 @@ pub fn set_app_appearance(font_size: f32, theme: ThemePreference, cx: &mut App) 
     shared.theme = theme;
     cx.set_global(SharedPreferences(shared));
     gpui::component::Theme::update(cx, |theme| theme.font_size = gpui::px(font_size));
+    super::theme::shape_scrollbars(cx);
 }
 
 /// Promotes a repository to the top of the recent list and queues a save.

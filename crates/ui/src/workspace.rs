@@ -1,11 +1,14 @@
 use super::components;
 use super::{
-    components::ButtonExt as _,
+    components::{
+        prelude::{Picker, PickerEntry, PickerItem},
+        ButtonExt as _,
+    },
     theme::{Role, *},
     view::{GitCrab, Open, Quit},
 };
 use gitcrab_core::presentation::{display_path, path_labels};
-use gpui::component::{button::*, menu::DropdownMenu, tooltip::Tooltip, Sizable, WindowExt};
+use gpui::component::{button::*, tooltip::Tooltip, Sizable, WindowExt};
 use gpui::{prelude::*, *};
 use std::{cell::RefCell, rc::Rc};
 
@@ -818,51 +821,60 @@ impl Render for Workspace {
         let tab_count = self.tabs.len();
         let active_index = self.active;
         let weak = cx.weak_entity();
-        let tab_list = Button::new("repository-tab-list")
-            .ghost()
-            .small()
-            .tab_stop(true)
-            .h(scaled(28.))
-            .icon(icon("down"))
-            .label(format!("{tab_count}"))
-            .set_disabled(blocked)
-            .tooltip("All tabs and tab order")
-            .dropdown_menu(move |mut menu, _, _| {
-                for (index, label, active) in &tab_entries {
-                    let weak = weak.clone();
-                    let index = *index;
-                    menu = menu.item(
-                        components::menu_item(label.clone(), true)
-                            .checked(*active)
-                            .on_click(move |_, w, cx| {
-                                let _ = weak.update(cx, |v, cx| {
-                                    if !v.blocked(w, cx) {
-                                        v.activate(index, w, cx);
-                                    }
-                                });
-                            }),
-                    );
-                }
-                menu = menu.separator();
-                for (label, delta, available) in [
-                    ("Move tab left · Ctrl+Shift+PgUp", -1, active_index > 0),
-                    (
-                        "Move tab right · Ctrl+Shift+PgDn",
-                        1,
-                        active_index + 1 < tab_count,
-                    ),
-                ] {
-                    let weak = weak.clone();
-                    menu = menu.item(components::menu_item(label, available).on_click(
-                        move |_, w, cx| {
-                            let _ = weak.update(cx, |v, cx| v.move_active_tab(delta, w, cx));
-                        },
-                    ));
-                }
-                menu.separator().item(
-                    components::menu_item("New tab · Ctrl/Cmd+T", true).action(Box::new(NewTab)),
-                )
-            });
+        let tab_focus = self.tab_focus[&self.tabs[self.active].entity_id()].clone();
+        let tab_list = {
+            let moves = [
+                ("Move tab left", "Ctrl+Shift+PgUp", -1, active_index > 0),
+                (
+                    "Move tab right",
+                    "Ctrl+Shift+PgDn",
+                    1,
+                    active_index + 1 < tab_count,
+                ),
+            ];
+            let entries = tab_entries
+                .iter()
+                .map(|(_, label, active)| PickerItem::new(label.clone()).checked(*active).into())
+                .chain([PickerEntry::Rule])
+                .chain(moves.iter().map(|&(label, shortcut, _, available)| {
+                    PickerItem::new(label)
+                        .note(shortcut)
+                        .disabled(!available)
+                        .into()
+                }))
+                .chain([PickerEntry::Rule])
+                .chain([PickerItem::new("New tab").note("Ctrl/Cmd+T").into()]);
+            Picker::new(
+                "repository-tab-picker",
+                Button::new("repository-tab-list")
+                    .ghost()
+                    .small()
+                    .tab_stop(true)
+                    .h(scaled(28.))
+                    .icon(icon("down"))
+                    .label(format!("{tab_count}"))
+                    .set_disabled(blocked)
+                    .tooltip("All tabs and tab order"),
+                px(280.),
+                &tab_focus,
+                move |index, w, cx| {
+                    if index < tab_count {
+                        let _ = weak.update(cx, |v, cx| {
+                            if !v.blocked(w, cx) {
+                                v.activate(index, w, cx);
+                            }
+                        });
+                    } else if let Some(&(_, _, delta, _)) = moves.get(index - tab_count) {
+                        let _ = weak.update(cx, |v, cx| v.move_active_tab(delta, w, cx));
+                    } else {
+                        w.dispatch_action(Box::new(NewTab), cx);
+                    }
+                },
+            )
+            .anchor(Anchor::TopRight)
+            .entries(entries)
+            .build(window, cx)
+        };
         let active = self.tabs[self.active].clone();
         div()
             .relative()

@@ -661,6 +661,7 @@ impl GitCrab {
         if !text || p.content.lines.is_empty() {
             return el.child(self.preview_panel(p, cx)).into_any_element();
         }
+        let diff_over = overflows_vertically(&self.diff_scroll);
         el.child(self.diff_tools(p, conflict, cx))
             .when(self.diff_find_open, |el| el.child(self.diff_find_bar(cx)))
             .when(self.split_active, |el| {
@@ -691,7 +692,7 @@ impl GitCrab {
                 )
             })
             .child(
-                div()
+                track_overflow(div(), &self.diff_scroll, diff_over)
                     .relative()
                     .flex_1()
                     .min_h_0()
@@ -720,17 +721,21 @@ impl GitCrab {
                         } else {
                             ListHorizontalSizingBehavior::Unconstrained
                         })
+                        .when(self.split_active && diff_over, |list| {
+                            list.pr(SCROLLBAR_GUTTER)
+                        })
                         .track_scroll(&self.diff_scroll)
                         .size_full(),
                     )
+                    .child(pinned_scrollbar_overlay("diff", &self.diff_scroll, px(0.)))
                     .when(!self.split_active, |el| {
                         // Shows where a wide unified diff is scrolled horizontally.
                         el.child(
-                            div().absolute().inset_0().child(
+                            div().absolute().inset_0().child(slim_scrollbar(
                                 gpui::component::scroll::Scrollbar::horizontal(&self.diff_scroll)
                                     .id("diff-horizontal-scrollbar")
                                     .mode(gpui::component::scroll::ScrollbarMode::Always),
-                            ),
+                            )),
                         )
                     }),
             )
