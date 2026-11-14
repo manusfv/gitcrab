@@ -373,41 +373,76 @@ impl Decoration {
 
 /// Resolves a commit's `--decorate` labels against the loaded references.
 /// A plain branch name prefers a local branch over a remote ref.
+///
+/// The history reader marks the HEAD commit with a bare `HEAD` label. When a
+/// branch is checked out, that label becomes the branch as
+/// [`DecorationKind::HeadBranch`], in `HEAD`'s place, and the branch's own
+/// plain label is dropped. A detached `HEAD` stays [`DecorationKind::Head`].
 pub fn resolve_decorations(
     snapshot: &crate::git::RepoSnapshot,
     refs: &[String],
 ) -> Vec<Decoration> {
     use crate::git::ReferenceKind;
+    let checked_out = snapshot
+        .checked_out_branch()
+        .filter(|_| refs.iter().any(|label| label == "HEAD"));
+    // Git shortens a branch to `heads/name` when a tag shares its name.
+    let is_checked_out = |label: &str| {
+        checked_out
+            .is_some_and(|branch| label == branch || label.strip_prefix("heads/") == Some(branch))
+    };
     refs.iter()
-        .map(|label| {
-            let (kind, name) = classify_decoration(label);
-            let target = match kind {
-                DecorationKind::Head => None,
-                DecorationKind::HeadBranch => Some((ReferenceKind::LocalBranch, name.to_owned())),
-                DecorationKind::Tag => snapshot
-                    .tags
-                    .iter()
-                    .find(|tag| tag.label == name)
-                    .map(|tag| (ReferenceKind::Tag, tag.full_name.clone())),
-                DecorationKind::Branch => {
-                    if snapshot.branches.iter().any(|branch| branch.name == name) {
-                        Some((ReferenceKind::LocalBranch, name.to_owned()))
-                    } else {
-                        snapshot
-                            .remote_refs
-                            .iter()
-                            .find(|remote| remote.label == name)
-                            .map(|remote| (ReferenceKind::Remote, remote.full_name.clone()))
-                    }
-                }
-            };
-            Decoration {
-                kind,
-                name: name.to_owned(),
-                target,
-            }
+        .filter(|label| !is_checked_out(label))
+        .map(|label| match checked_out {
+            Some(branch) if label == "HEAD" => Decoration {
+                kind: DecorationKind::HeadBranch,
+                name: branch.to_owned(),
+                target: Some((ReferenceKind::LocalBranch, branch.to_owned())),
+            },
+            _ => resolve_decoration(snapshot, label),
         })
         .collect()
+}
+
+fn resolve_decoration(snapshot: &crate::git::RepoSnapshot, label: &str) -> Decoration {
+    use crate::git::ReferenceKind;
+    let (mut kind, name) = classify_decoration(label);
+    // The history reader prints tags by their short name, without `tag: `.
+    if kind == DecorationKind::Branch
+        && !snapshot.branches.iter().any(|branch| branch.name == name)
+        && !snapshot
+            .remote_refs
+            .iter()
+            .any(|remote| remote.label == name)
+        && snapshot.tags.iter().any(|tag| tag.label == name)
+    {
+        kind = DecorationKind::Tag;
+    }
+    let target = match kind {
+        DecorationKind::Head => None,
+        DecorationKind::HeadBranch => Some((ReferenceKind::LocalBranch, name.to_owned())),
+        DecorationKind::Tag => snapshot
+            .tags
+            .iter()
+            .find(|tag| tag.label == name)
+            .map(|tag| (ReferenceKind::Tag, tag.full_name.clone())),
+        DecorationKind::Branch => {
+            if snapshot.branches.iter().any(|branch| branch.name == name) {
+                Some((ReferenceKind::LocalBranch, name.to_owned()))
+            } else {
+                snapshot
+                    .remote_refs
+                    .iter()
+                    .find(|remote| remote.label == name)
+                    .map(|remote| (ReferenceKind::Remote, remote.full_name.clone()))
+            }
+        }
+    };
+    Decoration {
+        kind,
+        name: name.to_owned(),
+        target,
+    }
 }
 
 /// Joins a commit summary and body the way Git stores the message.
@@ -489,6 +524,65 @@ mod tests {
         assert_eq!(ordinal(0), "First");
         assert_eq!(ordinal(2), "Third");
         assert_eq!(ordinal(4), "Parent 5");
+    }
+
+    #[test]
+    fn head_label_becomes_the_checked_out_branch() {
+        use crate::git::{LocalBranch, ReferenceKind, ReferenceTip, RepoSnapshot, WriteIdentity};
+        let branch = |name: &str| LocalBranch {
+            name: name.into(),
+            tip: String::new(),
+        };
+        let mut snapshot = RepoSnapshot {
+            branches: vec![branch("feature/a"), branch("feature/b"), branch("main")],
+            tags: vec![ReferenceTip {
+                label: "v1".into(),
+                full_name: "refs/tags/v1".into(),
+                tip: String::new(),
+            }],
+            reviewed: Some(WriteIdentity {
+                head: "abc".into(),
+                symbolic_head: "refs/heads/main".into(),
+                index: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        // The history reader lists `HEAD` first, then refs alphabetically.
+        let refs = ["HEAD", "feature/a", "feature/b", "main", "v1"].map(String::from);
+        let resolved = resolve_decorations(&snapshot, &refs);
+        let names: Vec<_> = resolved.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["main", "feature/a", "feature/b", "v1"]);
+        assert_eq!(resolved[3].label(), "Tag v1");
+        assert_eq!(resolved[0].kind, DecorationKind::HeadBranch);
+        assert_eq!(
+            resolved[0].target,
+            Some((ReferenceKind::LocalBranch, "main".into()))
+        );
+        assert_eq!(resolved[0].label(), "main · HEAD, checked out");
+
+        // A branch disambiguated from a same-named tag is still merged.
+        let refs = ["HEAD", "heads/main", "tag: main"].map(String::from);
+        let names: Vec<_> = resolve_decorations(&snapshot, &refs)
+            .into_iter()
+            .map(|d| (d.kind, d.name))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (DecorationKind::HeadBranch, "main".into()),
+                (DecorationKind::Tag, "main".into())
+            ]
+        );
+
+        // Commits other than HEAD keep the branch as a plain label.
+        let other = resolve_decorations(&snapshot, &["main".into()]);
+        assert_eq!(other[0].kind, DecorationKind::Branch);
+
+        // Detached HEAD stays a bare HEAD label.
+        snapshot.reviewed.as_mut().unwrap().symbolic_head.clear();
+        let detached = resolve_decorations(&snapshot, &refs[..1]);
+        assert_eq!(detached[0].kind, DecorationKind::Head);
+        assert_eq!(detached[0].label(), "HEAD · detached");
     }
 
     #[test]
