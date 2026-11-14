@@ -12,7 +12,6 @@ pub enum ControlSize {
     Compact,
     DenseBulk,
     DenseHunk,
-    TabClose,
     FileAction,
 }
 /// Applies the dimensions and typography for a button's placement.
@@ -31,7 +30,6 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
             geometry::SIZE_HUNK_ACTION_PADDING_X,
             geometry::SIZE_HUNK_ACTION_FONT_SIZE,
         ),
-        TabClose => (geometry::SIZE_REPOSITORY_TAB_CLOSE_TARGET, 8., 16.),
         FileAction => (geometry::SIZE_FILE_ACTION_TARGET, 0., 11.),
     };
     button
