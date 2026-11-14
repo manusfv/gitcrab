@@ -149,6 +149,7 @@ impl GitCrab {
                     .when(current && !previewed, |row| {
                         row.background(Role::StatusSuccessBg)
                     })
+                    .when(previewed, |row| row.font_weight(FontWeight::SEMIBOLD))
                     .highlighted(previewed)
                     .tooltip(tooltip)
                     .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| on_click(v, e, w, cx))),
@@ -264,7 +265,7 @@ impl GitCrab {
                     .child(
                         self.sidebar_header(
                             "local-branches",
-                            "branch",
+                            "local",
                             "Local",
                             local.count,
                             local.collapsed,

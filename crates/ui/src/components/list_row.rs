@@ -199,7 +199,7 @@ impl Styled for ListRow {
 impl RenderOnce for ListRow {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let fill = if self.highlighted {
-            Some(Role::ActionAccentTintHover)
+            Some(Role::ActionAccentTintPressed)
         } else if self.selected {
             Some(Role::InteractionSelected)
         } else {
