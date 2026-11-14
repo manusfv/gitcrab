@@ -135,6 +135,39 @@ fn paint_dashed_circle(w: &mut Window, center: Point<Pixels>, radius: Pixels, co
     }
 }
 
+/// The branch band behind the working-changes marker: it runs from the
+/// circle's centre to `right`, with a cut-out so its left edge follows the
+/// circle's right half and the circle itself stays unfilled.
+fn paint_hugging_band(
+    w: &mut Window,
+    center: Point<Pixels>,
+    radius: Pixels,
+    top: Pixels,
+    bottom: Pixels,
+    right: Pixels,
+    color: Rgba,
+) {
+    const STEPS: usize = 24;
+    let r = f32::from(radius);
+    // Half the band's height measured from the circle's centre; when the band
+    // is shorter than the circle, the arc is cut where it meets the edges.
+    let reach = f32::from((center.y - top).min(bottom - center.y)).max(0.);
+    let limit = (reach / r).min(1.).asin();
+    let on_arc = |a: f32| point(center.x + px(r * a.cos()), center.y + px(r * a.sin()));
+    let mut path = PathBuilder::fill();
+    path.move_to(point(right, top));
+    path.line_to(point(on_arc(-limit).x, top));
+    for i in 0..=STEPS {
+        path.line_to(on_arc(-limit + 2. * limit * i as f32 / STEPS as f32));
+    }
+    path.line_to(point(on_arc(limit).x, bottom));
+    path.line_to(point(right, bottom));
+    path.close();
+    if let Ok(path) = path.build() {
+        w.paint_path(path, color);
+    }
+}
+
 /// A dotted lane line, used from the working-changes marker down to the first
 /// commit. `travelled` is how far the pattern already ran above `top`, so the
 /// dots continue unbroken across the row boundary.
@@ -416,6 +449,7 @@ impl GitCrab {
                     .shape_line(text, font_size, &[run], None);
                 wip_editor_width(f32::from(shaped.width))
             };
+            let wip_color = self.state.graph.rows.first().map_or(0, |row| row.color);
             let has_head = self
                 .state
                 .snapshot
@@ -452,17 +486,44 @@ impl GitCrab {
                                     graph_lane_positions(bounds, lane_count, w.scale_factor())(0);
                                 let y = bounds.origin.y + px(height / 2.);
                                 let radius = px(WIP_RADIUS);
+                                // Same branch band as the commit rows, in the
+                                // colour of the branch being worked on. Its left
+                                // edge hugs the circle, which stays hollow.
+                                let band_y = bounds.origin.y + px(3.);
+                                let band_height = bounds.size.height - px(6.);
+                                let band_right = bounds.right();
+                                paint_hugging_band(
+                                    w,
+                                    point(x, y),
+                                    radius,
+                                    band_y,
+                                    band_y + band_height,
+                                    band_right,
+                                    branch_tint(wip_color, 0x24),
+                                );
+                                w.paint_quad(fill(
+                                    Bounds::new(
+                                        point(band_right - px(1.), band_y),
+                                        size(px(1.), band_height),
+                                    ),
+                                    branch_tint(wip_color, 0x70),
+                                ));
                                 if has_head {
                                     paint_dotted_lane(
                                         w,
                                         x,
                                         y + radius,
                                         bounds.bottom(),
-                                        lanes()[0],
+                                        lanes()[wip_color % lanes().len()],
                                         px(0.),
                                     );
                                 }
-                                paint_dashed_circle(w, point(x, y), radius, lanes()[0]);
+                                paint_dashed_circle(
+                                    w,
+                                    point(x, y),
+                                    radius,
+                                    lanes()[wip_color % lanes().len()],
+                                );
                             },
                         )
                         .w_full()
