@@ -7,7 +7,7 @@
 
 use super::*;
 use gitcrab_core::presentation::filter_branches;
-use gpui_component::{
+use gpui::component::{
     input::{Enter, Escape, MoveDown, MoveUp},
     popover::{Popover, PopoverState},
     v_flex,
@@ -94,7 +94,7 @@ impl GitCrab {
                     });
                 } else if query_focus.is_focused(window) {
                     // Return keyboard focus to the tab so its shortcuts work.
-                    view_focus.focus(window);
+                    view_focus.focus(window, cx);
                 }
             }
         };
@@ -124,7 +124,7 @@ impl GitCrab {
                     let view_focus = view_focus.clone();
                     move |branch, window, cx| {
                         popover.update(cx, |state, cx| state.dismiss(window, cx));
-                        view_focus.focus(window);
+                        view_focus.focus(window, cx);
                         let Some(name) = branches.get(branch).cloned() else {
                             return;
                         };
@@ -224,7 +224,7 @@ impl GitCrab {
                         move |_: &Escape, window, cx| {
                             cx.stop_propagation();
                             popover.update(cx, |state, cx| state.dismiss(window, cx));
-                            view_focus.focus(window);
+                            view_focus.focus(window, cx);
                         }
                     })
                     .child(
@@ -263,7 +263,7 @@ impl GitCrab {
             };
 
         Popover::new("branch-picker")
-            .anchor(Corner::TopLeft)
+            .anchor(Anchor::TopLeft)
             .track_focus(&query_focus)
             .on_open_change(on_open_change)
             .trigger(
@@ -275,7 +275,7 @@ impl GitCrab {
                     width,
                     height,
                 )
-                .disabled(!enabled)
+                .set_disabled(!enabled)
                 .tooltip(tooltip),
             )
             .content(content)

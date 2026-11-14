@@ -21,47 +21,47 @@ impl GitCrab {
                 .unwrap_or_default();
             let close = close.clone();
             let footer_close = close.clone();
+            let (text, role) = match &status {
+                AppearanceStatus::Idle => (
+                    "Changes apply immediately and save automatically.".to_owned(),
+                    Role::TextMuted,
+                ),
+                AppearanceStatus::Saving(_) => ("Saving…".to_owned(), Role::TextMuted),
+                AppearanceStatus::Saved => ("Saved".to_owned(), Role::StatusSuccessFg),
+                AppearanceStatus::Failed(error) => {
+                    (format!("Could not save: {error}"), Role::StatusErrorFg)
+                }
+            };
+            let footer = components::dialog_footer([
+                div()
+                    .id("appearance-save-status")
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(scaled(12.))
+                    .text_role(role)
+                    .child(text)
+                    .into_any_element(),
+                Button::new("settings-close")
+                    .label("Close")
+                    .cursor_pointer()
+                    .primary()
+                    .small()
+                    .h(scaled(CONTROL_HEIGHT))
+                    .tab_stop(true)
+                    .on_click(move |_, w, cx| {
+                        // The same persistence path as Escape and dismissal.
+                        let _ = footer_close.update(cx, |v, cx| v.finish_settings(w, cx));
+                        w.close_dialog(cx);
+                    })
+                    .into_any_element(),
+            ])
+            .items_center();
             dialog
                 .title("Appearance")
                 .w(px(480.))
                 .p_4()
                 .child(div().children(content))
-                .footer(move |_, _, _, _| {
-                    let (text, role) = match &status {
-                        AppearanceStatus::Idle => (
-                            "Changes apply immediately and save automatically.".to_owned(),
-                            Role::TextMuted,
-                        ),
-                        AppearanceStatus::Saving(_) => ("Saving…".to_owned(), Role::TextMuted),
-                        AppearanceStatus::Saved => ("Saved".to_owned(), Role::StatusSuccessFg),
-                        AppearanceStatus::Failed(error) => {
-                            (format!("Could not save: {error}"), Role::StatusErrorFg)
-                        }
-                    };
-                    let close = footer_close.clone();
-                    vec![
-                        div()
-                            .id("appearance-save-status")
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(scaled(12.))
-                            .text_role(role)
-                            .child(text)
-                            .into_any_element(),
-                        Button::new("settings-close")
-                            .label("Close")
-                            .primary()
-                            .small()
-                            .h(scaled(CONTROL_HEIGHT))
-                            .tab_stop(true)
-                            .on_click(move |_, w, cx| {
-                                // The same persistence path as Escape and dismissal.
-                                let _ = close.update(cx, |v, cx| v.finish_settings(w, cx));
-                                w.close_dialog(cx);
-                            })
-                            .into_any_element(),
-                    ]
-                })
+                .footer(footer)
                 .on_close(move |_, w, cx| {
                     let _ = close.update(cx, |v, cx| v.finish_settings(w, cx));
                 })
@@ -80,7 +80,7 @@ impl GitCrab {
         if let Err(error) = self.save_preferences(true, cx) {
             self.persistence_error("appearance", error);
         }
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 

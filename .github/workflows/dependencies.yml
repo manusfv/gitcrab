@@ -2,10 +2,10 @@ name: Dependencies
 
 on:
   pull_request:
-    paths: [Cargo.toml, Cargo.lock, deny.toml, 'vendor/**', scripts/verify-vendor.py, .github/workflows/dependencies.yml]
+    paths: [Cargo.toml, Cargo.lock, deny.toml, .github/workflows/dependencies.yml]
   push:
     branches: [main]
-    paths: [Cargo.toml, Cargo.lock, deny.toml, 'vendor/**', scripts/verify-vendor.py, .github/workflows/dependencies.yml]
+    paths: [Cargo.toml, Cargo.lock, deny.toml, .github/workflows/dependencies.yml]
   schedule:
     - cron: '30 9 * * 1'
   workflow_dispatch:
@@ -21,7 +21,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - run: python3 scripts/verify-vendor.py
       - name: Enforce advisory exception review date
         run: |
           if [[ "$(date -u +%F)" > 2027-02-10 ]]; then

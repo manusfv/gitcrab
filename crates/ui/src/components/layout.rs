@@ -1,4 +1,5 @@
 //! Containers and dividers that give panes their shared structure.
+use crate::theme::Role;
 use crate::theme::*;
 use gpui::{prelude::*, *};
 

@@ -186,7 +186,7 @@ impl GitCrab {
                                             })
                                             .unwrap_or_default()
                                         })
-                                        .track_scroll(self.history_scroll.clone())
+                                        .track_scroll(&self.history_scroll)
                                         // Size from a commit row, not the WIP row: its
                                         // text input reports an unbounded content width.
                                         .with_width_from_item(Some(1))
@@ -230,7 +230,7 @@ impl GitCrab {
                     )
                     .child(
                         div().absolute().inset_0().child(
-                            gpui_component::scroll::Scrollbar::horizontal(
+                            gpui::component::scroll::Scrollbar::horizontal(
                                 &self.history_horizontal_scroll,
                             )
                             .id("history-horizontal-scrollbar"),
@@ -314,7 +314,7 @@ impl GitCrab {
                 let run = TextRun {
                     len: text.len(),
                     // The input renders in the theme font, not the window default.
-                    font: font(gpui_component::Theme::global(cx).font_family.clone()),
+                    font: font(gpui::component::Theme::global(cx).font_family.clone()),
                     color: Hsla::default(),
                     background_color: None,
                     underline: None,
@@ -421,7 +421,7 @@ impl GitCrab {
                                     .id("wip-summary")
                                     // Sized to its text; shrinks before the
                                     // flex_none badges when space runs out.
-                                    .flex_shrink()
+                                    .flex_shrink(1.)
                                     .w(px(wip_width))
                                     .min_w(px(WIP_EDITOR_MIN_WIDTH))
                                     .overflow_hidden()
@@ -648,8 +648,8 @@ impl GitCrab {
                                             let entry_for_click = entry.clone();
                                             let id = id.clone();
                                             menu = menu.item(
-                                                PopupMenuItem::new(entry.label()).on_click(
-                                                    move |_, w, cx| {
+                                                components::menu_item(entry.label(), true)
+                                                    .on_click(move |_, w, cx| {
                                                         let _ = weak.update(cx, |v, cx| {
                                                             v.activate_decoration(
                                                                 &entry_for_click,
@@ -658,8 +658,7 @@ impl GitCrab {
                                                                 cx,
                                                             )
                                                         });
-                                                    },
-                                                ),
+                                                    }),
                                             );
                                         }
                                         menu
@@ -869,21 +868,19 @@ impl GitCrab {
         el.context_menu(move |mut menu, w, cx| {
             let commands = view.update(cx, |v, cx| v.command_context(w, cx));
             let sha = target.clone();
-            menu = menu
-                .item(
-                    PopupMenuItem::new("Copy commit SHA").on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(sha.clone()))
-                    }),
-                )
+            menu =
+                menu.item(components::menu_item("Copy commit SHA", true).on_click(
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sha.clone())),
+                ))
                 .separator();
             let create_view = view.clone();
             let start = target.clone();
             menu = menu
-                .item(
-                    PopupMenuItem::new("Create branch here…").on_click(move |_, w, cx| {
+                .item(components::menu_item("Create branch here…", true).on_click(
+                    move |_, w, cx| {
                         create_view.update(cx, |v, cx| v.prompt_branch(Some(start.clone()), w, cx))
-                    }),
-                )
+                    },
+                ))
                 .separator();
             // The shared command model decides availability, including merge commits.
             for command in [
@@ -901,11 +898,11 @@ impl GitCrab {
                     None => format!("{} {short}", command.label()),
                 };
                 menu = menu.item(
-                    PopupMenuItem::new(label)
-                        .disabled(!availability.enabled())
-                        .on_click(move |_, w, cx| {
+                    components::menu_item(label, availability.enabled()).on_click(
+                        move |_, w, cx| {
                             view.update(cx, |v, cx| v.run_command(command, target.clone(), w, cx))
-                        }),
+                        },
+                    ),
                 );
             }
             menu

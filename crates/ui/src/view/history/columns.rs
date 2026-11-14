@@ -67,9 +67,8 @@ impl GitCrab {
                 .iter()
                 .any(|e| e.column == column && e.visible);
             menu = menu.item(
-                PopupMenuItem::new(column.label())
+                components::menu_item(column.label(), column != HistoryColumn::Message)
                     .checked(visible)
-                    .disabled(column == HistoryColumn::Message)
                     .on_click(move |_, w, cx| {
                         let _ = weak.update(cx, |v, cx| {
                             v.materialize_columns();
@@ -91,15 +90,17 @@ impl GitCrab {
                         let at_end = (delta < 0 && index == 0)
                             || (delta > 0 && index + 1 == order_columns.len());
                         menu = menu.item(
-                            PopupMenuItem::new(format!("Move {} {direction}", column.label()))
-                                .disabled(at_end)
-                                .on_click(move |_, w, cx| {
-                                    let _ = weak.update(cx, |v, cx| {
-                                        v.materialize_columns();
-                                        v.history_columns.move_visible(column, delta);
-                                        v.columns_changed(w, cx);
-                                    });
-                                }),
+                            components::menu_item(
+                                format!("Move {} {direction}", column.label()),
+                                !at_end,
+                            )
+                            .on_click(move |_, w, cx| {
+                                let _ = weak.update(cx, |v, cx| {
+                                    v.materialize_columns();
+                                    v.history_columns.move_visible(column, delta);
+                                    v.columns_changed(w, cx);
+                                });
+                            }),
                         );
                     }
                 }
@@ -111,7 +112,7 @@ impl GitCrab {
                 for (delta, verb) in [(32., "Widen"), (-32., "Narrow")] {
                     let weak = widths.clone();
                     menu = menu.item(
-                        PopupMenuItem::new(format!("{verb} {}", column.label())).on_click(
+                        components::menu_item(format!("{verb} {}", column.label()), true).on_click(
                             move |_, w, cx| {
                                 let _ = weak.update(cx, |v, cx| {
                                     v.materialize_columns();
@@ -127,14 +128,16 @@ impl GitCrab {
         });
         let weak = weak.clone();
         menu.separator().item(
-            PopupMenuItem::new("Reset columns · fit to window").on_click(move |_, w, cx| {
-                let _ = weak.update(cx, |v, cx| {
-                    v.history_columns = HistoryColumns::default();
-                    v.history_horizontal_scroll
-                        .set_offset(point(px(0.), px(0.)));
-                    v.columns_changed(w, cx);
-                });
-            }),
+            components::menu_item("Reset columns · fit to window", true).on_click(
+                move |_, w, cx| {
+                    let _ = weak.update(cx, |v, cx| {
+                        v.history_columns = HistoryColumns::default();
+                        v.history_horizontal_scroll
+                            .set_offset(point(px(0.), px(0.)));
+                        v.columns_changed(w, cx);
+                    });
+                },
+            ),
         )
     }
 

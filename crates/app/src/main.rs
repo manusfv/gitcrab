@@ -4,8 +4,8 @@
 )]
 
 use gitcrab_ui::{assets, preferences, theme, view, workspace};
+use gpui::component::{Root, Theme, ThemeMode};
 use gpui::{prelude::*, *};
-use gpui_component::{Root, Theme, ThemeMode};
 fn main() {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
         println!(
@@ -15,8 +15,8 @@ fn main() {
         );
         return;
     }
-    Application::new().with_assets(assets::Assets).run(|cx| {
-        gpui_component::init(cx);
+    gpui::application().with_assets(assets::Assets).run(|cx| {
+        gpui::component::init(cx);
         gitcrab_ui::backend::install(std::sync::Arc::new(gitcrab_git::Backend), cx);
         gitcrab_ui::preferences::install(
             std::sync::Arc::new(gitcrab_settings::FileStore::new()),
@@ -36,24 +36,30 @@ fn main() {
                 MenuItem::separator(),
                 MenuItem::action("Quit", view::Quit),
             ],
+            disabled: false,
         }]);
-        let primary = if cfg!(target_os = "macos") {
-            "cmd"
-        } else {
-            "ctrl"
-        };
+        // Cmd on macOS, Ctrl elsewhere. Key bindings need static strings.
+        macro_rules! primary {
+            ($key:literal) => {
+                if cfg!(target_os = "macos") {
+                    concat!("cmd-", $key)
+                } else {
+                    concat!("ctrl-", $key)
+                }
+            };
+        }
         cx.bind_keys([
-            KeyBinding::new(&format!("{primary}-o"), view::Open, None),
-            KeyBinding::new(&format!("{primary}-t"), workspace::NewTab, None),
-            KeyBinding::new(&format!("{primary}-w"), workspace::CloseTab, None),
+            KeyBinding::new(primary!("o"), view::Open, None),
+            KeyBinding::new(primary!("t"), workspace::NewTab, None),
+            KeyBinding::new(primary!("w"), workspace::CloseTab, None),
             KeyBinding::new("ctrl-tab", workspace::NextTab, None),
             KeyBinding::new("ctrl-shift-tab", workspace::PreviousTab, None),
             KeyBinding::new("ctrl-shift-pageup", workspace::MoveTabLeft, None),
             KeyBinding::new("ctrl-shift-pagedown", workspace::MoveTabRight, None),
-            KeyBinding::new(&format!("{primary}-q"), view::Quit, None),
-            KeyBinding::new(&format!("{primary}-enter"), view::CommitStaged, None),
-            KeyBinding::new(&format!("{primary}-f"), view::Find, None),
-            KeyBinding::new(&format!("{primary}-shift-f"), view::FindInHistory, None),
+            KeyBinding::new(primary!("q"), view::Quit, None),
+            KeyBinding::new(primary!("enter"), view::CommitStaged, None),
+            KeyBinding::new(primary!("f"), view::Find, None),
+            KeyBinding::new(primary!("shift-f"), view::FindInHistory, None),
             KeyBinding::new("f3", view::SearchNext, None),
             KeyBinding::new("shift-f3", view::SearchPrevious, None),
             KeyBinding::new("f5", view::Refresh, None),
@@ -65,21 +71,13 @@ fn main() {
             KeyBinding::new("escape", view::Back, Some("GitCrab")),
             KeyBinding::new("up", view::Previous, Some("GitCrab")),
             KeyBinding::new("down", view::Next, Some("GitCrab")),
-            KeyBinding::new(&format!("{primary}-c"), view::Copy, Some("GitCrab")),
-            KeyBinding::new(
-                &format!("{primary}-shift-c"),
-                view::CopyPatch,
-                Some("GitCrab"),
-            ),
-            KeyBinding::new(&format!("{primary}-a"), view::SelectAll, Some("GitCrab")),
+            KeyBinding::new(primary!("c"), view::Copy, Some("GitCrab")),
+            KeyBinding::new(primary!("shift-c"), view::CopyPatch, Some("GitCrab")),
+            KeyBinding::new(primary!("a"), view::SelectAll, Some("GitCrab")),
             // Text fields bind their own editing undo with higher precedence;
             // the view also ignores these while a text field has focus.
-            KeyBinding::new(&format!("{primary}-z"), view::UndoLast, Some("GitCrab")),
-            KeyBinding::new(
-                &format!("{primary}-shift-z"),
-                view::RedoLast,
-                Some("GitCrab"),
-            ),
+            KeyBinding::new(primary!("z"), view::UndoLast, Some("GitCrab")),
+            KeyBinding::new(primary!("shift-z"), view::RedoLast, Some("GitCrab")),
             KeyBinding::new("ctrl-y", view::RedoLast, Some("GitCrab")),
         ]);
         #[cfg(not(feature = "native-evidence"))]
@@ -141,7 +139,7 @@ fn main() {
             },
         )
         .expect("open native GitCrab window");
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
             }

@@ -78,7 +78,7 @@ impl GitCrab {
             ));
         }
         let view = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
             let accepted = view.clone();
             let closed = view.clone();
             let location = location.clone();
@@ -137,8 +137,12 @@ impl GitCrab {
                 .title("Trust this local repository?")
                 .confirm()
                 .button_props(
-                    gpui_component::dialog::DialogButtonProps::default().ok_text("Trust and open"),
+                    gpui::component::dialog::DialogButtonProps::default().ok_text("Trust and open"),
                 )
+                .footer(components::dialog_footer([
+                    components::dialog_cancel(cx).into_any_element(),
+                    components::dialog_ok("Trust and open", components::ButtonKind::Primary, cx),
+                ]))
                 .child(content)
                 .on_ok(move |_, w, cx| {
                     let _ = accepted.update(cx, |v, cx| {
@@ -153,7 +157,7 @@ impl GitCrab {
                 .on_close(move |_, w, cx| {
                     let _ = closed.update(cx, |v, cx| {
                         v.awaiting_trust = false;
-                        v.focus.focus(w);
+                        v.focus.focus(w, cx);
                         cx.notify();
                     });
                 })

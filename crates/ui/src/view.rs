@@ -11,6 +11,7 @@ mod settings;
 mod sidebar;
 use super::components::{self, prelude::*};
 use super::preferences::Preferences;
+use super::theme::Role;
 use super::theme::*;
 use gitcrab_core::{
     commands::{Command, CommandContext},
@@ -24,15 +25,15 @@ use gitcrab_core::{
         ReviewedOperation,
     },
 };
-use gpui::{prelude::*, *};
-use gpui_component::{
+use gpui::component::{
     button::{Button, ButtonVariants},
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
     resizable::{h_resizable, resizable_panel},
     tooltip::Tooltip,
-    Disableable, Selectable, Sizable, Theme, WindowExt,
+    Selectable, Sizable, Theme, WindowExt,
 };
+use gpui::{prelude::*, *};
 use std::ops::Range;
 
 /// What startup restores, shown where recent repositories are listed.
@@ -311,7 +312,7 @@ pub struct GitCrab {
     focus: FocusHandle,
     draft: Entity<InputState>,
     wip_summary: Entity<InputState>,
-    description: Entity<InputState>,
+    description: Entity<TextareaState>,
     search: Entity<InputState>,
     reference_search: Entity<InputState>,
     target: Entity<InputState>,
@@ -372,7 +373,7 @@ pub struct GitCrab {
     preference_save: Option<Task<()>>,
     saved_preferences: Preferences,
     layout_revision: u64,
-    panels: [Entity<gpui_component::resizable::ResizableState>; 3],
+    panels: [Entity<gpui::component::resizable::ResizableState>; 3],
     panel_subscriptions: Vec<Subscription>,
     actual_inspector_width: [f32; 3],
     watcher: Option<notify::RecommendedWatcher>,
@@ -420,11 +421,7 @@ impl GitCrab {
     ) -> Self {
         let draft = cx.new(|cx| InputState::new(window, cx).placeholder("Commit summary"));
         let wip_summary = cx.new(|cx| InputState::new(window, cx).placeholder("// WIP"));
-        let description = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .placeholder("Description")
-        });
+        let description = cx.new(|cx| TextareaState::new(window, cx).placeholder("Description"));
         let reference_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter references…"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search loaded history…"));
@@ -438,7 +435,9 @@ impl GitCrab {
                 window,
                 |v, _, event: &InputEvent, w, cx| match event {
                     InputEvent::Change => v.operation_target_changed(cx),
-                    InputEvent::PressEnter { secondary: false } => v.submit_branch_prompt(w, cx),
+                    InputEvent::PressEnter {
+                        secondary: false, ..
+                    } => v.submit_branch_prompt(w, cx),
                     _ => {}
                 },
             ),
@@ -482,7 +481,10 @@ impl GitCrab {
                 cx.notify();
             }),
             cx.subscribe_in(&search, window, |v, _, event: &InputEvent, w, cx| {
-                if let InputEvent::PressEnter { secondary: false } = event {
+                if let InputEvent::PressEnter {
+                    secondary: false, ..
+                } = event
+                {
                     v.search_step(1, w, cx);
                 } else if matches!(event, InputEvent::Change) {
                     v.update_search(cx);
@@ -491,7 +493,9 @@ impl GitCrab {
             }),
             cx.subscribe_in(&diff_search, window, |v, _, event: &InputEvent, w, cx| {
                 match event {
-                    InputEvent::PressEnter { secondary: false } => v.diff_find_step(1, w, cx),
+                    InputEvent::PressEnter {
+                        secondary: false, ..
+                    } => v.diff_find_step(1, w, cx),
                     InputEvent::Change => v.update_diff_find(true, cx),
                     _ => {}
                 }
@@ -510,7 +514,7 @@ impl GitCrab {
         ];
         let backend = crate::backend::get(cx);
         let preferences = crate::preferences::current(cx);
-        gpui_component::Theme::global_mut(cx).font_size = px(preferences.font_size);
+        gpui::component::Theme::global_mut(cx).font_size = px(preferences.font_size);
         let mut v = Self {
             state: Controller::default(),
             active,
@@ -601,7 +605,7 @@ impl GitCrab {
         };
         v.reset_panels(cx);
         if active {
-            v.focus.focus(window);
+            v.focus.focus(window, cx);
         }
         if let Some(path) = path {
             let view = cx.weak_entity();
@@ -686,9 +690,14 @@ impl GitCrab {
         }
         // gpui-component does not emit Change for provisional IME text. Capture
         // the focused native buffer before reconciling an asynchronous result.
-        if [&self.wip_summary, &self.draft, &self.description]
+        if [&self.wip_summary, &self.draft]
             .into_iter()
             .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+            || self
+                .description
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
         {
             let summary = if self
                 .wip_summary
@@ -806,17 +815,18 @@ impl GitCrab {
         let (summary, body) = split_message(&self.state.draft);
         let summary = summary.to_string();
         let body = body.to_string();
-        for (input, value) in [
-            (&self.wip_summary, summary.clone()),
-            (&self.draft, summary),
-            (&self.description, body),
-        ] {
+        for (input, value) in [(&self.wip_summary, summary.clone()), (&self.draft, summary)] {
             input.update(cx, |s, cx| {
                 if s.marked_text_range(window, cx).is_none() && s.value().as_ref() != value {
                     s.set_value(value, window, cx);
                 }
             });
         }
+        self.description.update(cx, |s, cx| {
+            if s.marked_text_range(window, cx).is_none() && s.value().as_ref() != body {
+                s.set_value(body, window, cx);
+            }
+        });
         if lane == Lane::Snapshot && self.state.snapshot.is_some() {
             self.update_search(cx);
             self.install_watch(window, cx);
@@ -840,7 +850,7 @@ impl GitCrab {
         if std::mem::take(&mut self.state.revealed) {
             // A commit or reference activated outside the loaded page has arrived.
             let id = self.state.selected.clone();
-            self.reveal_selection(id.as_deref(), window);
+            self.reveal_selection(id.as_deref(), window, cx);
         }
         if matches!(lane, Lane::Snapshot | Lane::Mutation) {
             let plan = self.state.take_watcher_refresh();
@@ -1103,7 +1113,7 @@ impl GitCrab {
         let app = crate::preferences::current(cx);
         self.preferences.theme = app.theme;
         self.preferences.font_size = app.font_size;
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         if self.external_dirty && !self.state.busy {
             self.external_dirty = false;
             self.refresh(&Refresh, window, cx);
@@ -1134,7 +1144,7 @@ impl GitCrab {
     fn select(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.service.cancel_read(ReadKind::Details);
         self.service.cancel_read(ReadKind::Diff);
-        self.reveal_selection(id.as_deref(), window);
+        self.reveal_selection(id.as_deref(), window, cx);
         let job = self.state.select(id);
         self.dispatch(job, window, cx);
     }
@@ -1151,7 +1161,7 @@ impl GitCrab {
                 self.service.cancel_read(ReadKind::Details);
                 self.service.cancel_read(ReadKind::Diff);
                 let id = self.state.selected.clone();
-                self.reveal_selection(id.as_deref(), window);
+                self.reveal_selection(id.as_deref(), window, cx);
                 self.dispatch(job, window, cx);
             }
             Seek::Loading(plan) => self.apply_refresh(plan, window, cx),
@@ -1160,13 +1170,13 @@ impl GitCrab {
         self.close_references(window, cx);
     }
 
-    fn reveal_selection(&mut self, id: Option<&str>, window: &mut Window) {
+    fn reveal_selection(&mut self, id: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(feature = "native-evidence")]
         {
             self.feedback_start = Some((std::time::Instant::now(), "selection-to-next-frame"));
         }
         self.selection = None;
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         if let Some(snapshot) = &self.state.snapshot {
             if let Some(index) = id.and_then(|id| snapshot.commits.iter().position(|c| c.id == id))
             {
@@ -1367,7 +1377,7 @@ impl GitCrab {
         self.diff_find_open = false;
         self.diff_matches.clear();
         self.diff_match = None;
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1386,11 +1396,15 @@ impl GitCrab {
         self.references_open = true;
         let weak = cx.weak_entity();
         let closed = weak.clone();
-        window.open_dialog(cx, move |d, w, cx| {
+        window.open_alert_dialog(cx, move |d, w, cx| {
             let content = weak.update(cx, |v, cx| v.sidebar(w, cx)).ok();
             let closed = closed.clone();
             d.title("References")
-                .alert()
+                .footer(components::dialog_footer([components::dialog_ok(
+                    "OK",
+                    components::ButtonKind::Primary,
+                    cx,
+                )]))
                 .p_4()
                 .child(div().h(px(400.)).children(content))
                 .on_close(move |_, _, cx| {
@@ -1590,6 +1604,7 @@ impl GitCrab {
         Button::new("toolbar-pull-menu")
             .ghost()
             .tab_stop(true)
+            .cursor_pointer()
             .h(scaled(42.))
             .w(px(12. * ui_scale.max(0.5)))
             .px_0()
@@ -1600,7 +1615,7 @@ impl GitCrab {
             ))
             .dropdown_menu(move |menu, _, _| {
                 let fetch_view = weak.clone();
-                let mut menu = menu.item(PopupMenuItem::new("Fetch").disabled(!fetch).on_click(
+                let mut menu = menu.item(components::menu_item("Fetch", fetch).on_click(
                     move |_, w, cx| {
                         let _ = fetch_view.update(cx, |v, cx| {
                             v.run_command(Command::Fetch, String::new(), w, cx)
@@ -1611,9 +1626,8 @@ impl GitCrab {
                 for mode in PullMode::ALL {
                     let view = weak.clone();
                     menu = menu.item(
-                        PopupMenuItem::new(mode.label())
+                        components::menu_item(mode.label(), pull)
                             .checked(mode == PullMode::default())
-                            .disabled(!pull)
                             .on_click(move |_, w, cx| {
                                 let _ = view.update(cx, |v, cx| v.run_pull(mode, w, cx));
                             }),
@@ -1645,7 +1659,7 @@ impl GitCrab {
             Seek::Selected(job) => {
                 self.service.cancel_read(ReadKind::Details);
                 self.service.cancel_read(ReadKind::Diff);
-                self.reveal_selection(Some(&id), window);
+                self.reveal_selection(Some(&id), window, cx);
                 self.dispatch(job, window, cx);
             }
             Seek::Loading(plan) => self.apply_refresh(plan, window, cx),
@@ -1665,7 +1679,7 @@ impl GitCrab {
     fn show_activity(&self, window: &mut Window, cx: &mut Context<Self>) {
         let repo = display_path(&self.state.path);
         let weak = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
             let records = weak
                 .read_with(cx, |v, _| v.activity.clone())
                 .unwrap_or_default();
@@ -1676,7 +1690,11 @@ impl GitCrab {
                 .join("\n");
             dialog
                 .title("Activity · this tab")
-                .alert()
+                .footer(components::dialog_footer([components::dialog_ok(
+                    "OK",
+                    components::ButtonKind::Primary,
+                    cx,
+                )]))
                 .p_4()
                 .child(
                     div()
@@ -1798,9 +1816,12 @@ impl GitCrab {
         if self.settings_open || window.has_active_dialog(cx) {
             return;
         }
-        let composing = [&self.draft, &self.wip_summary, &self.description]
+        let composing = [&self.draft, &self.wip_summary]
             .into_iter()
-            .any(|input| input.update(cx, |s, cx| s.marked_text_range(window, cx).is_some()));
+            .any(|input| input.update(cx, |s, cx| s.marked_text_range(window, cx).is_some()))
+            || self
+                .description
+                .update(cx, |s, cx| s.marked_text_range(window, cx).is_some());
         if self.can_commit() && !composing && self.state.busy {
             // Staging is still being written: commit once it lands, against
             // the index it leaves.
@@ -1853,12 +1874,12 @@ impl GitCrab {
         }
         if self.single_pane && self.constrained_inspector {
             self.constrained_inspector = false;
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
             cx.notify();
             return;
         }
         self.state.close_diff();
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         cx.notify();
     }
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -2068,27 +2089,30 @@ impl GitCrab {
         cx: &App,
     ) -> AnyElement {
         if self.settings_open {
-            let value = input.read(cx).value();
-            div()
-                .w(px(width))
-                .h(px(height))
-                .px_2()
-                .rounded(px(6.))
-                .bg_role(Role::SurfaceChrome)
-                .overflow_hidden()
-                .text_role(Role::TextMuted)
-                .child(if value.is_empty() {
-                    placeholder.to_string()
-                } else {
-                    value.to_string()
-                })
-                .into_any_element()
+            Self::editor_preview(input.read(cx).value().as_ref(), height, width, placeholder)
         } else {
             Input::new(input)
                 .w(px(width))
                 .h(px(height))
                 .into_any_element()
         }
+    }
+    /// A static stand-in for an editor while the settings dialog is open.
+    fn editor_preview(value: &str, height: f32, width: f32, placeholder: &str) -> AnyElement {
+        div()
+            .w(px(width))
+            .h(px(height))
+            .px_2()
+            .rounded(px(6.))
+            .bg_role(Role::SurfaceChrome)
+            .overflow_hidden()
+            .text_role(Role::TextMuted)
+            .child(if value.is_empty() {
+                placeholder.to_string()
+            } else {
+                value.to_string()
+            })
+            .into_any_element()
     }
     fn highlight_sidebar_row(button: Button, highlighted: bool) -> Button {
         button.selected(highlighted).when(highlighted, |button| {
@@ -2139,7 +2163,7 @@ impl GitCrab {
                         .tab_stop(true)
                         .icon(icon("folder"))
                         .label("Browse…")
-                        .disabled(self.settings_open)
+                        .set_disabled(self.settings_open)
                         .on_click(|_, w, cx| w.dispatch_action(Box::new(Open), cx)),
                 )
                 .when(!recent.is_empty(), |el| {
@@ -2204,7 +2228,7 @@ impl GitCrab {
                                                     )
                                                     .tooltip(display_path(&path))
                                                     .tab_stop(true)
-                                                    .disabled(self.settings_open)
+                                                    .set_disabled(self.settings_open)
                                                     .on_click(move |_, w, cx| {
                                                         w.dispatch_action(
                                                             Box::new(super::workspace::OpenRecent(
@@ -2588,10 +2612,10 @@ impl Render for GitCrab {
                     "{} · Open another repository in a tab · Ctrl/Cmd+O",
                     display_path(&self.state.path)
                 ))
-                .disabled(self.state.blocking_write())
+                .set_disabled(self.state.blocking_write())
                 .dropdown_menu(move |menu, _, _| {
                     let mut menu = menu.action_context(menu_focus.clone()).item(
-                        PopupMenuItem::new("Browse for a repository… · Ctrl/Cmd+O")
+                        components::menu_item("Browse for a repository… · Ctrl/Cmd+O", true)
                             .action(Box::new(Open)),
                     );
                     if !recent.is_empty() {
@@ -2608,6 +2632,12 @@ impl Render for GitCrab {
                                 let full = full.clone();
                                 div()
                                     .id(SharedString::from(format!("recent-{full}")))
+                                    // Cover the entry's padding so the whole row shows the pointer.
+                                    .mx(rems(-0.5))
+                                    .my(rems(-0.25))
+                                    .px(rems(0.5))
+                                    .py(rems(0.25))
+                                    .cursor_pointer()
                                     .flex()
                                     .flex_col()
                                     .child(suffix.clone())
@@ -2657,18 +2687,18 @@ impl Render for GitCrab {
                         "up",
                         "Previous match · Shift+Enter or Shift+F3",
                     )
-                    .disabled(self.search_matches.is_empty())
+                    .set_disabled(self.search_matches.is_empty())
                     .on_click(cx.listener(|v, _, w, cx| v.search_step(-1, w, cx))),
                 )
                 .child(
                     self.icon_button("search-next", "down", "Next match · Enter or F3")
-                        .disabled(self.search_matches.is_empty())
+                        .set_disabled(self.search_matches.is_empty())
                         .on_click(cx.listener(|v, _, w, cx| v.search_step(1, w, cx))),
                 )
                 .when(load_more_offered, |bar| {
                     bar.child(
                         self.action_button("search-load-more", "Load more history")
-                            .disabled(self.state.loading())
+                            .set_disabled(self.state.loading())
                             .tooltip("Load 500 more commits and search them")
                             .on_click(cx.listener(|v, _, w, cx| {
                                 let plan = v.state.load_more();
@@ -2679,7 +2709,7 @@ impl Render for GitCrab {
             })
             .child(
                 self.icon_button("toolbar-appearance", "settings", "Appearance…")
-                    .disabled(self.settings_open)
+                    .set_disabled(self.settings_open)
                     .on_click(cx.listener(|v, _, w, cx| v.open_settings(w, cx))),
             )
             .when_some(placed_actions, |bar, actions| bar.child(actions));
@@ -2706,7 +2736,7 @@ impl Render for GitCrab {
                     .with_state(&self.panels[if collapsed { 2 } else { usize::from(rail) }])
                     .on_resize(cx.listener(
                         move |v,
-                              state: &Entity<gpui_component::resizable::ResizableState>,
+                              state: &Entity<gpui::component::resizable::ResizableState>,
                               w,
                               cx| {
                             let sizes = state.read(cx).sizes();

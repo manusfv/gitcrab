@@ -17,16 +17,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync"] }
 
-gpui = "=0.2.2"
-gpui-component = { version = "=0.5.1", default-features = false }
+# GPUI Kit pins the matching gpui-pre renderer and gpui-component library.
+# Imported as `gpui`; the components are under `gpui::component`.
+gpui = { package = "gpui-kit", version = "=0.9.1", default-features = false, features = ["component"] }
 notify = "=7.0.0"
 async-channel = "=2.5.0"
 
 [profile.release]
 lto = "thin"
-
-[patch.crates-io]
-# Shared pointer behavior also covers library-owned dialog and menu controls.
-gpui-component = { path = "vendor/gpui-component" }
-# gpui -> zed-async-tar -> xattr 0.2.3 uses a removed libc Linux alias.
-xattr = { path = "vendor/xattr" }

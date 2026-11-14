@@ -138,4 +138,4 @@ The release executable is `target/release/gitcrab.exe` on Windows and `target/re
 
 ## License and acknowledgements
 
-GitCrab is licensed under [MIT](LICENSE). See the [gpui-component](vendor/gpui-component/GITCRAB-PATCH.md) and [xattr](vendor/xattr/GITCRAB-PATCH.md) patch notes for third-party provenance.
+GitCrab is licensed under [MIT](LICENSE). See [THIRD_PARTY.md](THIRD_PARTY.md) for third-party material.

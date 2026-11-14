@@ -96,7 +96,7 @@ jobs:
             if ($LASTEXITCODE) { throw "$name failed with exit code $LASTEXITCODE" }
           }
           # Lint per target: much of the platform code sits behind cfg(windows)/cfg(unix).
-          # `-D warnings` applies to GitCrab only, not the vendored path dependencies.
+          # `-D warnings` applies to GitCrab only, not its dependencies.
           Check clippy-core @('clippy', '--locked', '-p', 'gitcrab-core', '--lib', '--tests', '--', '-D', 'warnings')
           Check clippy-native @('clippy', '--locked', '--workspace', '--all-features', '--all-targets', '--', '-D', 'warnings')
           Check core @('test', '--locked', '-p', 'gitcrab-core')

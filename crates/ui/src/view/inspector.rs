@@ -570,7 +570,7 @@ impl GitCrab {
                             })
                             .unwrap_or_default()
                         })
-                        .track_scroll(scroll)
+                        .track_scroll(&scroll)
                         .size_full(),
                     )
                     .when_some(sticky, |list, (section, count)| {
@@ -903,10 +903,47 @@ impl GitCrab {
         let cancel_focus = cx.focus_handle();
         let initial_focus = cancel_focus.clone();
         let display = gitcrab_core::git::display_path(&path);
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let cancel = div()
+                .track_focus(&cancel_focus)
+                .rounded(px(4.))
+                .focus(|s| s.border_2().border_role(Role::InteractionFocus))
+                .child(components::dialog_cancel(cx))
+                .into_any_element();
             let weak = weak.clone();
-            let cancel_focus = cancel_focus.clone();
             let path = path.clone();
+            let confirm = components::style(
+                Button::new("confirm-mark-resolved")
+                    .label(if markers {
+                        "Keep markers and mark resolved"
+                    } else {
+                        "Mark resolved"
+                    })
+                    .tab_stop(true),
+                if markers {
+                    components::ButtonKind::Discard
+                } else {
+                    components::ButtonKind::Stage
+                },
+                ControlSize::Regular,
+                cx,
+            )
+            .on_click(move |_, w, cx| {
+                let _ = weak.update(cx, |v, cx| {
+                    if v.state.epoch == epoch && !v.state.blocking_write() {
+                        v.mutate(
+                            Action::MarkResolved {
+                                path: path.clone(),
+                                allow_markers: markers,
+                            },
+                            w,
+                            cx,
+                        );
+                    }
+                });
+                w.close_dialog(cx);
+            })
+            .into_any_element();
             dialog
                 .title("Mark conflict resolved?")
                 .confirm()
@@ -925,51 +962,9 @@ impl GitCrab {
                         }),
                 )
                 .on_ok(|_, _, _| true)
-                .footer(move |_, cancel, w, cx| {
-                    let cancel = div()
-                        .track_focus(&cancel_focus)
-                        .rounded(px(4.))
-                        .focus(|s| s.border_2().border_role(Role::InteractionFocus))
-                        .child(cancel(w, cx))
-                        .into_any_element();
-                    let weak = weak.clone();
-                    let path = path.clone();
-                    let confirm = components::style(
-                        Button::new("confirm-mark-resolved")
-                            .label(if markers {
-                                "Keep markers and mark resolved"
-                            } else {
-                                "Mark resolved"
-                            })
-                            .tab_stop(true),
-                        if markers {
-                            components::ButtonKind::Discard
-                        } else {
-                            components::ButtonKind::Stage
-                        },
-                        ControlSize::Regular,
-                        cx,
-                    )
-                    .on_click(move |_, w, cx| {
-                        let _ = weak.update(cx, |v, cx| {
-                            if v.state.epoch == epoch && !v.state.blocking_write() {
-                                v.mutate(
-                                    Action::MarkResolved {
-                                        path: path.clone(),
-                                        allow_markers: markers,
-                                    },
-                                    w,
-                                    cx,
-                                );
-                            }
-                        });
-                        w.close_dialog(cx);
-                    })
-                    .into_any_element();
-                    vec![cancel, confirm]
-                })
+                .footer(components::dialog_footer([cancel, confirm]))
         });
-        window.on_next_frame(move |w, _| initial_focus.focus(w));
+        window.on_next_frame(move |w, cx| initial_focus.focus(w, cx));
     }
 
     fn composer(&self, cx: &mut Context<Self>) -> Div {
@@ -1145,12 +1140,11 @@ impl GitCrab {
                     )
                     .child(div().border_t_1().border_role(Role::BorderDivider))
                     .child(if self.settings_open {
-                        self.editor(
-                            &self.description,
+                        Self::editor_preview(
+                            self.description.read(cx).value().as_ref(),
                             geometry::SIZE_COMMIT_EDITOR_BODY_MIN,
                             self.inspector_editor_width(),
                             "Description",
-                            cx,
                         )
                     } else {
                         div()
@@ -1159,8 +1153,9 @@ impl GitCrab {
                             .overflow_hidden()
                             .h(scaled(geometry::SIZE_COMMIT_EDITOR_BODY_MIN))
                             .child(
-                                Input::new(&self.description)
-                                    .px(scaled(geometry::SIZE_COMMIT_EDITOR_INSET_X))
+                                Textarea::new(&self.description)
+                                    // Multi-line inputs pad their text by SIZE_COMMIT_EDITOR_INSET_X
+                                    // themselves; an outer inset would double it.
                                     .appearance(false)
                                     .bordered(false)
                                     .w_full()

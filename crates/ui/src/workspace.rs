@@ -1,16 +1,12 @@
 use super::components;
 use super::{
-    theme::*,
+    components::ButtonExt as _,
+    theme::{Role, *},
     view::{GitCrab, Open, Quit},
 };
 use gitcrab_core::presentation::{display_path, path_labels};
+use gpui::component::{button::*, menu::DropdownMenu, tooltip::Tooltip, Sizable, WindowExt};
 use gpui::{prelude::*, *};
-use gpui_component::{
-    button::*,
-    menu::{DropdownMenu, PopupMenuItem},
-    tooltip::Tooltip,
-    Disableable, Sizable, WindowExt,
-};
 use std::{cell::RefCell, rc::Rc};
 
 use components::rail::RailDrag;
@@ -576,9 +572,6 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Dialog builders can update repository views. Build them outside those
-        // views' render calls to avoid leasing the same entity twice.
-        let dialogs = gpui_component::Root::render_dialog_layer(window, cx);
         let blocked = self.blocked(window, cx);
         let workspace_id = cx.entity_id();
         let now = std::time::Instant::now();
@@ -810,7 +803,7 @@ impl Render for Workspace {
                     .line_height(scaled(16.))
                     .child("+"),
             )
-            .disabled(blocked)
+            .set_disabled(blocked)
             .tooltip("New repository tab · Ctrl/Cmd+T")
             .on_click(cx.listener(|v, _, w, cx| {
                 if !v.blocked(w, cx) {
@@ -832,21 +825,23 @@ impl Render for Workspace {
             .h(scaled(28.))
             .icon(icon("down"))
             .label(format!("{tab_count}"))
-            .disabled(blocked)
+            .set_disabled(blocked)
             .tooltip("All tabs and tab order")
             .dropdown_menu(move |mut menu, _, _| {
                 for (index, label, active) in &tab_entries {
                     let weak = weak.clone();
                     let index = *index;
-                    menu = menu.item(PopupMenuItem::new(label.clone()).checked(*active).on_click(
-                        move |_, w, cx| {
-                            let _ = weak.update(cx, |v, cx| {
-                                if !v.blocked(w, cx) {
-                                    v.activate(index, w, cx);
-                                }
-                            });
-                        },
-                    ));
+                    menu = menu.item(
+                        components::menu_item(label.clone(), true)
+                            .checked(*active)
+                            .on_click(move |_, w, cx| {
+                                let _ = weak.update(cx, |v, cx| {
+                                    if !v.blocked(w, cx) {
+                                        v.activate(index, w, cx);
+                                    }
+                                });
+                            }),
+                    );
                 }
                 menu = menu.separator();
                 for (label, delta, available) in [
@@ -858,14 +853,15 @@ impl Render for Workspace {
                     ),
                 ] {
                     let weak = weak.clone();
-                    menu = menu.item(PopupMenuItem::new(label).disabled(!available).on_click(
+                    menu = menu.item(components::menu_item(label, available).on_click(
                         move |_, w, cx| {
                             let _ = weak.update(cx, |v, cx| v.move_active_tab(delta, w, cx));
                         },
                     ));
                 }
-                menu.separator()
-                    .item(PopupMenuItem::new("New tab · Ctrl/Cmd+T").action(Box::new(NewTab)))
+                menu.separator().item(
+                    components::menu_item("New tab · Ctrl/Cmd+T", true).action(Box::new(NewTab)),
+                )
             });
         let active = self.tabs[self.active].clone();
         div()
@@ -923,10 +919,6 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(active),
-            )
-            .children(
-                dialogs
-                    .map(|dialog| deferred(dialog).with_priority(geometry::LAYER_MODAL as usize)),
             )
     }
 }

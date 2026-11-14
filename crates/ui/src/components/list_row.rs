@@ -1,11 +1,9 @@
 //! The shared row for lists and trees: references, changed files and pickers.
+use super::buttons::ButtonExt as _;
+use crate::theme::Role;
 use crate::theme::*;
+use gpui::component::{button::Button, tooltip::Tooltip, Sizable};
 use gpui::{prelude::*, *};
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    tooltip::Tooltip,
-    Disableable, Sizable,
-};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -199,7 +197,7 @@ impl Styled for ListRow {
 }
 
 impl RenderOnce for ListRow {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let fill = if self.highlighted {
             Some(Role::ActionAccentTintHover)
         } else if self.selected {
@@ -230,12 +228,10 @@ impl RenderOnce for ListRow {
             .chain(self.label)
             .chain(self.trailing);
         let target = if self.focusable {
-            Button::new(self.id)
-                .ghost()
+            super::buttons::without_interaction_fill(Button::new(self.id), foreground, cx)
                 .small()
-                .interaction_highlight(false)
                 .tab_stop(self.tab_stop && !self.disabled)
-                .disabled(self.disabled)
+                .set_disabled(self.disabled)
                 .flex_1()
                 .min_w_0()
                 .h_full()
@@ -308,7 +304,7 @@ impl RenderOnce for ListRow {
 }
 
 /// The chevron of a collapsible row.
-pub fn disclosure(collapsed: bool) -> gpui_component::Icon {
+pub fn disclosure(collapsed: bool) -> gpui::component::Icon {
     icon(if collapsed { "right" } else { "down" })
         .size(px(12.))
         .text_role(Role::TextMuted)

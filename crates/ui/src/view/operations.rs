@@ -187,7 +187,7 @@ impl GitCrab {
 
     pub(super) fn close_branch_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.branch_prompt.take().is_some() {
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
             cx.notify();
         }
     }
@@ -302,7 +302,7 @@ impl GitCrab {
                                 components::ButtonKind::Primary,
                                 ControlSize::Compact,
                             )
-                            .disabled(busy)
+                            .set_disabled(busy)
                             .tooltip("Create the branch · Enter")
                             .on_click(cx.listener(|v, _, w, cx| v.submit_branch_prompt(w, cx))),
                         )

@@ -23,7 +23,7 @@ for arg in "$@"; do
 done
 
 failed=0
-UI_CRATES='gpui|gpui-component|gitcrab-ui'
+UI_CRATES='gpui|gpui-kit|gpui-pre.*|gpui-base|gpui-component|gitcrab-ui'
 IO_CRATES='notify|async-channel|windows-sys|libc|gitcrab-git|gitcrab-settings'
 
 # Reports every dependency of `package` whose name matches `pattern`.

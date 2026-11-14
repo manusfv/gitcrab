@@ -166,7 +166,7 @@ impl GitCrab {
             let handle = &state.base_handle;
             (
                 -f32::from(handle.offset().y),
-                f32::from(handle.max_offset().height),
+                f32::from(handle.max_offset().y),
             )
         };
         if max <= 0.5 {
@@ -720,16 +720,16 @@ impl GitCrab {
                         } else {
                             ListHorizontalSizingBehavior::Unconstrained
                         })
-                        .track_scroll(self.diff_scroll.clone())
+                        .track_scroll(&self.diff_scroll)
                         .size_full(),
                     )
                     .when(!self.split_active, |el| {
                         // Shows where a wide unified diff is scrolled horizontally.
                         el.child(
                             div().absolute().inset_0().child(
-                                gpui_component::scroll::Scrollbar::horizontal(&self.diff_scroll)
+                                gpui::component::scroll::Scrollbar::horizontal(&self.diff_scroll)
                                     .id("diff-horizontal-scrollbar")
-                                    .scrollbar_show(gpui_component::scroll::ScrollbarShow::Always),
+                                    .mode(gpui::component::scroll::ScrollbarMode::Always),
                             ),
                         )
                     }),
@@ -902,8 +902,10 @@ impl GitCrab {
             self.button("selection-help", "Help")
                 .tooltip("Selection, copy and navigation shortcuts")
                 .on_click(|_, w, cx| {
-                    w.open_dialog(cx, |d, _, _| {
-                        d.title("Diff help").alert().child(
+                    w.open_alert_dialog(cx, |d, _, cx| {
+                        d.title("Diff help")
+                            .footer(components::dialog_footer([components::dialog_ok("OK", components::ButtonKind::Primary, cx)]))
+                            .child(
                             "Click or Shift-click to select rows; Ctrl/Cmd+A selects all. \
                              With rows selected in working changes, Stage, Unstage or Discard acts on just those added and removed lines; \
                              in Split a selected row includes both sides. \
@@ -1192,39 +1194,57 @@ impl GitCrab {
                 )
             }
         };
-        window.open_dialog(cx,move |dialog,_,_| {
-            let weak=weak.clone();
-            let cancel_focus=cancel_focus.clone();
-            let target=target.clone();
-            let confirm=confirm.clone();
-            dialog.title(title.clone()).confirm().p_4()
-                .child(div().flex().flex_col().gap_2().child(repo.clone()).child(path.clone())
-                    .child(format!("Permanently remove only {what} from the working copy. Staged content stays in the index. Unsupported encodings or change types will be rejected."))
-                    .child(format!("Enter cancels. Choose {confirm} explicitly to remove these changes.")))
-                .on_ok(|_,_,_| true)
-                .footer(move |_,cancel,w,cx| {
-                    let cancel=div().track_focus(&cancel_focus).rounded(px(4.))
-                        .focus(|s|s.border_2().border_role(Role::InteractionFocus))
-                        .child(cancel(w,cx)).into_any_element();
-                    let weak=weak.clone();
-                    let target=target.clone();
-                    let discard=components::style(
-                        Button::new("confirm-discard-hunk").label(confirm.clone()).tab_stop(true),
-                        components::ButtonKind::Discard,ControlSize::Regular,cx)
-                        .on_click(move |_,w,cx| {
-                            let action = match &target {
-                                DiscardTarget::Hunk(index) => Action::DiscardHunk{token,index:*index},
-                                DiscardTarget::Lines(rows) => Action::DiscardLines{token,rows:rows.clone()},
-                            };
-                            let _=weak.update(cx,|v,cx| {
-                                if v.state.epoch==epoch && !v.state.busy {v.mutate(action,w,cx);}
-                            });
-                            w.close_dialog(cx);
-                        }).into_any_element();
-                    vec![cancel,discard]
-                })
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let cancel = div()
+                .track_focus(&cancel_focus)
+                .rounded(px(4.))
+                .focus(|s| s.border_2().border_role(Role::InteractionFocus))
+                .child(components::dialog_cancel(cx))
+                .into_any_element();
+            let weak = weak.clone();
+            let target = target.clone();
+            let discard = components::style(
+                Button::new("confirm-discard-hunk")
+                    .label(confirm.clone())
+                    .tab_stop(true),
+                components::ButtonKind::Discard,
+                ControlSize::Regular,
+                cx,
+            )
+            .on_click(move |_, w, cx| {
+                let action = match &target {
+                    DiscardTarget::Hunk(index) => Action::DiscardHunk { token, index: *index },
+                    DiscardTarget::Lines(rows) => Action::DiscardLines {
+                        token,
+                        rows: rows.clone(),
+                    },
+                };
+                let _ = weak.update(cx, |v, cx| {
+                    if v.state.epoch == epoch && !v.state.busy {
+                        v.mutate(action, w, cx);
+                    }
+                });
+                w.close_dialog(cx);
+            })
+            .into_any_element();
+            dialog
+                .title(title.clone())
+                .confirm()
+                .p_4()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(repo.clone())
+                        .child(path.clone())
+                        .child(format!("Permanently remove only {what} from the working copy. Staged content stays in the index. Unsupported encodings or change types will be rejected."))
+                        .child(format!("Enter cancels. Choose {confirm} explicitly to remove these changes.")),
+                )
+                .on_ok(|_, _, _| true)
+                .footer(components::dialog_footer([cancel, discard]))
         });
-        window.on_next_frame(move |w, _| initial_focus.focus(w));
+        window.on_next_frame(move |w, cx| initial_focus.focus(w, cx));
     }
     /// Scrolls a wide Unified diff horizontally. Split always fits its pane.
     pub(super) fn keyboard_pan_diff(
@@ -1247,7 +1267,7 @@ impl GitCrab {
         let mut offset = handle.offset();
         let step = px(240.);
         offset.x = if right {
-            (offset.x - step).max(-handle.max_offset().width)
+            (offset.x - step).max(-handle.max_offset().x)
         } else {
             (offset.x + step).min(px(0.))
         };
@@ -1586,7 +1606,7 @@ impl GitCrab {
         el.on_mouse_down(
             MouseButton::Left,
             cx.listener(move |v, e: &MouseDownEvent, w, cx| {
-                v.focus.focus(w);
+                v.focus.focus(w, cx);
                 if !e.modifiers.shift {
                     v.anchor = i;
                 }

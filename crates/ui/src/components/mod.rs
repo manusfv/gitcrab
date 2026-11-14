@@ -7,6 +7,7 @@
 //! - [`list_row`]: rows for lists and trees, with hover, selection and slots.
 //! - [`badge`]: tinted labels for counts, statuses and markers.
 //! - [`layout`]: pane surfaces, header strips, groups and dividers.
+//! - [`menu`]: popup menu entries with the pointer cursor.
 //! - [`rail`]: drag-to-reorder for tab strips and column headers.
 //!
 //! Views import everything through [`prelude`].
@@ -14,9 +15,11 @@ pub mod badge;
 pub mod buttons;
 pub mod layout;
 pub mod list_row;
+pub mod menu;
 pub mod rail;
 
 pub use buttons::*;
+pub use menu::menu_item;
 
 /// The components and helpers views use, for a single glob import.
 pub mod prelude {
@@ -34,12 +37,8 @@ pub mod prelude {
 pub(crate) fn apply_style<E: gpui::Styled>(mut el: E, style: &gpui::StyleRefinement) -> E {
     use gpui::Refineable as _;
     let mut style = style.clone();
-    let text = style.text.take();
+    let text = std::mem::take(&mut style.text);
     el.style().refine(&style);
-    if let Some(text) = text {
-        el.text_style()
-            .get_or_insert_with(Default::default)
-            .refine(&text);
-    }
+    el.text_style().refine(&text);
     el
 }

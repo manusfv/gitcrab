@@ -1,10 +1,11 @@
 //! Buttons: role palettes, placement sizes and the toolbar controls.
+use crate::theme::Role;
 use crate::theme::*;
-use gpui::{prelude::*, *};
-use gpui_component::{
+use gpui::component::{
     button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants},
-    Disableable, Sizable,
+    Disableable, Sizable, WindowExt,
 };
+use gpui::{prelude::*, *};
 
 #[derive(Clone, Copy)]
 pub enum ControlSize {
@@ -37,7 +38,13 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
         .h(scaled(h))
         .px(scaled(padding))
         .text_size(scaled(font))
+        // Library buttons default to a 1.25 line height; GitCrab's two-line
+        // buttons (selectors, recent repositories) are laid out for GPUI's default.
+        .line_height(phi())
         .rounded(px(3.))
+        // Enabled buttons show a pointer; `disabled_when` and `set_disabled`
+        // swap it for not-allowed.
+        .cursor_pointer()
 }
 /// The role a button plays, which selects its palette everywhere it appears.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -62,7 +69,8 @@ pub enum ButtonKind {
 pub fn basic(button: Button, kind: ButtonKind, size: ControlSize) -> Button {
     let button = sized(button, size);
     match kind {
-        ButtonKind::Primary => button.primary().text_role(Role::SurfaceChrome),
+        // Library primary buttons have no border; the disabled look needs one.
+        ButtonKind::Primary => button.primary().border_1().text_role(Role::SurfaceChrome),
         ButtonKind::Ghost => button.ghost(),
         _ => button.with_variant(ButtonVariant::Secondary).outline(),
     }
@@ -74,19 +82,31 @@ pub trait ButtonExt: Sized {
     /// unavailable look: muted text, flat muted fill, no hover highlight and a
     /// not-allowed cursor.
     fn disabled_when(self, disabled: bool) -> Self;
+    /// Sets the disabled state without the muted look: a pointer cursor when
+    /// enabled, not-allowed when disabled. The library leaves the cursor as an
+    /// arrow either way, so GitCrab buttons set it here.
+    fn set_disabled(self, disabled: bool) -> Self;
 }
 
 impl ButtonExt for Button {
     fn disabled_when(self, disabled: bool) -> Self {
         let button = Disableable::disabled(self, disabled);
         if !disabled {
-            return button;
+            return button.cursor_pointer();
         }
         button
             .bg_role(Role::SurfaceDisabled)
             .text_role(Role::TextDisabled)
             .border_role(Role::BorderDivider)
             .cursor_not_allowed()
+    }
+    fn set_disabled(self, disabled: bool) -> Self {
+        let button = Disableable::disabled(self, disabled);
+        if disabled {
+            button.cursor_not_allowed()
+        } else {
+            button.cursor_pointer()
+        }
     }
 }
 
@@ -117,14 +137,32 @@ pub fn style(button: Button, kind: ButtonKind, size: ControlSize, cx: &App) -> B
         ),
         _ => return basic(button, kind, size),
     };
-    sized(button, size).custom(
-        ButtonCustomVariant::new(cx)
-            .foreground(role_color(fg).into())
-            .color(role_color(bg).into())
-            .border(role_color(border).into())
-            .hover(role_color(hover).into())
-            .active(role_color(bg).into()),
-    )
+    sized(button, size)
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .foreground(role_color(fg).into())
+                .color(role_color(bg).into())
+                .hover(role_color(hover).into())
+                .active(role_color(bg).into()),
+        )
+        // Custom variants no longer carry a border color.
+        .border_1()
+        .border_color(role_color(border))
+}
+
+/// Suppresses a library button's own hover and press fill, for buttons inside
+/// a surface that draws its own feedback, such as a list row.
+pub fn without_interaction_fill(button: Button, foreground: Role, cx: &App) -> Button {
+    let clear: Hsla = gpui::transparent_black();
+    button
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .foreground(role_color(foreground).into())
+                .color(clear)
+                .hover(clear)
+                .active(clear),
+        )
+        .cursor_pointer()
 }
 
 /// Reveals a file action on row hover or keyboard focus, or keeps it always visible.
@@ -179,8 +217,9 @@ pub fn toolbar_command(
     Button::new(id)
         .ghost()
         .tab_stop(true)
-        .disabled(disabled)
-        .when(disabled, |button| button.cursor_not_allowed().opacity(0.7))
+        .line_height(phi())
+        .set_disabled(disabled)
+        .when(disabled, |button| button.opacity(0.7))
         .h(scaled(42.))
         .min_w(scaled(if labelled { 46. } else { 32. }))
         .px_1()
@@ -214,6 +253,8 @@ pub fn selector(
     Button::new(id)
         .ghost()
         .tab_stop(true)
+        .line_height(phi())
+        .cursor_pointer()
         .h(height)
         .w(width)
         .min_w_0()
@@ -255,4 +296,36 @@ pub fn selector(
                 )
                 .child(icon("down").size(px(12.)).flex_none()),
         )
+}
+
+/// The Cancel button of a dialog with a custom footer. It closes the dialog,
+/// which runs the dialog's `on_close` callback.
+pub fn dialog_cancel(cx: &App) -> Button {
+    style(
+        Button::new("dialog-cancel").label("Cancel").tab_stop(true),
+        ButtonKind::Secondary,
+        ControlSize::Regular,
+        cx,
+    )
+    .on_click(|_, window, cx| window.close_dialog(cx))
+}
+
+/// A right-aligned row of dialog buttons, for dialogs with a custom footer.
+pub fn dialog_footer(buttons: impl IntoIterator<Item = AnyElement>) -> Div {
+    div().flex().justify_end().gap_2().pt_2().children(buttons)
+}
+
+/// A dialog's confirming button, such as OK. Clicking it confirms the dialog
+/// the way Enter does: the dialog's `on_ok` runs, then it closes.
+pub fn dialog_ok(label: impl Into<SharedString>, kind: ButtonKind, cx: &App) -> AnyElement {
+    // `DialogAction` fills its parent; this wrapper keeps it to the button's width.
+    div()
+        .flex_none()
+        .child(gpui::component::dialog::DialogAction::new().child(style(
+            Button::new("dialog-ok").label(label).tab_stop(true),
+            kind,
+            ControlSize::Regular,
+            cx,
+        )))
+        .into_any_element()
 }

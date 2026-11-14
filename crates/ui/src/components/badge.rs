@@ -1,7 +1,8 @@
 //! Small tinted labels: counts, file status letters and reference markers.
+use crate::theme::Role;
 use crate::theme::*;
+use gpui::component::tooltip::Tooltip;
 use gpui::{prelude::*, *};
-use gpui_component::tooltip::Tooltip;
 
 /// A label on a translucent fill of its own color.
 ///

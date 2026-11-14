@@ -49,7 +49,7 @@ pub fn set_app_appearance(font_size: f32, theme: ThemePreference, cx: &mut App) 
     shared.font_size = font_size;
     shared.theme = theme;
     cx.set_global(SharedPreferences(shared));
-    gpui_component::Theme::global_mut(cx).font_size = gpui::px(font_size);
+    gpui::component::Theme::update(cx, |theme| theme.font_size = gpui::px(font_size));
 }
 
 /// Promotes a repository to the top of the recent list and queues a save.
