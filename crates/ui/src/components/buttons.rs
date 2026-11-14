@@ -165,6 +165,23 @@ pub fn without_interaction_fill(button: Button, foreground: Role, cx: &App) -> B
         .cursor_pointer()
 }
 
+/// Gives a button a translucent fill that gets lighter on hover and press,
+/// such as a reference label tinted with its lane color.
+pub fn tinted_fill(button: Button, fill: Rgba, hover: Rgba, foreground: Role, cx: &App) -> Button {
+    button
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .foreground(role_color(foreground).into())
+                .color(fill.into())
+                .hover(hover.into())
+                .active(hover.into()),
+        )
+        // The library fades a custom resting fill to a fifth of its color;
+        // set it directly so the button keeps the fill it was given.
+        .bg(fill)
+        .cursor_pointer()
+}
+
 /// Reveals a file action on row hover or keyboard focus, or keeps it always visible.
 ///
 /// Opacity preserves the button's layout and focus target when it is hidden.

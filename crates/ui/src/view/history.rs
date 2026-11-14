@@ -615,7 +615,13 @@ impl GitCrab {
                             let marker = decoration_marker(&primary);
                             let label = primary.label();
                             e.child(
-                                self.button(("ref-detail", i), "")
+                                components::tinted_fill(
+                                    self.button(("ref-detail", i), ""),
+                                    branch_tint(color, REF_TINT),
+                                    branch_tint(color, REF_HOVER_TINT),
+                                    Role::TextDefault,
+                                    cx,
+                                )
                                     .children(marker)
                                     .child(
                                         div()
@@ -631,7 +637,6 @@ impl GitCrab {
                                     .overflow_hidden()
                                     .px_1()
                                     .h(scaled(REF_BADGE_HEIGHT))
-                                    .bg(branch_tint(color, REF_TINT))
                                     .tooltip(format!("{label} · Click to preview"))
                                     .on_click(cx.listener({
                                         let id = c.id.clone();
@@ -646,11 +651,16 @@ impl GitCrab {
                             let entries = decorations.clone();
                             let id = c.id.clone();
                             e.child(
-                                self.button(("ref-more", i), format!("+{others}"))
+                                components::tinted_fill(
+                                    self.button(("ref-more", i), format!("+{others}")),
+                                    branch_tint(color, REF_TINT),
+                                    branch_tint(color, REF_HOVER_TINT),
+                                    Role::TextDefault,
+                                    cx,
+                                )
                                     .flex_none()
                                     .h(scaled(REF_BADGE_HEIGHT))
                                     .px(px(4.))
-                                    .bg(branch_tint(color, REF_TINT))
                                     .tooltip(format!("{others} more · Open the list of references"))
                                     .dropdown_menu(move |mut menu, _, _| {
                                         for entry in &entries {

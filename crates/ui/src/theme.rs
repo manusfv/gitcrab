@@ -96,6 +96,8 @@ pub fn type_size(cx: &App, base: f32) -> Pixels {
 }
 pub const REF_BADGE_HEIGHT: f32 = 20.;
 pub const REF_TINT: u8 = 0x1f;
+/// The reference label fill while hovered or pressed: lighter than [`REF_TINT`].
+pub const REF_HOVER_TINT: u8 = 0x38;
 
 pub fn branch_tint(color: usize, opacity: u8) -> Rgba {
     tint(lanes()[color % lanes().len()], opacity)
