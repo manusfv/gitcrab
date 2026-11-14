@@ -2394,7 +2394,10 @@ impl Render for GitCrab {
         }
         let ui_scale = self.preferences.font_size / 13.;
         let single_pane = f32::from(window.viewport_size().width) < 648. * ui_scale + 44.;
-        let rail = in_diff || f32::from(window.viewport_size().width) < 1200. * ui_scale;
+        // Below this width the sidebar folds into an icon rail. 1000 keeps the
+        // full sidebar at typical half-screen windows while
+        // still leaving the history about 400 px next to the inspector.
+        let rail = in_diff || f32::from(window.viewport_size().width) < 1000. * ui_scale;
         let viewport_width = f32::from(window.viewport_size().width);
         self.single_pane = single_pane;
         // The inspector can be hidden while reviewing a diff to give it room.
