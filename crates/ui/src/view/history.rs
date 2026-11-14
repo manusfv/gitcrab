@@ -59,9 +59,26 @@ fn decoration_marker(decoration: &Decoration) -> Option<AnyElement> {
                 .into_any_element(),
         ),
         (DecorationKind::Tag, _) => Some(glyph("tag")),
-        (_, Some(ReferenceKind::Remote)) => Some(glyph("remote")),
         _ => None,
     }
+}
+
+/// Where a branch lives, drawn after its name: a monitor for
+/// a local branch, a cloud for a remote-tracking one.
+fn decoration_location(decoration: &Decoration) -> Option<AnyElement> {
+    let name = match (decoration.kind, decoration.target.as_ref().map(|t| t.0)) {
+        (DecorationKind::Tag | DecorationKind::Head, _) => return None,
+        (_, Some(ReferenceKind::Remote)) => "remote",
+        (DecorationKind::HeadBranch, _) | (_, Some(ReferenceKind::LocalBranch)) => "local",
+        _ => return None,
+    };
+    Some(
+        icon(name)
+            .size(scaled(12.))
+            .flex_none()
+            .text_role(Role::TextSecondary)
+            .into_any_element(),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -102,6 +119,31 @@ fn paint_reference_link(
         ),
         fill_color,
     ));
+}
+
+/// Fills the space between a reference label and the graph with its link line.
+fn reference_link_filler(color: usize, checked_out: bool) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w_0()
+        .self_stretch()
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, w, _| {
+                    paint_reference_link(
+                        w,
+                        bounds.left(),
+                        bounds.right(),
+                        bounds.center().y,
+                        color,
+                        checked_out,
+                    )
+                },
+            )
+            .size_full(),
+        )
+        .into_any_element()
 }
 
 /// Radius of the dashed working-changes marker, matching the commit avatars.
@@ -449,7 +491,15 @@ impl GitCrab {
                     .shape_line(text, font_size, &[run], None);
                 wip_editor_width(f32::from(shaped.width))
             };
-            let wip_color = self.state.graph.rows.first().map_or(0, |row| row.color);
+            // The colour of the checked-out commit's branch, which need not be
+            // the newest row (another branch can have later commits).
+            let wip_color = self
+                .state
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.commits.iter().position(|c| c.id == s.head_id))
+                .and_then(|i| self.state.graph.rows.get(i))
+                .map_or(0, |row| row.color);
             let has_head = self
                 .state
                 .snapshot
@@ -745,12 +795,17 @@ impl GitCrab {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap_1()
                         .overflow_hidden()
                         .text_size(scaled(12.))
                         .text_role(Role::TextDefault)
+                        // The link runs from the label's edge to the graph,
+                        // so the label can stay the size of its content.
+                        .when(matches!(reference_side, Some(ReferenceSide::Right)), |e| {
+                            e.child(reference_link_filler(color, checked_out))
+                        })
                         .when_some(primary.clone(), |e, primary| {
                             let marker = decoration_marker(&primary);
+                            let location = decoration_location(&primary);
                             let label = primary.label();
                             e.child(
                                 components::tinted_fill(
@@ -763,17 +818,19 @@ impl GitCrab {
                                 .children(marker)
                                 .child(
                                     div()
-                                        .flex_1()
                                         .min_w_0()
                                         .truncate()
                                         .text_role(Role::TextDefault)
                                         .child(refs),
                                 )
-                                .flex_1()
+                                .children(location)
+                                .flex_shrink(1.)
                                 .min_w_0()
-                                .justify_start()
+                                .gap_1()
+                                .justify_center()
+                                .items_center()
                                 .overflow_hidden()
-                                .px_1()
+                                .px(px(6.))
                                 .h(scaled(REF_BADGE_HEIGHT))
                                 .tooltip(format!("{label} · Click to preview"))
                                 .on_click(cx.listener({
@@ -797,6 +854,7 @@ impl GitCrab {
                                     cx,
                                 )
                                 .flex_none()
+                                .ml_1()
                                 .h(scaled(REF_BADGE_HEIGHT))
                                 .px(px(4.))
                                 .tooltip(format!("{others} more · Open the list of references"))
@@ -824,6 +882,9 @@ impl GitCrab {
                                     },
                                 ),
                             )
+                        })
+                        .when(matches!(reference_side, Some(ReferenceSide::Left)), |e| {
+                            e.child(reference_link_filler(color, checked_out))
                         })
                         .tooltip(move |w, cx| Tooltip::new(full_refs.clone()).build(w, cx)))
                     .into_any_element(),

@@ -94,7 +94,7 @@ pub fn scaled(base: f32) -> Rems {
 pub fn type_size(cx: &App, base: f32) -> Pixels {
     px(f32::from(Theme::global(cx).font_size) * base / 13.)
 }
-pub const REF_BADGE_HEIGHT: f32 = 20.;
+pub const REF_BADGE_HEIGHT: f32 = 22.;
 pub const REF_TINT: u8 = 0x1f;
 /// The reference label fill while hovered or pressed: lighter than [`REF_TINT`].
 pub const REF_HOVER_TINT: u8 = 0x38;
