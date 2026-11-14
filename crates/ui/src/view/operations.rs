@@ -220,33 +220,9 @@ impl GitCrab {
             ),
             None => (Operation::CreateBranch, true),
         };
-        if let Err(error) = op.validate_target(&name) {
-            prompt.error = Some(if name.is_empty() {
-                "Type a name for the branch.".into()
-            } else {
-                error
-            });
-            cx.notify();
-            return;
-        }
-        // Git refs are files, so `a` and `a/b` cannot both exist.
-        let clash = self.state.snapshot.as_ref().and_then(|s| {
-            s.branches.iter().find_map(|b| {
-                if b.name == name {
-                    Some(format!("A branch named {name} already exists."))
-                } else if name.starts_with(&format!("{}/", b.name))
-                    || b.name.starts_with(&format!("{name}/"))
-                {
-                    Some(format!(
-                        "{name} cannot sit beside the existing branch {}. Choose another name.",
-                        b.name
-                    ))
-                } else {
-                    None
-                }
-            })
-        });
-        if let Some(error) = clash {
+        if let Err(error) =
+            gitcrab_core::service::validate_new_branch(&op, &name, self.state.snapshot.as_ref())
+        {
             prompt.error = Some(error);
             cx.notify();
             return;

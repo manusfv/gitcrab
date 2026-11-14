@@ -30,6 +30,9 @@ pub mod platform;
 pub mod preferences;
 pub mod presentation;
 pub mod service;
+pub mod sidebar;
+pub mod tabs;
+pub mod watch;
 
 #[rustfmt::skip]
 pub mod design_tokens;

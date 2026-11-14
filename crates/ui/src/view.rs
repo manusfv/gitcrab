@@ -16,7 +16,9 @@ use gitcrab_core::{
     commands::{Command, CommandContext},
     controller::{Controller, Lane, RefreshPlan, Seek},
     git::ReferenceKind,
-    presentation::{display_path, path_labels, ToolbarActions},
+    presentation::{
+        compose_message, display_date, display_path, path_labels, split_message, ToolbarActions,
+    },
     service::{
         Action, Failure, GitBackend, GitWorker, Operation, ReadKind, Request, Response,
         ReviewedOperation,
@@ -33,13 +35,6 @@ use gpui_component::{
 };
 use std::ops::Range;
 
-fn compose_message(summary: &str, body: &str) -> String {
-    if body.is_empty() {
-        summary.to_string()
-    } else {
-        format!("{summary}\n\n{body}")
-    }
-}
 /// What startup restores, shown where recent repositories are listed.
 const SESSION_NOTE: &str = "At startup GitCrab reopens the repositories that were open in your tabs. Empty tabs and commit drafts are not restored.";
 /// Shown beside the commit composer while a draft exists.
@@ -60,27 +55,6 @@ fn command_glyph(command: Command) -> &'static str {
         Command::Fetch => "fetch",
         Command::Pull => "pull",
         Command::Push => "push",
-    }
-}
-fn split_message(message: &str) -> (&str, &str) {
-    match message.split_once('\n') {
-        Some((summary, body)) => (summary, body.strip_prefix('\n').unwrap_or(body)),
-        None => (message, ""),
-    }
-}
-fn display_date(date: &str) -> String {
-    match (
-        date.get(5..7),
-        date.get(8..10),
-        date.get(..4),
-        date.get(11..16),
-    ) {
-        (Some(month), Some(day), Some(year), Some(time))
-            if date.is_ascii() && date.get(4..5) == Some("-") && date.get(7..8) == Some("-") =>
-        {
-            format!("{day}/{month}/{year} @ {time}")
-        }
-        _ => date.to_string(),
     }
 }
 
@@ -3035,24 +3009,6 @@ impl Render for GitCrab {
                     }),
             )
             .into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod date_tests {
-    #[::core::prelude::v1::test]
-    fn commit_dates_use_day_month_year_and_24_hour_time() {
-        assert_eq!(
-            super::display_date("2026-11-05T00:04:59-03:00"),
-            "05/11/2026 @ 00:04"
-        );
-        assert_eq!(
-            super::display_date("2026-01-02T23:07:00+00:00"),
-            "02/01/2026 @ 23:07"
-        );
-        for value in ["", "unknown", "not a timestamp at all", "日付なし"] {
-            assert_eq!(super::display_date(value), value);
-        }
     }
 }
 

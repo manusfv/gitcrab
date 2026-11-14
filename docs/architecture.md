@@ -43,6 +43,11 @@ Paths below are relative to each crate's `src/`.
   records an entry after a successful write, checks the top entries with every
   snapshot (`RepoSnapshot::journal`), and reviews and runs Undo and Redo as
   `Operation::Undo` and `Operation::Redo`, rechecking preconditions first.
+- View rules sit in core so views only render: `sidebar.rs` (reference
+  filter, section counts and folder rows), `watch.rs` (which filesystem
+  changes matter and how they coalesce), `tabs.rs` (tab reordering),
+  `presentation.rs` (dates, commit messages, decorations) and
+  `service::validate_new_branch` for the branch-name bar.
 - `controller.rs` owns request generations, selection reconciliation, draft
   revisions, and follow-up dispatches. `DiffSelection` and `ReopenDiff` separate
   the user's selection from an automatic reopen request. Completion returns

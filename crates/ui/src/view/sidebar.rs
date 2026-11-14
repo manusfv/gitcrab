@@ -1,4 +1,5 @@
 use super::*;
+use gitcrab_core::sidebar::{branch_hint, section, section_key, tree_rows, RefFilter, TreeRow};
 use std::rc::Rc;
 
 /// Horizontal inset shared by every sidebar row, header and the filter box.
@@ -72,19 +73,23 @@ impl GitCrab {
         cx: &mut Context<Self>,
     ) -> Div {
         let mut tree = div().flex().flex_col().min_w_0().pb_1();
-        let mut seen = std::collections::BTreeSet::new();
-        for entry in entries {
-            let parts = entry.label.split('/').collect::<Vec<_>>();
-            let mut hidden = false;
-            for depth in 1..parts.len() {
-                let prefix = parts[..depth].join("/");
-                let key = if scope.is_empty() {
-                    format!("{}|{prefix}", self.state.path)
-                } else {
-                    format!("{}|{scope}/{prefix}", self.state.path)
-                };
-                let collapsed = self.preferences.collapsed.contains(&key) && !filtering;
-                if seen.insert(key.clone()) {
+        let rows = tree_rows(
+            &self.state.path,
+            scope,
+            entries.iter().map(|entry| entry.label.as_str()),
+            &self.preferences.collapsed,
+            filtering,
+        );
+        let mut entries: Vec<Option<TreeEntry>> = entries.into_iter().map(Some).collect();
+        for row in rows {
+            let (index, depth, leaf) = match row {
+                TreeRow::Folder {
+                    key,
+                    depth,
+                    name,
+                    path,
+                    collapsed,
+                } => {
                     tree = tree.child(
                         ListRow::new(SharedString::from(format!("folder-{key}")))
                             .height(ROW_HEIGHT)
@@ -94,26 +99,22 @@ impl GitCrab {
                             .foreground(Role::TextSecondary)
                             .leading(disclosure(collapsed))
                             .leading(icon("folder").size(px(14.)).text_role(Role::TextMuted))
-                            .label(format!("{}/", parts[depth - 1]))
+                            .label(format!("{name}/"))
                             .tooltip(format!(
-                                "{} {prefix}/",
+                                "{} {path}/",
                                 if collapsed { "Expand" } else { "Collapse" }
                             ))
                             .on_click(cx.listener(move |v, _, w, cx| {
                                 Self::toggle_collapsed(v, &key, w, cx)
                             })),
                     );
+                    continue;
                 }
-                if collapsed {
-                    hidden = true;
-                    break;
-                }
-            }
-            if hidden {
+                TreeRow::Leaf { index, depth, name } => (index, depth, name),
+            };
+            let Some(entry) = entries[index].take() else {
                 continue;
-            }
-            let depth = parts.len() - 1;
-            let leaf = parts[depth].to_string();
+            };
             let TreeEntry {
                 id,
                 glyph,
@@ -169,7 +170,7 @@ impl GitCrab {
             .as_ref()
             .map(|s| s.status.len())
             .unwrap_or(0);
-        let query = self.reference_search.read(cx).value().to_lowercase();
+        let filter = RefFilter::new(&self.reference_search.read(cx).value());
         let nav = div();
         #[cfg(feature = "native-evidence")]
         let nav = nav.on_children_prepainted(|bounds, _, _| {
@@ -221,55 +222,41 @@ impl GitCrab {
                     })),
             );
         if let Some(s) = &self.state.snapshot {
-            // A filter shows matches inside collapsed groups and counts them.
-            let filtering = !query.is_empty();
-            let count_label = |matched: usize, total: usize| {
-                if filtering {
-                    format!("{matched} of {total}")
-                } else {
-                    total.to_string()
-                }
-            };
-            let matches_query = |name: &str| name.to_lowercase().contains(&query);
+            let filtering = filter.is_active();
 
             // Local branches.
-            let local_key = format!("{}|", self.state.path);
-            let local_collapsed = self.preferences.collapsed.contains(&local_key) && !filtering;
-            let local_matches = s.branches.iter().filter(|b| matches_query(&b.name)).count();
-            let entries = if local_collapsed {
-                vec![]
-            } else {
-                s.branches
-                    .iter()
-                    .filter(|b| matches_query(&b.name))
-                    .map(|b| {
-                        let name = b.name.clone();
-                        let current = s.checked_out_branch() == Some(name.as_str());
-                        let previewed = self.state.is_previewing(ReferenceKind::LocalBranch, &name);
-                        let hint = match (current, previewed) {
-                            (true, true) => "Checked out · Previewing",
-                            (true, false) => "Checked out · Click to preview",
-                            (false, true) => "Previewing · Double-click to checkout",
-                            (false, false) => "Click to preview · Double-click to checkout",
-                        };
-                        TreeEntry {
-                            label: name.clone(),
-                            id: format!("local-branch-{name}"),
-                            glyph: "branch",
-                            current,
-                            previewed,
-                            tooltip: format!("{name} · {hint}"),
-                            on_click: Rc::new(move |v, e, w, cx| {
-                                if e.click_count() == 2 {
-                                    v.run_operation(Operation::Checkout, name.clone(), w, cx);
-                                } else {
-                                    v.preview_ref(ReferenceKind::LocalBranch, &name, w, cx);
-                                }
-                            }),
-                        }
-                    })
-                    .collect()
-            };
+            let local = section(
+                &self.state.path,
+                "",
+                s.branches.iter().map(|b| b.name.as_str()),
+                &self.preferences.collapsed,
+                &filter,
+            );
+            let entries = local
+                .visible
+                .iter()
+                .map(|&index| {
+                    let name = s.branches[index].name.clone();
+                    let current = s.checked_out_branch() == Some(name.as_str());
+                    let previewed = self.state.is_previewing(ReferenceKind::LocalBranch, &name);
+                    TreeEntry {
+                        label: name.clone(),
+                        id: format!("local-branch-{name}"),
+                        glyph: "branch",
+                        current,
+                        previewed,
+                        tooltip: format!("{name} · {}", branch_hint(current, previewed)),
+                        on_click: Rc::new(move |v, e, w, cx| {
+                            if e.click_count() == 2 {
+                                v.run_operation(Operation::Checkout, name.clone(), w, cx);
+                            } else {
+                                v.preview_ref(ReferenceKind::LocalBranch, &name, w, cx);
+                            }
+                        }),
+                    }
+                })
+                .collect();
+            let local_key = local.key;
             nav = nav.child(
                 div()
                     .flex()
@@ -280,8 +267,8 @@ impl GitCrab {
                             "local-branches",
                             "branch",
                             "Local",
-                            count_label(local_matches, s.branches.len()),
-                            local_collapsed,
+                            local.count,
+                            local.collapsed,
                         )
                         .on_click(cx.listener(move |v, _, w, cx| {
                             Self::toggle_collapsed(v, &local_key, w, cx)
@@ -295,30 +282,33 @@ impl GitCrab {
                 ("Remotes", "remote", ReferenceKind::Remote, &s.remote_refs),
                 ("Tags", "tag", ReferenceKind::Tag, &s.tags),
             ] {
-                let key = format!("{}|{kind}", self.state.path);
-                let collapsed = self.preferences.collapsed.contains(&key) && !filtering;
-                let matches = refs.iter().filter(|r| matches_query(&r.label)).count();
-                let entries = if collapsed {
-                    vec![]
-                } else {
-                    refs.iter()
-                        .filter(|r| matches_query(&r.label))
-                        .map(|reference| {
-                            let name = reference.full_name.clone();
-                            TreeEntry {
-                                label: reference.label.clone(),
-                                id: format!("{kind}-{name}"),
-                                glyph,
-                                current: false,
-                                previewed: self.state.is_previewing(ref_kind, &name),
-                                tooltip: name.clone(),
-                                on_click: Rc::new(move |v, _, w, cx| {
-                                    v.preview_ref(ref_kind, &name, w, cx);
-                                }),
-                            }
-                        })
-                        .collect()
-                };
+                let shown = section(
+                    &self.state.path,
+                    kind,
+                    refs.iter().map(|r| r.label.as_str()),
+                    &self.preferences.collapsed,
+                    &filter,
+                );
+                let entries = shown
+                    .visible
+                    .iter()
+                    .map(|&index| {
+                        let reference = &refs[index];
+                        let name = reference.full_name.clone();
+                        TreeEntry {
+                            label: reference.label.clone(),
+                            id: format!("{kind}-{name}"),
+                            glyph,
+                            current: false,
+                            previewed: self.state.is_previewing(ref_kind, &name),
+                            tooltip: name.clone(),
+                            on_click: Rc::new(move |v, _, w, cx| {
+                                v.preview_ref(ref_kind, &name, w, cx);
+                            }),
+                        }
+                    })
+                    .collect();
+                let key = shown.key;
                 nav = nav.child(
                     div()
                         .flex()
@@ -329,8 +319,8 @@ impl GitCrab {
                                 SharedString::from(format!("ref-heading-{kind}")),
                                 glyph,
                                 kind,
-                                count_label(matches, refs.len()),
-                                collapsed,
+                                shown.count,
+                                shown.collapsed,
                             )
                             .on_click(cx.listener(
                                 move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx),
@@ -341,7 +331,7 @@ impl GitCrab {
             }
 
             // Stashes.
-            let key = format!("{}|Stashes", self.state.path);
+            let key = section_key(&self.state.path, "Stashes");
             let collapsed = self.preferences.collapsed.contains(&key);
             nav = nav.child(
                 div()

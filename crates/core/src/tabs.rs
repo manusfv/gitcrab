@@ -1,10 +1,9 @@
-/// Insert at a boundary in the original order, keeping the same item active.
-pub(super) fn move_to_slot<T>(
-    tabs: &mut Vec<T>,
-    active: &mut usize,
-    from: usize,
-    slot: usize,
-) -> bool {
+//! Tab order rules for the workspace's repository tabs.
+
+/// Moves the tab at `from` to the drop boundary `slot` (0..=len, in the
+/// original order), keeping the same tab active. Returns whether anything
+/// moved.
+pub fn move_to_slot<T>(tabs: &mut Vec<T>, active: &mut usize, from: usize, slot: usize) -> bool {
     if from >= tabs.len() || slot > tabs.len() {
         return false;
     }

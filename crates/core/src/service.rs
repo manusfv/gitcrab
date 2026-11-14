@@ -379,6 +379,30 @@ impl ReviewedOperation {
     }
 }
 
+/// Checks a new branch name typed into the branch bar before Git sees it:
+/// its syntax for `op`, then whether it clashes with a loaded branch.
+///
+/// # Errors
+///
+/// Returns the message to show beside the input.
+pub fn validate_new_branch(
+    op: &Operation,
+    name: &str,
+    snapshot: Option<&RepoSnapshot>,
+) -> Result<(), String> {
+    if let Err(error) = op.validate_target(name) {
+        return Err(if name.is_empty() {
+            "Type a name for the branch.".into()
+        } else {
+            error
+        });
+    }
+    match snapshot.and_then(|s| s.branch_name_conflict(name)) {
+        Some(conflict) => Err(conflict),
+        None => Ok(()),
+    }
+}
+
 impl Operation {
     /// Dialog title and action name before the target resolves.
     pub fn label(&self) -> &'static str {
@@ -657,4 +681,44 @@ pub struct GitCall {
     pub spawn_ms: f64,
     pub total_ms: f64,
     pub stdout_bytes: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::LocalBranch;
+
+    fn snapshot(branches: &[&str]) -> RepoSnapshot {
+        RepoSnapshot {
+            branches: branches
+                .iter()
+                .map(|name| LocalBranch {
+                    name: (*name).to_owned(),
+                    tip: String::new(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn new_branch_names_are_checked_for_syntax_then_clashes() {
+        let s = snapshot(&["main", "feature/a"]);
+        let check = |name: &str| validate_new_branch(&Operation::CreateBranch, name, Some(&s));
+        assert_eq!(check("").unwrap_err(), "Type a name for the branch.");
+        assert!(check("has space")
+            .unwrap_err()
+            .contains("valid Git branch name"));
+        assert_eq!(
+            check("main").unwrap_err(),
+            "A branch named main already exists."
+        );
+        // Refs are files: `feature` cannot coexist with `feature/a`, nor `main/x` with `main`.
+        assert!(check("feature").unwrap_err().contains("feature/a"));
+        assert!(check("main/x")
+            .unwrap_err()
+            .contains("existing branch main"));
+        assert!(check("feature/b").is_ok());
+        assert!(validate_new_branch(&Operation::CreateBranch, "main", None).is_ok());
+    }
 }

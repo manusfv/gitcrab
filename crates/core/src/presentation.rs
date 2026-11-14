@@ -348,9 +348,181 @@ pub fn elapsed_label(seconds: u64) -> String {
     }
 }
 
+/// A reference printed beside a commit, with the ref it previews when activated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decoration {
+    pub kind: DecorationKind,
+    pub name: String,
+    /// The loaded reference this label resolves to, if any.
+    pub target: Option<(crate::git::ReferenceKind, String)>,
+}
+
+impl Decoration {
+    /// Names the reference with its type, for tooltips and the `+N` list.
+    pub fn label(&self) -> String {
+        use crate::git::ReferenceKind;
+        match (self.kind, self.target.as_ref().map(|t| t.0)) {
+            (DecorationKind::HeadBranch, _) => format!("{} · HEAD, checked out", self.name),
+            (DecorationKind::Head, _) => "HEAD · detached".into(),
+            (DecorationKind::Tag, _) => format!("Tag {}", self.name),
+            (_, Some(ReferenceKind::Remote)) => format!("Remote {}", self.name),
+            _ => format!("Branch {}", self.name),
+        }
+    }
+}
+
+/// Resolves a commit's `--decorate` labels against the loaded references.
+/// A plain branch name prefers a local branch over a remote ref.
+pub fn resolve_decorations(
+    snapshot: &crate::git::RepoSnapshot,
+    refs: &[String],
+) -> Vec<Decoration> {
+    use crate::git::ReferenceKind;
+    refs.iter()
+        .map(|label| {
+            let (kind, name) = classify_decoration(label);
+            let target = match kind {
+                DecorationKind::Head => None,
+                DecorationKind::HeadBranch => Some((ReferenceKind::LocalBranch, name.to_owned())),
+                DecorationKind::Tag => snapshot
+                    .tags
+                    .iter()
+                    .find(|tag| tag.label == name)
+                    .map(|tag| (ReferenceKind::Tag, tag.full_name.clone())),
+                DecorationKind::Branch => {
+                    if snapshot.branches.iter().any(|branch| branch.name == name) {
+                        Some((ReferenceKind::LocalBranch, name.to_owned()))
+                    } else {
+                        snapshot
+                            .remote_refs
+                            .iter()
+                            .find(|remote| remote.label == name)
+                            .map(|remote| (ReferenceKind::Remote, remote.full_name.clone()))
+                    }
+                }
+            };
+            Decoration {
+                kind,
+                name: name.to_owned(),
+                target,
+            }
+        })
+        .collect()
+}
+
+/// Joins a commit summary and body the way Git stores the message.
+pub fn compose_message(summary: &str, body: &str) -> String {
+    if body.is_empty() {
+        summary.to_string()
+    } else {
+        format!("{summary}\n\n{body}")
+    }
+}
+
+/// Splits a commit message into its summary line and body, the inverse of
+/// [`compose_message`].
+pub fn split_message(message: &str) -> (&str, &str) {
+    match message.split_once('\n') {
+        Some((summary, body)) => (summary, body.strip_prefix('\n').unwrap_or(body)),
+        None => (message, ""),
+    }
+}
+
+/// Shows a Git ISO-like date as `DD/MM/YYYY @ HH:MM`. Anything else is
+/// returned unchanged.
+pub fn display_date(date: &str) -> String {
+    match (
+        date.get(5..7),
+        date.get(8..10),
+        date.get(..4),
+        date.get(11..16),
+    ) {
+        (Some(month), Some(day), Some(year), Some(time))
+            if date.is_ascii() && date.get(4..5) == Some("-") && date.get(7..8) == Some("-") =>
+        {
+            format!("{day}/{month}/{year} @ {time}")
+        }
+        _ => date.to_string(),
+    }
+}
+
+/// Names a merge parent's position in Git's parent order.
+pub fn ordinal(index: usize) -> String {
+    match index {
+        0 => "First".into(),
+        1 => "Second".into(),
+        2 => "Third".into(),
+        n => format!("Parent {}", n + 1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_dates_use_day_month_year_and_24_hour_time() {
+        assert_eq!(
+            display_date("2026-11-05T00:04:59-03:00"),
+            "05/11/2026 @ 00:04"
+        );
+        assert_eq!(
+            display_date("2026-01-02T23:07:00+00:00"),
+            "02/01/2026 @ 23:07"
+        );
+        for value in ["", "unknown", "not a timestamp at all", "日付なし"] {
+            assert_eq!(display_date(value), value);
+        }
+    }
+
+    #[test]
+    fn commit_messages_split_and_compose_symmetrically() {
+        assert_eq!(compose_message("Fix", ""), "Fix");
+        assert_eq!(compose_message("Fix", "Details"), "Fix\n\nDetails");
+        assert_eq!(split_message("Fix\n\nDetails"), ("Fix", "Details"));
+        assert_eq!(split_message("Fix\nDetails"), ("Fix", "Details"));
+        assert_eq!(split_message("Fix"), ("Fix", ""));
+    }
+
+    #[test]
+    fn merge_parents_are_named_in_order() {
+        assert_eq!(ordinal(0), "First");
+        assert_eq!(ordinal(2), "Third");
+        assert_eq!(ordinal(4), "Parent 5");
+    }
+
+    #[test]
+    fn decorations_resolve_to_loaded_refs_preferring_local_branches() {
+        use crate::git::{LocalBranch, ReferenceKind, ReferenceTip, RepoSnapshot};
+        let tip = |label: &str, full: &str| ReferenceTip {
+            label: label.into(),
+            full_name: full.into(),
+            tip: String::new(),
+        };
+        let snapshot = RepoSnapshot {
+            branches: vec![LocalBranch {
+                name: "main".into(),
+                tip: String::new(),
+            }],
+            remote_refs: vec![tip("origin/main", "refs/remotes/origin/main")],
+            tags: vec![tip("v1", "refs/tags/v1")],
+            ..Default::default()
+        };
+        let refs = ["HEAD -> main", "origin/main", "tag: v1", "gone"].map(String::from);
+        let resolved = resolve_decorations(&snapshot, &refs);
+        assert_eq!(
+            resolved[0].target,
+            Some((ReferenceKind::LocalBranch, "main".into()))
+        );
+        assert_eq!(resolved[0].label(), "main · HEAD, checked out");
+        assert_eq!(resolved[1].label(), "Remote origin/main");
+        assert_eq!(
+            resolved[2].target,
+            Some((ReferenceKind::Tag, "refs/tags/v1".into()))
+        );
+        assert_eq!(resolved[3].target, None);
+        assert_eq!(resolved[3].label(), "Branch gone");
+    }
 
     #[test]
     fn split_falls_back_when_a_side_cannot_show_its_lines() {

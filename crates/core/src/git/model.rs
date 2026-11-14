@@ -458,6 +458,26 @@ impl RepoSnapshot {
         None
     }
 
+    /// Explains why a new local branch called `name` cannot be created next to
+    /// the loaded branches. Git refs are files, so `a` and `a/b` cannot both
+    /// exist.
+    pub fn branch_name_conflict(&self, name: &str) -> Option<String> {
+        self.branches.iter().find_map(|b| {
+            if b.name == name {
+                Some(format!("A branch named {name} already exists."))
+            } else if name.starts_with(&format!("{}/", b.name))
+                || b.name.starts_with(&format!("{name}/"))
+            {
+                Some(format!(
+                    "{name} cannot sit beside the existing branch {}. Choose another name.",
+                    b.name
+                ))
+            } else {
+                None
+            }
+        })
+    }
+
     /// Returns the short local branch name from the reviewed symbolic HEAD, if present.
     pub fn checked_out_branch(&self) -> Option<&str> {
         self.reviewed

@@ -1,18 +1,12 @@
 //! Filesystem notifications for worktree and Git metadata changes.
-use gitcrab_core::platform::RepositoryLocation;
+//!
+//! Which changes matter, and how they coalesce, is decided in
+//! [`gitcrab_core::watch`]; this module only connects the platform watcher.
+pub use gitcrab_core::watch::Change;
+use gitcrab_core::{platform::RepositoryLocation, watch::WatchScope};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
-
-/// Pending watcher event or group of coalesced events.
-pub struct Change {
-    pub error: Option<String>,
-    /// Time of the most recent event in this group.
-    pub event_time: Instant,
-    /// Whether any event requires rechecking repository metadata and history.
-    pub metadata_dirty: bool,
-}
 
 /// Coalesces incoming events behind a single wake signal.
 pub struct Changes {
@@ -33,78 +27,25 @@ impl Changes {
     }
 }
 
-fn classify(
-    result: notify::Result<Event>,
-    root: &Path,
-    git: &Path,
-    common: &Path,
-) -> Option<Change> {
-    let (error, metadata_dirty) = match result {
-        Err(error) => (Some(error.to_string()), true),
-        Ok(event) if event.need_rescan() => (None, true),
-        Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
-            let mut paths = event
-                .paths
-                .iter()
-                .filter(|path| relevant(path, root, git, common));
-            let first = paths.next()?;
-            let is_metadata = |path: &PathBuf| path.starts_with(git) || path.starts_with(common);
-            (None, is_metadata(first) || paths.any(is_metadata))
-        }
-        Ok(_) => return None,
-    };
-    Some(Change {
-        error,
-        event_time: Instant::now(),
-        metadata_dirty,
-    })
+/// Translates a platform event into the change it causes, if any.
+fn classify(result: notify::Result<Event>, scope: &WatchScope) -> Option<Change> {
+    match result {
+        Err(error) => Some(Change::interrupted(Some(error.to_string()))),
+        Ok(event) if event.need_rescan() => Some(Change::interrupted(None)),
+        Ok(event) if !matches!(event.kind, EventKind::Access(_)) => scope.change_for(&event.paths),
+        Ok(_) => None,
+    }
 }
 
 fn queue_change(pending: &Mutex<Option<Change>>, wake: &async_channel::Sender<()>, change: Change) {
     {
         let mut pending = pending.lock().unwrap();
-        if let Some(previous) = pending.as_mut() {
-            previous.metadata_dirty |= change.metadata_dirty;
-            previous.event_time = change.event_time;
-            if change.error.is_some() {
-                previous.error = change.error;
-            }
-        } else {
-            *pending = Some(change);
+        match pending.as_mut() {
+            Some(previous) => previous.absorb(change),
+            None => *pending = Some(change),
         }
     }
     let _ = wake.try_send(());
-}
-
-fn relevant(path: &Path, root: &Path, git: &Path, common: &Path) -> bool {
-    let (relative, local) = if let Ok(relative) = path.strip_prefix(git) {
-        (relative, true)
-    } else if let Ok(relative) = path.strip_prefix(common) {
-        (relative, false)
-    } else {
-        return path.starts_with(root);
-    };
-    if relative
-        .extension()
-        .is_some_and(|extension| extension == "lock")
-    {
-        return false;
-    }
-    if local
-        && gitcrab_core::git::OPERATION_MARKERS
-            .iter()
-            .any(|(marker, _)| relative.starts_with(marker))
-    {
-        return true;
-    }
-    relative.as_os_str().is_empty()
-        || matches!(relative.to_str(), Some("HEAD" | "index" | "config.worktree") if local)
-        || matches!(
-            relative.to_str(),
-            Some("packed-refs" | "config" | "shallow")
-        )
-        || relative.starts_with("refs")
-        || relative == Path::new("info/grafts")
 }
 
 /// Watches the worktree and both Git directories, including linked-worktree metadata.
@@ -124,12 +65,16 @@ fn start_with_dirs(
     git: PathBuf,
     common: PathBuf,
 ) -> Result<(RecommendedWatcher, Changes), String> {
-    let (watch_root, watch_git, watch_common) = (root.clone(), git.clone(), common.clone());
+    let scope = WatchScope {
+        root: root.clone(),
+        git: git.clone(),
+        common: common.clone(),
+    };
     let (tx, rx) = async_channel::bounded(1);
     let pending = Arc::new(Mutex::new(None));
     let changes = pending.clone();
     let mut watcher = notify::recommended_watcher(move |result| {
-        if let Some(change) = classify(result, &watch_root, &watch_git, &watch_common) {
+        if let Some(change) = classify(result, &scope) {
             queue_change(&changes, &tx, change);
         }
     })
@@ -161,38 +106,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn linked_watch_scope_tracks_markers_and_only_ignores_metadata_locks() {
-        let root = Path::new("linked");
-        let common = Path::new("main/.git");
-        let git = common.join("worktrees/linked");
-        for path in [
-            root.join("notes.lock"),
-            git.join("MERGE_HEAD"),
-            git.join("rebase-merge/head-name"),
-            git.join("HEAD"),
-            git.join("index"),
-            common.join("refs/heads/main"),
-            common.join("packed-refs"),
-        ] {
-            assert!(relevant(&path, root, &git, common), "{}", path.display());
-        }
-        for path in [
-            git.join("index.lock"),
-            common.join("refs/heads/main.lock"),
-            common.join("objects/pack/object"),
-            common.join("MERGE_HEAD"),
-            common.join("worktrees/other/CHERRY_PICK_HEAD"),
-        ] {
-            assert!(!relevant(&path, root, &git, common), "{}", path.display());
-        }
-    }
-
-    #[test]
     fn watcher_retains_interruption_and_pathless_rescan_behind_pending_wake() {
         use notify::event::Flag;
 
-        let root = Path::new("worktree");
-        let git = root.join(".git");
+        let root = std::path::Path::new("worktree");
+        let scope = WatchScope {
+            root: root.into(),
+            git: root.join(".git"),
+            common: root.join(".git"),
+        };
         let (wake, events) = async_channel::bounded(1);
         let changes = Changes {
             events,
@@ -201,9 +123,7 @@ mod tests {
         let normal = || {
             classify(
                 Ok(Event::new(EventKind::Any).add_path(root.join("file"))),
-                root,
-                &git,
-                &git,
+                &scope,
             )
             .unwrap()
         };
@@ -211,7 +131,7 @@ mod tests {
         assert!(wake.is_full());
         let rescan = Event::new(EventKind::Other).set_flag(Flag::Rescan);
         assert!(rescan.paths.is_empty());
-        let rescan = classify(Ok(rescan), root, &git, &git).unwrap();
+        let rescan = classify(Ok(rescan), &scope).unwrap();
         queue_change(&changes.pending, &wake, rescan);
         let change = changes.take_pending().unwrap();
         assert!(change.metadata_dirty);
@@ -221,9 +141,7 @@ mod tests {
         assert!(wake.is_full());
         let error = classify(
             Err(notify::Error::generic("controlled interruption")),
-            root,
-            &git,
-            &git,
+            &scope,
         )
         .unwrap();
         queue_change(&changes.pending, &wake, error);

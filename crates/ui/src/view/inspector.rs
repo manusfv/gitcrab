@@ -1,5 +1,5 @@
 use super::*;
-use gitcrab_core::git::FileChange;
+use gitcrab_core::{git::FileChange, presentation::ordinal};
 
 fn inspector_bar() -> Div {
     section_bar().h(scaled(32.)).px(scaled(INSPECTOR_INSET))
@@ -39,16 +39,6 @@ impl FileRow {
         match self {
             Self::Header(section, _) | Self::File(section, _) | Self::Empty(section) => section,
         }
-    }
-}
-
-/// Names a merge parent's position in Git's parent order.
-fn ordinal(index: usize) -> String {
-    match index {
-        0 => "First".into(),
-        1 => "Second".into(),
-        2 => "Third".into(),
-        n => format!("Parent {}", n + 1),
     }
 }
 

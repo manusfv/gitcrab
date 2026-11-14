@@ -36,89 +36,35 @@ fn wip_editor_width(text_width: f32) -> f32 {
         .max(WIP_EDITOR_DEFAULT_WIDTH)
 }
 
-use gitcrab_core::presentation::{classify_decoration, DecorationKind};
+use gitcrab_core::presentation::{resolve_decorations, Decoration, DecorationKind};
 
-/// A reference printed beside a commit, with the ref it previews when activated.
-#[derive(Clone)]
-pub(super) struct Decoration {
-    kind: DecorationKind,
-    name: String,
-    target: Option<(ReferenceKind, String)>,
-}
-
-impl Decoration {
-    /// Names the reference with its type, for tooltips and the `+N` list.
-    fn label(&self) -> String {
-        match (self.kind, self.target.as_ref().map(|t| t.0)) {
-            (DecorationKind::HeadBranch, _) => format!("{} · HEAD, checked out", self.name),
-            (DecorationKind::Head, _) => "HEAD · detached".into(),
-            (DecorationKind::Tag, _) => format!("Tag {}", self.name),
-            (_, Some(ReferenceKind::Remote)) => format!("Remote {}", self.name),
-            _ => format!("Branch {}", self.name),
-        }
-    }
-
-    /// A type marker drawn before the name so tags, remotes and HEAD stay distinct.
-    fn marker(&self) -> Option<AnyElement> {
-        let glyph = |name: &str| {
-            icon(name)
-                .size(scaled(12.))
+/// A type marker drawn before a decoration's name so tags, remotes and HEAD
+/// stay distinct.
+fn decoration_marker(decoration: &Decoration) -> Option<AnyElement> {
+    let glyph = |name: &str| {
+        icon(name)
+            .size(scaled(12.))
+            .flex_none()
+            .text_role(Role::TextSecondary)
+            .into_any_element()
+    };
+    match (decoration.kind, decoration.target.as_ref().map(|t| t.0)) {
+        (DecorationKind::HeadBranch, _) => Some(
+            div()
                 .flex_none()
-                .text_role(Role::TextSecondary)
-                .into_any_element()
-        };
-        match (self.kind, self.target.as_ref().map(|t| t.0)) {
-            (DecorationKind::HeadBranch, _) => Some(
-                div()
-                    .flex_none()
-                    .px(px(3.))
-                    .rounded(px(3.))
-                    .bg_role(Role::ActionPrimary)
-                    .text_role(Role::TextOnPrimary)
-                    .text_size(scaled(10.))
-                    .font_weight(FontWeight::BOLD)
-                    .child("HEAD")
-                    .into_any_element(),
-            ),
-            (DecorationKind::Tag, _) => Some(glyph("tag")),
-            (_, Some(ReferenceKind::Remote)) => Some(glyph("remote")),
-            _ => None,
-        }
+                .px(px(3.))
+                .rounded(px(3.))
+                .bg_role(Role::ActionPrimary)
+                .text_role(Role::TextOnPrimary)
+                .text_size(scaled(10.))
+                .font_weight(FontWeight::BOLD)
+                .child("HEAD")
+                .into_any_element(),
+        ),
+        (DecorationKind::Tag, _) => Some(glyph("tag")),
+        (_, Some(ReferenceKind::Remote)) => Some(glyph("remote")),
+        _ => None,
     }
-}
-
-/// Resolves a commit's `--decorate` labels against the loaded references.
-fn decorations(snapshot: &gitcrab_core::git::RepoSnapshot, refs: &[String]) -> Vec<Decoration> {
-    refs.iter()
-        .map(|label| {
-            let (kind, name) = classify_decoration(label);
-            let target = match kind {
-                DecorationKind::Head => None,
-                DecorationKind::HeadBranch => Some((ReferenceKind::LocalBranch, name.to_owned())),
-                DecorationKind::Tag => snapshot
-                    .tags
-                    .iter()
-                    .find(|tag| tag.label == name)
-                    .map(|tag| (ReferenceKind::Tag, tag.full_name.clone())),
-                DecorationKind::Branch => {
-                    if snapshot.branches.iter().any(|branch| branch.name == name) {
-                        Some((ReferenceKind::LocalBranch, name.to_owned()))
-                    } else {
-                        snapshot
-                            .remote_refs
-                            .iter()
-                            .find(|remote| remote.label == name)
-                            .map(|remote| (ReferenceKind::Remote, remote.full_name.clone()))
-                    }
-                }
-            };
-            Decoration {
-                kind,
-                name: name.to_owned(),
-                target,
-            }
-        })
-        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -583,7 +529,7 @@ impl GitCrab {
             });
         }
 
-        let decorations = decorations(snap, &c.refs);
+        let decorations = resolve_decorations(snap, &c.refs);
         let primary = decorations
             .iter()
             .position(|d| d.kind == DecorationKind::HeadBranch)
@@ -656,7 +602,7 @@ impl GitCrab {
                         .text_size(scaled(12.))
                         .text_role(Role::TextDefault)
                         .when_some(primary.clone(), |e, primary| {
-                            let marker = primary.marker();
+                            let marker = decoration_marker(&primary);
                             let label = primary.label();
                             e.child(
                                 self.button(("ref-detail", i), "")

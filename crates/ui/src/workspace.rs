@@ -13,7 +13,6 @@ use gpui_component::{
 };
 use std::{cell::RefCell, rc::Rc};
 
-mod tab_order;
 use components::rail::RailDrag;
 
 actions!(
@@ -450,7 +449,7 @@ impl Workspace {
             1 if from + 1 < self.tabs.len() => from + 2,
             _ => return,
         };
-        if tab_order::move_to_slot(&mut self.tabs, &mut self.active, from, slot) {
+        if gitcrab_core::tabs::move_to_slot(&mut self.tabs, &mut self.active, from, slot) {
             self.scroll.scroll_to_item(self.active);
             cx.notify();
         }
@@ -464,7 +463,7 @@ impl Workspace {
             return;
         };
         let slot = to + usize::from(from < to);
-        tab_order::move_to_slot(&mut self.tabs, &mut self.active, from, slot);
+        gitcrab_core::tabs::move_to_slot(&mut self.tabs, &mut self.active, from, slot);
     }
 
     fn move_tab_drag(&mut self, pointer: Pixels, cx: &mut Context<Self>) {
