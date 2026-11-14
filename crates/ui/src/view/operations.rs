@@ -21,6 +21,45 @@ pub(super) struct PendingRun {
     label: &'static str,
     /// Switch to the new branch once a Create branch at HEAD has succeeded.
     then_switch: bool,
+    /// When the review started, so the write that follows keeps one
+    /// loading period instead of starting a new one.
+    started: std::time::Instant,
+    /// The toolbar button that spins during the review.
+    command: Option<Command>,
+    network: bool,
+}
+
+/// How long a local operation runs before its loader shows, so quick ones
+/// do not flicker. Network operations show it at once.
+pub(super) const LOADER_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The toolbar button that spins while `action` runs. Fetch has no button of
+/// its own and lives in the Pull menu, so it spins Pull.
+pub(super) fn loading_command(action: &Action) -> Option<Command> {
+    match action {
+        Action::Fetch => Some(Command::Pull),
+        Action::Operation { reviewed } => operation_command(&reviewed.op),
+        Action::RunOperation { op, .. } | Action::ReviewOperation { op, .. } => {
+            operation_command(op)
+        }
+        _ => None,
+    }
+}
+
+fn operation_command(op: &Operation) -> Option<Command> {
+    Some(match op {
+        Operation::CreateBranch | Operation::CreateBranchAt { .. } => Command::CreateBranch,
+        Operation::Checkout => Command::Checkout,
+        Operation::Merge => Command::Merge,
+        Operation::CherryPick => Command::CherryPick,
+        Operation::Revert => Command::Revert,
+        Operation::Stash => Command::Stash,
+        Operation::PopStash => Command::PopStash,
+        Operation::Pull { .. } => Command::Pull,
+        Operation::Push => Command::Push,
+        Operation::Undo => Command::Undo,
+        Operation::Redo => Command::Redo,
+    })
 }
 
 /// The inline bar asking for a new branch's name.
@@ -97,16 +136,44 @@ impl GitCrab {
             cx.notify();
             return true;
         }
+        let command = operation_command(&op);
+        let network = op.is_network();
         let (sequence, job) = self.state.review_operation(op, target, destination);
         self.pending_run = Some(PendingRun {
             request: (self.state.epoch, sequence),
             label,
             then_switch,
+            started: std::time::Instant::now(),
+            command,
+            network,
         });
+        self.reveal_loader_later(cx);
         self.state.dismiss_notice();
         self.dispatch(job, window, cx);
         cx.notify();
         true
+    }
+
+    /// The work whose loader is on screen, with the toolbar button it spins
+    /// if it has one. `None` while nothing runs, and while a local operation
+    /// is still younger than [`LOADER_DELAY`].
+    pub(super) fn loader(&self) -> Option<Option<Command>> {
+        let (command, started, network) = match (&self.running, &self.pending_run) {
+            (Some(running), _) => (running.command, running.started, running.network),
+            (None, Some(pending)) => (pending.command, pending.started, pending.network),
+            (None, None) => return None,
+        };
+        (network || started.elapsed() >= LOADER_DELAY).then_some(command)
+    }
+
+    /// Draws again once [`LOADER_DELAY`] has passed, so the loader of an
+    /// operation still running by then appears without other input.
+    pub(super) fn reveal_loader_later(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(LOADER_DELAY).await;
+            view.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
     }
 
     /// Status bar text while the preflight review runs.
@@ -155,6 +222,7 @@ impl GitCrab {
             .then(|| reviewed.target.clone())
             .filter(|_| matches!(reviewed.op, Operation::CreateBranch));
         let job = self.state.mutate(Action::Operation { reviewed });
+        self.loading_since = Some(pending.started);
         self.dispatch_mutation(job, window, cx);
     }
 

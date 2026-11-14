@@ -222,21 +222,26 @@ pub fn file_action(
 ///
 /// A disabled action is greyed out, shows a not-allowed cursor and keeps its
 /// tooltip, so the reason it cannot run stays discoverable.
+///
+/// A `loading` action is the one Git is running: its icon becomes a spinner
+/// and it keeps full strength while the other actions dim.
 pub fn toolbar_command(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     glyph: &str,
     disabled: bool,
+    loading: bool,
     labelled: bool,
     caret: bool,
 ) -> Button {
     let label = label.into();
+    let disabled = disabled || loading;
     Button::new(id)
         .ghost()
         .tab_stop(true)
         .line_height(phi())
         .set_disabled(disabled)
-        .when(disabled, |button| button.opacity(0.7))
+        .when(disabled && !loading, |button| button.opacity(0.7))
         .h(scaled(42.))
         .min_w(scaled(if labelled { 46. } else { 32. }))
         .px_1()
@@ -251,7 +256,13 @@ pub fn toolbar_command(
                         .flex()
                         .items_center()
                         .gap(px(2.))
-                        .child(icon(glyph).size(px(16.)))
+                        .map(|row| {
+                            if loading {
+                                row.child(spinner(px(16.)))
+                            } else {
+                                row.child(icon(glyph).size(px(16.)))
+                            }
+                        })
                         .when(caret, |row| row.child(icon("down").size(px(10.)))),
                 )
                 .when(labelled, |column| {
@@ -259,6 +270,16 @@ pub fn toolbar_command(
                 }),
         )
 }
+
+/// A loader that turns at a steady pace while work runs. It stands still
+/// when the system asks for reduced motion.
+pub fn spinner(size: Pixels) -> gpui::component::spinner::Spinner {
+    gpui::component::spinner::Spinner::new()
+        .icon(icon("loader"))
+        .ease(|delta| delta)
+        .with_size(gpui::component::Size::Size(size))
+}
+
 pub fn selector(
     id: impl Into<ElementId>,
     kicker: Option<&str>,

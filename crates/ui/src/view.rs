@@ -285,6 +285,10 @@ struct RunningWrite {
     network: bool,
     /// Cancel was requested and Git is being stopped.
     cancelling: bool,
+    /// The toolbar button that spins while this write runs.
+    command: Option<Command>,
+    /// When its loading period began, including any review before it.
+    started: std::time::Instant,
 }
 
 /// Save state of the Appearance panel, shown in its footer.
@@ -349,6 +353,8 @@ pub struct GitCrab {
     /// The inspector is hidden while reviewing a diff.
     inspector_collapsed: bool,
     running: Option<RunningWrite>,
+    /// Start of the review whose write is being dispatched, handed to it.
+    loading_since: Option<std::time::Instant>,
     error_heading: String,
     appearance_status: AppearanceStatus,
     history_scroll: UniformListScrollHandle,
@@ -552,6 +558,7 @@ impl GitCrab {
             diff_match: None,
             inspector_collapsed: false,
             running: None,
+            loading_since: None,
             error_heading: String::new(),
             appearance_status: AppearanceStatus::Idle,
             history_scroll: UniformListScrollHandle::new(),
@@ -1225,6 +1232,10 @@ impl GitCrab {
             self.feedback_start =
                 Some((std::time::Instant::now(), "mutation-feedback-to-next-frame"));
         }
+        let started = self
+            .loading_since
+            .take()
+            .unwrap_or_else(std::time::Instant::now);
         // Without a job the write was queued or refused; what is on screen
         // stays as it is until a write actually starts.
         if job.is_some() {
@@ -1253,7 +1264,10 @@ impl GitCrab {
                 target,
                 network: request.action.is_network(),
                 cancelling: false,
+                command: operations::loading_command(&request.action),
+                started,
             });
+            self.reveal_loader_later(cx);
         }
         self.dispatch(job, window, cx);
     }
@@ -2534,6 +2548,7 @@ impl Render for GitCrab {
         let labelled = layout.labels();
         // Undo, Redo, Pull, Push, Branch, Stash, Pop. Each stays visible and
         // is disabled with its reason when it cannot run.
+        let loader = self.loader();
         let action_buttons = Command::PRIMARY
             .into_iter()
             .enumerate()
@@ -2543,6 +2558,7 @@ impl Render for GitCrab {
                     command.label(),
                     command_glyph(command),
                     !command.availability(&commands).enabled(),
+                    loader == Some(Some(command)),
                     labelled,
                     false,
                 )
@@ -3001,6 +3017,9 @@ impl Render for GitCrab {
                     .gap_2()
                     .text_size(scaled(12.))
                     .text_role(Role::TextMuted)
+                    .when(matches!(self.loader(), Some(Some(_))), |bar| {
+                        bar.child(div().flex_none().child(components::spinner(px(12.))))
+                    })
                     .child(div().flex_1().truncate().child(if self.state.busy {
                         self.running_label()
                     } else if let Some(pending) = self.pending_label() {
