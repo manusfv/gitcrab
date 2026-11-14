@@ -358,6 +358,11 @@ pub struct GitCrab {
     history_column_drag_start: Option<(gitcrab_core::history_columns::HistoryColumn, Pixels)>,
     history_column_resize: Option<(gitcrab_core::history_columns::HistoryColumn, Pixels, f32)>,
     diff_scroll: UniformListScrollHandle,
+    settings_scroll: ScrollHandle,
+    activity_scroll: ScrollHandle,
+    recent_scroll: ScrollHandle,
+    failure_scroll: ScrollHandle,
+    error_scroll: ScrollHandle,
     selection: Option<Range<usize>>,
     anchor: usize,
     _subscriptions: Vec<Subscription>,
@@ -555,6 +560,11 @@ impl GitCrab {
             history_column_drag_start: None,
             history_column_resize: None,
             diff_scroll: UniformListScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
+            activity_scroll: ScrollHandle::new(),
+            recent_scroll: ScrollHandle::new(),
+            failure_scroll: ScrollHandle::new(),
+            error_scroll: ScrollHandle::new(),
             selection: None,
             anchor: 0,
             _subscriptions: subscriptions,
@@ -1679,6 +1689,7 @@ impl GitCrab {
     fn show_activity(&self, window: &mut Window, cx: &mut Context<Self>) {
         let repo = display_path(&self.state.path);
         let weak = cx.weak_entity();
+        let scroll = self.activity_scroll.clone();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let records = weak
                 .read_with(cx, |v, _| v.activity.clone())
@@ -1719,12 +1730,11 @@ impl GitCrab {
                             }),
                         ),
                 )
-                .child(
-                    div()
-                        .id("activity-records")
-                        .max_h(px(360.))
-                        .overflow_y_scroll()
-                        .children(records.iter().enumerate().map(|(i, r)| {
+                .child(scroll_area(
+                    "activity-records",
+                    &scroll,
+                    div().id("activity-records").max_h(px(360.)).children(
+                        records.iter().enumerate().map(|(i, r)| {
                             let copy = r.summary();
                             div()
                                 .py_2()
@@ -1793,8 +1803,9 @@ impl GitCrab {
                                         },
                                     ),
                                 )
-                        })),
-                )
+                        }),
+                    ),
+                ))
         });
     }
     fn can_commit(&self) -> bool {
@@ -2180,11 +2191,12 @@ impl GitCrab {
                                     .text_role(Role::TextMuted)
                                     .child("Recent repositories"),
                             )
-                            .child(
+                            .child(scroll_area(
+                                "new-tab-recent-list",
+                                &self.recent_scroll,
                                 div()
                                     .id("new-tab-recent-list")
                                     .max_h(scaled(180.))
-                                    .overflow_y_scroll()
                                     .children(
                                         path_labels(&recent)
                                             .into_iter()
@@ -2239,7 +2251,7 @@ impl GitCrab {
                                                     })
                                             }),
                                     ),
-                            )
+                            ))
                             .child(
                                 div()
                                     .pt_1()
@@ -2338,14 +2350,17 @@ impl GitCrab {
                             )
                         })
                         .child(
-                            div()
-                                .id("open-failure-details")
-                                .mt_1()
-                                .max_h(px(80.))
-                                .overflow_y_scroll()
-                                .text_size(scaled(12.))
-                                .text_role(Role::TextSecondary)
-                                .child(details.to_owned()),
+                            scroll_area(
+                                "open-failure-details",
+                                &self.failure_scroll,
+                                div()
+                                    .id("open-failure-details")
+                                    .max_h(px(80.))
+                                    .text_size(scaled(12.))
+                                    .text_role(Role::TextSecondary)
+                                    .child(details.to_owned()),
+                            )
+                            .mt_1(),
                         ),
                 )
             })
@@ -2637,12 +2652,17 @@ impl Render for GitCrab {
                                     .my(rems(-0.25))
                                     .px(rems(0.5))
                                     .py(rems(0.25))
+                                    .max_w(components::menu_text_width())
                                     .cursor_pointer()
                                     .flex()
                                     .flex_col()
+                                    .min_w_0()
+                                    .overflow_hidden()
                                     .child(suffix.clone())
                                     .child(
                                         div()
+                                            .min_w_0()
+                                            .truncate()
                                             .text_size(scaled(11.))
                                             .text_role(Role::TextMuted)
                                             .child(location.clone()),
@@ -2948,14 +2968,17 @@ impl Render for GitCrab {
                                 )),
                         )
                         .child(
-                            div()
-                                .id("error-details")
-                                .mt_1()
-                                .max_h(px(240.))
-                                .overflow_y_scroll()
-                                .text_size(scaled(12.))
-                                .text_role(Role::TextSecondary)
-                                .child(self.state.notice.clone()),
+                            scroll_area(
+                                "error-details",
+                                &self.error_scroll,
+                                div()
+                                    .id("error-details")
+                                    .max_h(px(240.))
+                                    .text_size(scaled(12.))
+                                    .text_role(Role::TextSecondary)
+                                    .child(self.state.notice.clone()),
+                            )
+                            .mt_1(),
                         ),
                 )
             })

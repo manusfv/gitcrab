@@ -157,7 +157,7 @@ impl GitCrab {
         tree
     }
 
-    pub(super) fn sidebar(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.state.snapshot.is_none() {
             return div()
                 .size_full()
@@ -189,10 +189,9 @@ impl GitCrab {
         let mut nav = nav
             .id("navigation")
             .flex_1()
-            .min_h_0()
+            .w_full()
             .flex()
             .flex_col()
-            .overflow_y_scroll()
             .child(
                 div().px(scaled(INSET)).py(scaled(INSET)).child(
                     Input::new(&self.reference_search)
@@ -384,7 +383,14 @@ impl GitCrab {
             .flex_col()
             .bg_role(Role::SurfaceNav)
             .overflow_hidden()
-            .child(nav)
+            .child(
+                scroll_area(
+                    "navigation",
+                    &scroll_handle(window, cx, "navigation-scroll"),
+                    nav,
+                )
+                .flex_1(),
+            )
             .into_any_element()
     }
 }

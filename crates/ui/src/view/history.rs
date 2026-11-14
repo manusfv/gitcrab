@@ -49,16 +49,13 @@ fn decoration_marker(decoration: &Decoration) -> Option<AnyElement> {
             .into_any_element()
     };
     match (decoration.kind, decoration.target.as_ref().map(|t| t.0)) {
+        // A checkmark: the branch name already says where
+        // HEAD is, so no "HEAD" text. The tooltip and label still say it.
         (DecorationKind::HeadBranch, _) => Some(
-            div()
+            icon("check")
+                .size(scaled(12.))
                 .flex_none()
-                .px(px(3.))
-                .rounded(px(3.))
-                .bg_role(Role::ActionPrimary)
-                .text_role(Role::TextOnPrimary)
-                .text_size(scaled(10.))
-                .font_weight(FontWeight::BOLD)
-                .child("HEAD")
+                .text_role(Role::TextDefault)
                 .into_any_element(),
         ),
         (DecorationKind::Tag, _) => Some(glyph("tag")),
@@ -138,7 +135,7 @@ impl GitCrab {
     pub(super) fn history(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.prepare_column_drag(window, cx);
         self.history_layout = self.history_columns.adapted(
-            self.history_available - self.history_gutter(),
+            self.history_available - self.history_gutter() - f32::from(SCROLLBAR_GUTTER),
             self.preferences.font_size / 13.,
         );
         let count = self.state.graph.rows.len();
@@ -158,6 +155,9 @@ impl GitCrab {
                     .relative()
                     .flex_1()
                     .min_h_0()
+                    // A fixed strip beside the table for the vertical scrollbar, so it
+                    // never sits over columns that are scrolled into view.
+                    .pr(SCROLLBAR_GUTTER)
                     .overflow_hidden()
                     .child(
                         div()
@@ -229,12 +229,22 @@ impl GitCrab {
                             ),
                     )
                     .child(
-                        div().absolute().inset_0().child(
-                            gpui::component::scroll::Scrollbar::horizontal(
+                        div().absolute().inset_0().child(slim_scrollbar(gpui::component::scroll::Scrollbar::horizontal(
                                 &self.history_horizontal_scroll,
                             )
-                            .id("history-horizontal-scrollbar"),
-                        ),
+                            .id("history-horizontal-scrollbar")
+                            .mode(gpui::component::scroll::ScrollbarMode::Always),)),
+                    )
+                    .child(pinned_scrollbar_overlay("history", &self.history_scroll, scaled(28.)))
+                    .child(
+                        // Continues the header band across the scrollbar strip.
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .w(SCROLLBAR_GUTTER)
+                            .h(scaled(28.))
+                            .bg_role(Role::SurfaceChrome),
                     )
                     .child({
                         // A visible, keyboard-reachable route to column settings.
@@ -242,7 +252,7 @@ impl GitCrab {
                         div()
                             .absolute()
                             .top_0()
-                            .right(scaled(4.))
+                            .right(SCROLLBAR_GUTTER + px(4.))
                             .h(scaled(28.))
                             .flex()
                             .items_center()

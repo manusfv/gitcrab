@@ -284,24 +284,27 @@ impl GitCrab {
             " · ",
             env!("GITCRAB_BUILD")
         )));
-        div()
-            .id("appearance-settings")
-            .max_h(px(height))
-            .overflow_y_scroll()
-            .w(px(430.))
-            .rounded(px(10.))
-            .bg_role(Role::SurfaceOverlay)
-            .border_1()
-            .border_role(Role::BorderDivider)
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(theme)
-            .child(text)
-            .child(code)
-            .child(layout)
-            .child(about)
-            .into_any_element()
+        scroll_area(
+            "appearance-settings",
+            &self.settings_scroll,
+            div()
+                .id("appearance-settings")
+                .max_h(px(height))
+                .w(px(430.))
+                .rounded(px(10.))
+                .bg_role(Role::SurfaceOverlay)
+                .border_1()
+                .border_role(Role::BorderDivider)
+                .p_4()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(theme)
+                .child(text)
+                .child(code)
+                .child(layout)
+                .child(about),
+        )
+        .into_any_element()
     }
 }

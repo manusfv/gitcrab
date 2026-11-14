@@ -176,8 +176,9 @@ pub fn install(cx: &mut App) {
         t.colors.warning = role_color(Role::StatusWarningFg).into();
         t.colors.warning_foreground = role_color(Role::StatusWarningBg).into();
         t.colors.overlay = rgba(semantic(Role::OverlayScrim)).into();
-        t.colors.scrollbar_thumb = role_color(Role::BorderControl).into();
-        t.colors.scrollbar_thumb_hover = role_color(Role::TextSecondary).into();
+        // A quiet thumb that brightens under the pointer, with no gutter behind it.
+        t.colors.scrollbar_thumb = Hsla::from(role_color(Role::TextMuted)).opacity(0.45);
+        t.colors.scrollbar_thumb_hover = Hsla::from(role_color(Role::TextMuted)).opacity(0.8);
         t.colors.accordion = role_color(Role::SurfacePanel).into();
         t.colors.group_box = role_color(Role::SurfacePanel).into();
         t.colors.group_box_foreground = role_color(Role::TextDefault).into();
@@ -201,7 +202,10 @@ pub fn install(cx: &mut App) {
         t.colors.list_head = role_color(Role::SurfacePanel).into();
         t.colors.muted = role_color(Role::SurfaceChrome).into();
         t.colors.progress_bar = role_color(Role::ActionPrimary).into();
-        t.colors.scrollbar = role_color(Role::SurfacePanel).into();
+        t.colors.scrollbar = gpui::transparent_black();
+        // Menus and inputs from the component library follow the same rule: a bar
+        // is shown whenever there is more to scroll to.
+        t.scrollbar_mode = gpui::component::scroll::ScrollbarMode::Always;
         t.colors.sidebar = role_color(Role::SurfaceNav).into();
         t.colors.sidebar_accent = role_color(Role::InteractionSelected).into();
         t.colors.sidebar_accent_foreground = role_color(Role::TextDefault).into();
@@ -285,6 +289,20 @@ pub fn install(cx: &mut App) {
         t.colors.button_info_active = role_color(Role::StatusInfoFg).into();
         t.colors.button_info_foreground = role_color(Role::SurfaceCanvas).into();
     });
+    shape_scrollbars(cx);
+}
+
+/// Gives scrollbars drawn by the component library (popup menus, text inputs) the
+/// same slim look as [`slim_scrollbar`](crate::components::layout::slim_scrollbar).
+/// Library containers have no room reserved for it, so scrollable menus pad their
+/// own entries instead.
+///
+/// The component theme only sets scrollbar colors, and rebuilds this whole style
+/// on every theme update, so call it after each one.
+pub fn shape_scrollbars(cx: &mut App) {
+    let base = gpui::base::Theme::global_mut(cx);
+    let styles = super::components::layout::slim_styles(base.scrollbar.styles().clone());
+    base.scrollbar = base.scrollbar.clone().with_styles(styles);
 }
 
 /// Loads one of GitCrab's bundled icons by name.

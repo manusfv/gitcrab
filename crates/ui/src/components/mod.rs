@@ -19,7 +19,7 @@ pub mod menu;
 pub mod rail;
 
 pub use buttons::*;
-pub use menu::menu_item;
+pub use menu::{menu_item, menu_text_width};
 
 /// The components and helpers views use, for a single glob import.
 pub mod prelude {

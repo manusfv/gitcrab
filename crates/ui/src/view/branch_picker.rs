@@ -233,14 +233,19 @@ impl GitCrab {
                             .prefix(icon("search").size(px(14.)).text_role(Role::TextMuted)),
                     )
                     .child(
-                        div()
-                            .id("branch-picker-list")
-                            .max_h(px(LIST_MAX_HEIGHT))
-                            .overflow_y_scroll()
-                            .track_scroll(&scroll)
-                            .flex()
-                            .flex_col()
-                            .children(rows),
+                        scroll_area(
+                            "branch-picker-list",
+                            &scroll,
+                            div()
+                                .id("branch-picker-list")
+                                .max_h(px(LIST_MAX_HEIGHT))
+                                .flex()
+                                .flex_col()
+                                .children(rows),
+                        )
+                        // Let the bar sit in the popover's own padding instead of
+                        // adding a second gutter inside it.
+                        .when(overflows_vertically(&scroll), |list| list.mr(px(-6.))),
                     )
                     .when_some(note, |el, note| {
                         el.child(
