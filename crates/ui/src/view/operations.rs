@@ -166,6 +166,21 @@ impl GitCrab {
         (network || started.elapsed() >= LOADER_DELAY).then_some(command)
     }
 
+    /// Status bar text while a snapshot read runs. Opening a repository says
+    /// so at once; a refresh of the repository on screen, such as one the
+    /// file watcher starts, stays silent until it outlasts [`LOADER_DELAY`].
+    pub(super) fn loading_label(&self) -> Option<&'static str> {
+        if !self.state.loading() {
+            return None;
+        }
+        if self.state.snapshot.is_none() {
+            return Some("Loading repository…");
+        }
+        self.snapshot_sent
+            .is_some_and(|sent| sent.elapsed() >= LOADER_DELAY)
+            .then_some("Refreshing…")
+    }
+
     /// Draws again once [`LOADER_DELAY`] has passed, so the loader of an
     /// operation still running by then appears without other input.
     pub(super) fn reveal_loader_later(&self, cx: &mut Context<Self>) {

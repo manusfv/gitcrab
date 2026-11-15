@@ -20,8 +20,16 @@ pub use process::trace as git_trace;
 use gitcrab_core::{diff, graph, hunk_edit};
 use gitcrab_core::{
     platform::RepositoryLocation,
-    service::{GitBackend, GitWorker, ReadKind, Request, Response},
+    service::{GitBackend, GitWorker, IgnoreCheck, ReadKind, Request, Response},
 };
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+impl IgnoreCheck for git::Git {
+    fn ignored(&self, paths: &BTreeSet<PathBuf>) -> Result<BTreeSet<PathBuf>, String> {
+        self.ignored_paths(paths)
+    }
+}
 use platform::RepositoryLocationExt;
 use std::path::Path;
 use tokio::sync::oneshot;
@@ -51,6 +59,12 @@ impl GitBackend for Backend {
 
     fn discover(&self, path: &Path) -> Result<RepositoryLocation, String> {
         RepositoryLocation::discover(path)
+    }
+
+    fn ignore_check(&self, location: &RepositoryLocation) -> Option<Box<dyn IgnoreCheck>> {
+        git::Git::open_confirmed(location.clone(), None)
+            .ok()
+            .map(|git| Box::new(git) as Box<dyn IgnoreCheck>)
     }
 
     #[cfg(feature = "git-trace")]

@@ -663,11 +663,33 @@ pub trait GitBackend: Send + Sync {
     /// Returns a message if `path` is not inside a Git worktree.
     fn discover(&self, path: &Path) -> Result<RepositoryLocation, String>;
 
+    /// Opens a check of Git's ignore rules for the trusted worktree at
+    /// `location`, which the file watcher uses to skip changes to ignored
+    /// files such as build output. Blocks while it runs Git, so call it off
+    /// the UI thread. `None` means every change refreshes.
+    fn ignore_check(&self, _location: &RepositoryLocation) -> Option<Box<dyn IgnoreCheck>> {
+        None
+    }
+
     /// Removes and returns the Git calls recorded since the last drain.
     /// Empty unless the backend was built with tracing.
     fn drain_git_calls(&self) -> Vec<GitCall> {
         Vec::new()
     }
+}
+
+/// Tells which worktree paths Git ignores, for one repository.
+pub trait IgnoreCheck: Send {
+    /// Returns the subset of the absolute `paths` that Git's ignore rules
+    /// exclude. Tracked files are never in it. Blocks while Git runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if Git cannot answer; treat every path as relevant then.
+    fn ignored(
+        &self,
+        paths: &std::collections::BTreeSet<std::path::PathBuf>,
+    ) -> Result<std::collections::BTreeSet<std::path::PathBuf>, String>;
 }
 
 /// One Git invocation recorded by a diagnostic build: when it started, how

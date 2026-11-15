@@ -1393,3 +1393,41 @@ fn real_git_new_file_hunk_can_be_staged_and_unstaged_without_touching_worktree()
         content
     );
 }
+
+#[test]
+fn ignored_paths_reports_ignored_files_but_not_tracked_or_plain_ones() {
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    std::fs::create_dir_all(git.path.join("target/debug")).unwrap();
+    fixture.write(".gitignore", "target/\n*.log\n");
+    fixture.write("kept.log", "tracked\n");
+    git.run(&["add", ".gitignore"]).unwrap();
+    git.run(&["add", "-f", "kept.log"]).unwrap();
+    git.run(&["commit", "-qm", "base"]).unwrap();
+    fixture.write("target/debug/out.o", "build\n");
+    fixture.write("run.log", "log\n");
+    fixture.write("kept.log", "edited\n");
+    fixture.write("notes", "new\n");
+    let path = |name: &str| git.path.join(name);
+    let asked = [
+        path("target/debug/out.o"),
+        path("target/debug"),
+        path("run.log"),
+        path("kept.log"),
+        path("notes"),
+        path(".gitignore"),
+    ];
+    let ignored = git.ignored_paths(&asked).unwrap();
+    assert_eq!(
+        ignored,
+        [
+            path("target/debug/out.o"),
+            path("target/debug"),
+            path("run.log")
+        ]
+        .into_iter()
+        .collect()
+    );
+    // Nothing ignored is exit status 1, which is not a failure.
+    assert!(git.ignored_paths(&asked[3..]).unwrap().is_empty());
+}

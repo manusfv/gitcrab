@@ -234,11 +234,13 @@ impl GitCrab {
             self.watch_pending = false;
             return;
         };
-        let task = cx
-            .background_executor()
-            .spawn(async move { crate::watch::start(location) });
+        let backend = self.backend.clone();
+        let task = cx.background_executor().spawn(async move {
+            let ignore = backend.ignore_check(&location);
+            (crate::watch::start(location), ignore)
+        });
         cx.spawn_in(window, async move |view, cx| {
-            let result = task.await;
+            let (result, mut ignore) = task.await;
             let receiver = view.update_in(cx, |v, _, cx| {
                 if v.state.epoch != epoch { return None; }
                 v.watch_pending = false;
@@ -250,9 +252,25 @@ impl GitCrab {
             let Some(receiver) = receiver else { return; };
             while receiver.wake().await.is_ok() {
                 cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
-                let Some(crate::watch::Change { error, event_time, metadata_dirty }) = receiver.take_pending() else {
+                let Some(change) = receiver.take_pending() else {
                     continue;
                 };
+                // Build output and other ignored files cannot change what
+                // GitCrab shows, so a burst touching only them refreshes nothing.
+                if let (Some(paths), Some(check)) = (change.ignorable_paths().cloned(), ignore.take()) {
+                    let (check, ignored) = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let ignored = check.ignored(&paths).is_ok_and(|ignored| ignored.len() == paths.len());
+                            (check, ignored)
+                        })
+                        .await;
+                    ignore = Some(check);
+                    if ignored {
+                        continue;
+                    }
+                }
+                let crate::watch::Change { error, event_time, metadata_dirty, .. } = change;
                 let keep = view.update_in(cx, |v, w, cx| {
                     if v.state.epoch != epoch { return false; }
                     let interrupted = error.is_some();

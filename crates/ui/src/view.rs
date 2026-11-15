@@ -395,6 +395,9 @@ pub struct GitCrab {
     /// When the latest full or worktree refresh was sent to the worker. A watcher change
     /// seen before then is already covered by that refresh.
     full_refresh_sent: Option<std::time::Instant>,
+    /// When the latest snapshot read was sent. The status bar names a refresh
+    /// of a repository already on screen only once it outlasts [`operations::LOADER_DELAY`].
+    snapshot_sent: Option<std::time::Instant>,
     search_matches: Vec<String>,
     search_query: String,
     /// The References dialog is open over a narrow layout.
@@ -603,6 +606,7 @@ impl GitCrab {
             watch_warning: None,
             external_dirty: false,
             full_refresh_sent: None,
+            snapshot_sent: None,
             search_matches: vec![],
             search_query: String::new(),
             references_open: false,
@@ -656,6 +660,10 @@ impl GitCrab {
             Action::Refresh { .. } | Action::RefreshWorktree { .. } | Action::Open { .. }
         ) {
             self.full_refresh_sent = Some(std::time::Instant::now());
+        }
+        if lane == Lane::Snapshot {
+            self.snapshot_sent = Some(std::time::Instant::now());
+            self.reveal_loader_later(cx);
         }
         match self.service.submit(request) {
             Ok(rx) => {
@@ -3028,8 +3036,8 @@ impl Render for GitCrab {
                         self.running_label()
                     } else if let Some(pending) = self.pending_label() {
                         pending
-                    } else if self.state.loading() {
-                        "Loading repository…".into()
+                    } else if let Some(loading) = self.loading_label() {
+                        loading.into()
                     } else if self.state.error {
                         String::new()
                     } else {

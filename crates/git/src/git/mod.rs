@@ -190,9 +190,14 @@ impl Git {
             crate::test_repo::isolate_config(&mut cmd, &self.path);
             crate::test_repo::SUBPROCESSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        cmd.current_dir(&self.path)
-            .args(["--no-pager", "--literal-pathspecs"])
-            .args(args)
+        cmd.current_dir(&self.path).arg("--no-pager");
+        // check-ignore rejects pathspec magic. It matches each path it is
+        // given against the ignore rules and never expands globs, so its
+        // paths are literal already.
+        if args.first() != Some(&"check-ignore") {
+            cmd.arg("--literal-pathspecs");
+        }
+        cmd.args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0");
         if let Some(common_dir) = &self.common_dir {
@@ -369,6 +374,56 @@ impl Git {
                 Ok((git, common))
             }
             _ => Err("Could not determine Git metadata directories.".into()),
+        }
+    }
+
+    /// Returns which of the absolute worktree `paths` Git's ignore rules
+    /// exclude. Tracked files are never reported, since their changes still
+    /// show, and neither are paths outside the worktree or not valid UTF-8.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Git cannot run or fails, for example when a path
+    /// lies inside a submodule.
+    pub fn ignored_paths<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a PathBuf>,
+    ) -> GitResult<std::collections::BTreeSet<PathBuf>> {
+        let mut asked = std::collections::HashMap::new();
+        let mut input = Vec::new();
+        for path in paths {
+            let Some(relative) = path
+                .strip_prefix(&self.path)
+                .ok()
+                .and_then(Path::to_str)
+                .filter(|relative| !relative.is_empty())
+            else {
+                continue;
+            };
+            let relative = relative.replace('\\', "/");
+            input.extend_from_slice(relative.as_bytes());
+            input.push(0);
+            asked.insert(relative, path.clone());
+        }
+        if asked.is_empty() {
+            return Ok(Default::default());
+        }
+        let output = capture(
+            self.read_command(&["check-ignore", "--stdin", "-z"])?,
+            Some(&input),
+            1,
+            None,
+        )
+        .map_err(|e| format!("Could not complete Git command: {e}"))?;
+        // Exit status 1 means none of the paths is ignored.
+        match output.status.code() {
+            Some(0) => Ok(output
+                .stdout
+                .split(|&byte| byte == 0)
+                .filter_map(|path| asked.get(std::str::from_utf8(path).ok()?).cloned())
+                .collect()),
+            Some(1) => Ok(Default::default()),
+            _ => Err(Self::failed_output(&output)),
         }
     }
 }
