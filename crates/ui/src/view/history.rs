@@ -629,7 +629,7 @@ impl GitCrab {
                             cx,
                         )
                         .when(ghost, |pill| {
-                            pill.opacity(
+                            pill.cursor_default().opacity(
                                 if self
                                     .history_hover
                                     .refs_over
@@ -1278,7 +1278,7 @@ impl GitCrab {
                                 .flex_shrink(1.)
                                 .min_w_0()
                                 .overflow_hidden()
-                                .when(ghost, |pill| pill.opacity(GHOST_OPACITY))
+                                .when(ghost, |pill| pill.opacity(GHOST_OPACITY).cursor_default())
                                 // The expanded list shows it in its place. Still
                                 // painted, so it reports the pointer leaving.
                                 .when(refs_open, |pill| pill.opacity(0.))
@@ -1545,6 +1545,12 @@ impl GitCrab {
                                 HistoryColumn::Graph | HistoryColumn::References
                             ),
                         |cell| cell.bg_role(Role::SurfaceCanvas),
+                    )
+                    .when(
+                        entry.column == HistoryColumn::References
+                            && decorations.is_empty()
+                            && !selected,
+                        |cell| cell.block_mouse_except_scroll().cursor_default(),
                     )
                     .when_some(
                         reference_side.filter(|_| entry.column == HistoryColumn::References),
