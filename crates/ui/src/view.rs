@@ -1376,7 +1376,7 @@ impl GitCrab {
             }
             if let Some(index) = index {
                 self.history_scroll
-                    .scroll_to_item(index + 1, ScrollStrategy::Center);
+                    .scroll_to_item(index + usize::from(self.has_wip_row()), ScrollStrategy::Center);
             } else if id.is_none() {
                 self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
             } else {
@@ -2098,8 +2098,10 @@ impl GitCrab {
             let next = (current.map(|i| i as isize).unwrap_or(-1) + delta)
                 .clamp(-1, s.commits.len() as isize - 1);
             let id = (next >= 0).then(|| s.commits[next as usize].id.clone());
-            self.history_scroll
-                .scroll_to_item((next + 1) as usize, ScrollStrategy::Top);
+            self.history_scroll.scroll_to_item(
+                (next + isize::from(self.has_wip_row())).max(0) as usize,
+                ScrollStrategy::Top,
+            );
             self.select(id, window, cx);
         }
     }

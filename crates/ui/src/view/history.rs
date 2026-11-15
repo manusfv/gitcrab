@@ -701,6 +701,7 @@ impl GitCrab {
             graph_content_width(graph_width, self.state.graph.lanes),
         );
         let count = self.state.graph.rows.len();
+        let wip_rows = usize::from(self.has_wip_row());
         let weak = cx.weak_entity();
         let unborn = self
             .state
@@ -741,7 +742,7 @@ impl GitCrab {
                                         .inset_0()
                                     })
                                     .child(
-                                        uniform_list("history", count + 1, move |range, w, cx| {
+                                        uniform_list("history", count + wip_rows, move |range, w, cx| {
                                             weak.update(cx, |v, cx| {
                                                 range
                                                     .map(|i| v.history_row(i, w, cx))
@@ -752,7 +753,7 @@ impl GitCrab {
                                         .track_scroll(&self.history_scroll)
                                         // Size from a commit row, not the WIP row: its
                                         // text input reports an unbounded content width.
-                                        .with_width_from_item(Some(1))
+                                        .with_width_from_item(Some(wip_rows))
                                         .map(|mut el| {
                                             el.style().restrict_scroll_to_axis = Some(true);
                                             el
@@ -854,12 +855,20 @@ impl GitCrab {
             )
             .into_any_element()
     }
+    /// The Working changes row only exists while there is something in it.
+    pub(crate) fn has_wip_row(&self) -> bool {
+        self.state
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| !s.status.is_empty())
+    }
     fn history_row(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let wip_rows = usize::from(self.has_wip_row());
         let height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
             .max(self.preferences.font_size * 20. / 13. + 8.);
         let graph_scrolled = self.graph_scroll.scrolled();
         let graph_max = self.graph_scroll.max();
-        if index == 0 {
+        if wip_rows == 1 && index == 0 {
             // Cap the editor to the message cell so it shrinks before the badges
             // are cut off. Measured from the table's last painted bounds, which
             // track window and pane resizes exactly (unlike the computed pane widths).
@@ -1140,7 +1149,7 @@ impl GitCrab {
                 )
                 .into_any_element();
         }
-        let i = index - 1;
+        let i = index - wip_rows;
         let Some(snap) = &self.state.snapshot else {
             return div().into_any_element();
         };
@@ -1209,7 +1218,7 @@ impl GitCrab {
                     _ => None,
                 })
         };
-        let wip_link = i == 0 && !snap.head_id.is_empty();
+        let wip_link = wip_rows == 1 && i == 0 && !snap.head_id.is_empty();
         let color = row.color;
         let junction = row.is_junction(&incoming);
         let mut el = div()
