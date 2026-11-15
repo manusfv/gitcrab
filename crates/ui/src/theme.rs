@@ -94,10 +94,18 @@ pub fn scaled(base: f32) -> Rems {
 pub fn type_size(cx: &App, base: f32) -> Pixels {
     px(f32::from(Theme::global(cx).font_size) * base / 13.)
 }
-pub const REF_BADGE_HEIGHT: f32 = 22.;
+pub const REF_BADGE_HEIGHT: f32 = 24.;
+/// Text size of the reference labels in the history graph.
+pub const REF_BADGE_FONT_SIZE: f32 = 14.;
+/// Size of the icons inside a reference label.
+pub const REF_BADGE_ICON_SIZE: f32 = 14.;
 pub const REF_TINT: u8 = 0x1f;
 /// The reference label fill while hovered or pressed: lighter than [`REF_TINT`].
 pub const REF_HOVER_TINT: u8 = 0x38;
+/// The checked-out branch's label fill: strong enough to read as highlighted.
+pub const REF_HEAD_TINT: u8 = 0x66;
+/// The checked-out branch's label fill while hovered or pressed.
+pub const REF_HEAD_HOVER_TINT: u8 = 0x80;
 
 pub fn branch_tint(color: usize, opacity: u8) -> Rgba {
     tint(lanes()[color % lanes().len()], opacity)

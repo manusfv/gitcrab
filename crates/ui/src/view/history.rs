@@ -43,7 +43,7 @@ use gitcrab_core::presentation::{resolve_decorations, Decoration, DecorationKind
 fn decoration_marker(decoration: &Decoration) -> Option<AnyElement> {
     let glyph = |name: &str| {
         icon(name)
-            .size(scaled(12.))
+            .size(scaled(REF_BADGE_ICON_SIZE))
             .flex_none()
             .text_role(Role::TextSecondary)
             .into_any_element()
@@ -53,7 +53,7 @@ fn decoration_marker(decoration: &Decoration) -> Option<AnyElement> {
         // HEAD is, so no "HEAD" text. The tooltip and label still say it.
         (DecorationKind::HeadBranch, _) => Some(
             icon("check")
-                .size(scaled(12.))
+                .size(scaled(REF_BADGE_ICON_SIZE))
                 .flex_none()
                 .text_role(Role::TextDefault)
                 .into_any_element(),
@@ -74,7 +74,7 @@ fn decoration_location(decoration: &Decoration) -> Option<AnyElement> {
     };
     Some(
         icon(name)
-            .size(scaled(12.))
+            .size(scaled(REF_BADGE_ICON_SIZE))
             .flex_none()
             .text_role(Role::TextSecondary)
             .into_any_element(),
@@ -810,8 +810,19 @@ impl GitCrab {
                             e.child(
                                 components::tinted_fill(
                                     self.button(("ref-detail", i), ""),
-                                    branch_tint(color, REF_TINT),
-                                    branch_tint(color, REF_HOVER_TINT),
+                                    // The checked-out branch reads as highlighted.
+                                    branch_tint(
+                                        color,
+                                        if checked_out { REF_HEAD_TINT } else { REF_TINT },
+                                    ),
+                                    branch_tint(
+                                        color,
+                                        if checked_out {
+                                            REF_HEAD_HOVER_TINT
+                                        } else {
+                                            REF_HOVER_TINT
+                                        },
+                                    ),
                                     Role::TextDefault,
                                     cx,
                                 )
@@ -820,6 +831,13 @@ impl GitCrab {
                                     div()
                                         .min_w_0()
                                         .truncate()
+                                        // The font sits low in its line box;
+                                        // lift it so it lines up with the icons.
+                                        .relative()
+                                        .top(px(-1.))
+                                        // Set here: the button's inner content
+                                        // overrides a size set on the button.
+                                        .text_size(scaled(REF_BADGE_FONT_SIZE))
                                         .text_role(Role::TextDefault)
                                         .child(refs),
                                 )
@@ -830,7 +848,7 @@ impl GitCrab {
                                 .justify_center()
                                 .items_center()
                                 .overflow_hidden()
-                                .px(px(6.))
+                                .px(px(7.))
                                 .h(scaled(REF_BADGE_HEIGHT))
                                 .tooltip(format!("{label} · Click to preview"))
                                 .on_click(cx.listener({
@@ -847,11 +865,18 @@ impl GitCrab {
                             let id = c.id.clone();
                             e.child(
                                 components::tinted_fill(
-                                    self.button(("ref-more", i), format!("+{others}")),
+                                    self.button(("ref-more", i), ""),
                                     branch_tint(color, REF_TINT),
                                     branch_tint(color, REF_HOVER_TINT),
                                     Role::TextDefault,
                                     cx,
+                                )
+                                .child(
+                                    div()
+                                        .relative()
+                                        .top(px(-1.))
+                                        .text_size(scaled(REF_BADGE_FONT_SIZE))
+                                        .child(format!("+{others}")),
                                 )
                                 .flex_none()
                                 .ml_1()
