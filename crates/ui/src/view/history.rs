@@ -583,8 +583,13 @@ impl GitCrab {
         // No tooltip: a button's tooltip takes its hover listener, which the
         // expanded list needs, and the list already shows the full name.
         .on_click(
-            cx.listener(move |v, _, w, cx| {
-                v.activate_decoration(&decoration, commit.clone(), w, cx)
+            cx.listener(move |v, e: &ClickEvent, w, cx| match &decoration.target {
+                Some((ReferenceKind::LocalBranch, name))
+                    if e.click_count() == 2 && decoration.kind != DecorationKind::HeadBranch =>
+                {
+                    v.run_operation(Operation::Checkout, name.clone(), w, cx);
+                }
+                _ => v.activate_decoration(&decoration, commit.clone(), w, cx),
             }),
         )
     }
