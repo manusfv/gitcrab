@@ -37,6 +37,153 @@ fn wip_editor_width(text_width: f32) -> f32 {
 }
 
 use gitcrab_core::presentation::{resolve_decorations, Decoration, DecorationKind};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+/// How long a hovered reference waits before the rows off its history dim,
+/// and how long they then take to fade.
+const REF_DIM_DELAY: Duration = Duration::from_millis(1000);
+const REF_DIM_FADE: Duration = Duration::from_millis(500);
+/// A ghost reference label, the nearest branch containing an undecorated
+/// commit, is drawn at half opacity, and a little stronger while hovered.
+const GHOST_OPACITY: f32 = 0.5;
+const GHOST_HOVER_OPACITY: f32 = 0.65;
+
+/// Opacity of the branch band that runs from a commit's node to the text
+/// columns, and of a selected row's band, which stands in for the selection
+/// fill there: as strong as the checked-out branch's label.
+const BAND_TINT: u8 = 0x24;
+const SELECTED_BAND_TINT: u8 = REF_HEAD_TINT;
+
+/// Text opacities of the dark theme for the commit list, applied to
+/// white so they blend over the hover and selection fills the same way.
+/// Titles use `--text-normal`; SHA, author and date `--text-disabled`.
+const TITLE_ALPHA: f32 = 0.75;
+const META_ALPHA: f32 = 0.4;
+/// The selected row uses `--text-selected-row` for every column.
+const SELECTED_ALPHA: f32 = 1.;
+/// The message body after the title is drawn at 60% of the title.
+const BODY_FACTOR: f32 = 0.6;
+/// Rows dimmed by a hovered reference or left out by a search use
+/// `--text-dimmed`; selected or hovered ones `--text-dimmed-selected`.
+const DIMMED_ALPHA: f32 = 0.2;
+const DIMMED_SELECTED_ALPHA: f32 = 0.5;
+
+/// Commit-list text at `alpha`: white on the dark palette, black on the
+/// light validation palette.
+fn graph_text(alpha: f32) -> Rgba {
+    let canvas = role_color(Role::SurfaceCanvas);
+    let ink = if canvas.r + canvas.g + canvas.b < 1.5 {
+        1.
+    } else {
+        0.
+    };
+    Rgba {
+        r: ink,
+        g: ink,
+        b: ink,
+        a: alpha,
+    }
+}
+
+/// Text colours of one commit row.
+struct RowText {
+    title: Rgba,
+    meta: Rgba,
+}
+
+impl RowText {
+    /// `dim` is how far the row has faded, 0 to 1: off a hovered reference's
+    /// history (animated), or 1 when a search leaves it out.
+    fn new(selected: bool, hovered: bool, dim: f32) -> Self {
+        let dimmed = if selected || hovered {
+            DIMMED_SELECTED_ALPHA
+        } else {
+            DIMMED_ALPHA
+        };
+        let fade = |base: f32| base + (dimmed - base) * dim;
+        let (title, meta) = if selected {
+            (fade(SELECTED_ALPHA), fade(SELECTED_ALPHA))
+        } else {
+            (fade(TITLE_ALPHA), fade(META_ALPHA))
+        };
+        Self {
+            title: graph_text(title),
+            meta: graph_text(meta),
+        }
+    }
+}
+
+/// Pointer state of the history graph.
+#[derive(Default)]
+pub(super) struct HistoryHover {
+    /// Commit row (0 is the newest commit) under the pointer.
+    row: Option<usize>,
+    /// The pointer is on the working-changes row.
+    wip: bool,
+    /// Row whose references are expanded into a list of every label.
+    refs_row: Option<usize>,
+    /// Parts of that row's references under the pointer (see [`RefsPart`]).
+    /// Buttons take the hover from what lies beneath them, so each part
+    /// reports its own; the list stays open while any of them is hovered.
+    refs_over: Vec<RefsPart>,
+    highlight: Option<RefHighlight>,
+    /// Waits out [`REF_DIM_DELAY`] and runs the fade; dropping it cancels both.
+    dim_task: Option<Task<()>>,
+}
+
+/// The rows on a hovered reference's history.
+struct RefHighlight {
+    /// The decorated row the reference points at.
+    row: usize,
+    reachable: Rc<Vec<bool>>,
+    /// How far the other rows have faded, from 0 to 1.
+    dim: f32,
+}
+
+/// A hoverable part of a row's references.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RefsPart {
+    Cell,
+    InlineLabel,
+    List,
+    ListLabel(usize),
+}
+
+impl HistoryHover {
+    fn refs_open(&self, row: usize) -> bool {
+        self.refs_row == Some(row) && !self.refs_over.is_empty()
+    }
+
+    /// The commit row counts as hovered: the pointer is on it, but not on
+    /// its references. The references column (and the
+    /// list it expands into) is a zone of its own that does not hover the row.
+    fn row_hovered(&self, row: usize) -> bool {
+        self.row == Some(row) && !self.refs_open(row)
+    }
+
+    /// How far `row` has faded for being off the hovered reference's history.
+    fn dim(&self, row: usize) -> f32 {
+        self.highlight
+            .as_ref()
+            .filter(|h| !h.reachable.get(row).copied().unwrap_or(true))
+            .map_or(0., |h| h.dim)
+    }
+}
+
+/// The decoration shown inline: the checked-out branch, else the first that
+/// is not a detached `HEAD`, else the first.
+fn primary_decoration(decorations: &[Decoration]) -> Option<usize> {
+    decorations
+        .iter()
+        .position(|d| d.kind == DecorationKind::HeadBranch)
+        .or_else(|| {
+            decorations
+                .iter()
+                .position(|d| d.kind != DecorationKind::Head)
+        })
+        .or((!decorations.is_empty()).then_some(0))
+}
 
 /// A type marker drawn before a decoration's name so tags, remotes and HEAD
 /// stay distinct.
@@ -288,8 +435,255 @@ impl GitCrab {
         }
     }
 
+    fn hover_history_row(&mut self, row: usize, hovered: bool, cx: &mut Context<Self>) {
+        let hover = &mut self.history_hover;
+        let before = hover.row;
+        if hovered {
+            hover.row = Some(row);
+        } else if hover.row == Some(row) {
+            hover.row = None;
+        }
+        if hover.row != before {
+            // On another row, no part of an expanded list is under the
+            // pointer, even one whose leave was lost when it scrolled away.
+            if hovered && hover.refs_row.is_some_and(|refs| refs != row) {
+                hover.refs_over.clear();
+                hover.refs_row = None;
+                self.update_ref_highlight(cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Records the pointer entering or leaving a part of `row`'s references.
+    /// Closes the expanded list once it has left every part, and highlights
+    /// the hovered reference's history.
+    fn hover_refs(&mut self, row: usize, part: RefsPart, hovered: bool, cx: &mut Context<Self>) {
+        let hover = &mut self.history_hover;
+        if hovered {
+            if hover.refs_row != Some(row) {
+                hover.refs_over.clear();
+                hover.refs_row = Some(row);
+            }
+            if !hover.refs_over.contains(&part) {
+                hover.refs_over.push(part);
+            }
+        } else if hover.refs_row == Some(row) {
+            hover.refs_over.retain(|over| *over != part);
+        }
+        if hover.refs_over.is_empty() {
+            hover.refs_row = None;
+        }
+        self.update_ref_highlight(cx);
+    }
+
+    /// Highlights the history of the reference under the pointer, dimming
+    /// the other rows after [`REF_DIM_DELAY`].
+    fn update_ref_highlight(&mut self, cx: &mut Context<Self>) {
+        let hover = &self.history_hover;
+        let source = hover
+            .refs_row
+            .and_then(|row| self.ref_highlight_source(row));
+        if self.history_hover.highlight.as_ref().map(|h| h.row) != source {
+            self.history_hover.dim_task = None;
+            self.history_hover.highlight = source.map(|row| RefHighlight {
+                row,
+                reachable: Rc::new(self.state.graph.reachable_from(row)),
+                dim: 0.,
+            });
+            if source.is_some() {
+                self.history_hover.dim_task = Some(cx.spawn(async move |view, cx| {
+                    cx.background_executor().timer(REF_DIM_DELAY).await;
+                    let start = Instant::now();
+                    loop {
+                        let t =
+                            (start.elapsed().as_secs_f32() / REF_DIM_FADE.as_secs_f32()).min(1.);
+                        let updated = view.update(cx, |v, cx| {
+                            if let Some(h) = v.history_hover.highlight.as_mut() {
+                                h.dim = t;
+                            }
+                            cx.notify();
+                        });
+                        if updated.is_err() || t >= 1. {
+                            break;
+                        }
+                        cx.background_executor()
+                            .timer(Duration::from_millis(16))
+                            .await;
+                    }
+                }));
+            }
+        }
+        cx.notify();
+    }
+
+    /// The decorated row whose history hovering `row`'s references highlights.
+    /// A ghost label highlights only on the selected row.
+    fn ref_highlight_source(&self, row: usize) -> Option<usize> {
+        let snapshot = self.state.snapshot.as_ref()?;
+        let commit = snapshot.commits.get(row)?;
+        if !commit.refs.is_empty() {
+            Some(row)
+        } else if self.state.selected.as_deref() == Some(commit.id.as_str()) {
+            self.state.graph.ghost_source(row)
+        } else {
+            None
+        }
+    }
+
+    /// A reference label for `decoration`, tinted with its row's lane colour.
+    #[allow(clippy::too_many_arguments)]
+    fn ref_pill(
+        &self,
+        id: impl Into<ElementId>,
+        decoration: Decoration,
+        commit: String,
+        color: usize,
+        truncate: bool,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let checked_out = decoration.kind == DecorationKind::HeadBranch;
+        let marker = decoration_marker(&decoration);
+        let location = decoration_location(&decoration);
+        let name = div()
+            // The font sits low in its line box; lift it so it lines up with the icons.
+            .relative()
+            .top(px(-1.))
+            // Set here: the button's inner content overrides a size set on the button.
+            .text_size(scaled(REF_BADGE_FONT_SIZE))
+            .text_role(Role::TextDefault)
+            .when(truncate, |name| name.min_w_0().truncate())
+            .when(!truncate, |name| name.flex_none().whitespace_nowrap())
+            .child(decoration.name.clone());
+        components::tinted_fill(
+            self.button(id, ""),
+            // The checked-out branch reads as highlighted.
+            branch_tint(color, if checked_out { REF_HEAD_TINT } else { REF_TINT }),
+            branch_tint(
+                color,
+                if checked_out {
+                    REF_HEAD_HOVER_TINT
+                } else {
+                    REF_HOVER_TINT
+                },
+            ),
+            Role::TextDefault,
+            cx,
+        )
+        .children(marker)
+        .child(name)
+        .children(location)
+        .gap_1()
+        .justify_center()
+        .items_center()
+        .px(px(7.))
+        .h(scaled(REF_BADGE_HEIGHT))
+        // No tooltip: a button's tooltip takes its hover listener, which the
+        // expanded list needs, and the list already shows the full name.
+        .on_click(
+            cx.listener(move |v, _, w, cx| {
+                v.activate_decoration(&decoration, commit.clone(), w, cx)
+            }),
+        )
+    }
+
+    /// Every label of a row, stacked over its references cell while the cell
+    /// is hovered, so names cut short or hidden behind `+N` can be read and
+    /// picked. The primary label comes first, in its inline place.
+    #[allow(clippy::too_many_arguments)]
+    fn expanded_refs(
+        &self,
+        row: usize,
+        decorations: &[Decoration],
+        primary: usize,
+        commit: &str,
+        color: usize,
+        ghost: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let order =
+            std::iter::once(primary).chain((0..decorations.len()).filter(|i| *i != primary));
+        let pills = order
+            .map(|index| {
+                div()
+                    .flex_none()
+                    // An opaque backing, so rows below don't show through the tint.
+                    .bg_role(Role::SurfaceCanvas)
+                    .rounded(px(4.))
+                    .child({
+                        let view = cx.weak_entity();
+                        self.ref_pill(
+                            ("ref-expanded", row * 64 + index.min(63)),
+                            decorations[index].clone(),
+                            commit.to_owned(),
+                            color,
+                            false,
+                            cx,
+                        )
+                        .when(ghost, |pill| {
+                            pill.opacity(
+                                if self
+                                    .history_hover
+                                    .refs_over
+                                    .contains(&RefsPart::ListLabel(index))
+                                {
+                                    GHOST_HOVER_OPACITY
+                                } else {
+                                    GHOST_OPACITY
+                                },
+                            )
+                        })
+                        .on_hover(move |hovered, _, cx| {
+                            let _ = view.update(cx, |v, cx| {
+                                v.hover_refs(row, RefsPart::ListLabel(index), *hovered, cx)
+                            });
+                        })
+                    })
+            })
+            .collect::<Vec<_>>();
+        let lift = window.rem_size() * (REF_BADGE_HEIGHT / 13. / 2.);
+        div()
+            .size_0()
+            .flex_none()
+            .child(
+                deferred(
+                    anchored()
+                        .anchor(Anchor::TopLeft)
+                        .offset(point(px(0.), -lift))
+                        .snap_to_window_with_margin(px(4.))
+                        .child(
+                            div()
+                                .id(("ref-expanded-list", row))
+                                .occlude()
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .gap(px(2.))
+                                .children(pills)
+                                .on_hover(cx.listener(move |v, hovered: &bool, _, cx| {
+                                    v.hover_refs(row, RefsPart::List, *hovered, cx)
+                                })),
+                        ),
+                )
+                .with_priority(1),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn history(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.prepare_column_drag(window, cx);
+        // Row numbers from before a refresh may name other commits now.
+        let rows = self.state.graph.rows.len();
+        if self
+            .history_hover
+            .highlight
+            .as_ref()
+            .is_some_and(|h| h.reachable.len() != rows)
+            || self.history_hover.row.is_some_and(|row| row >= rows)
+        {
+            self.history_hover = HistoryHover::default();
+        }
         self.history_layout = self.history_columns.adapted(
             self.history_available - self.history_gutter() - f32::from(SCROLLBAR_GUTTER),
             self.preferences.font_size / 13.,
@@ -505,6 +899,14 @@ impl GitCrab {
                 .snapshot
                 .as_ref()
                 .is_some_and(|s| !s.head_id.is_empty());
+            // As on commit rows, the hover fill covers the text columns only.
+            let wip_selected = self.state.selected.is_none();
+            let wip_hover_fill = self.history_hover.wip && !wip_selected;
+            let band_tint = if wip_selected {
+                SELECTED_BAND_TINT
+            } else {
+                BAND_TINT
+            };
             return div()
                 .id("wip-row")
                 .cursor_pointer()
@@ -517,16 +919,17 @@ impl GitCrab {
                 .text_role(Role::ActionPrimary)
                 .bg(rgb(if self.state.selected.is_none() {
                     semantic(Role::SurfaceWipSelected)
+                } else if wip_hover_fill {
+                    semantic(Role::InteractionHover)
                 } else {
                     semantic(Role::SurfaceCanvas)
                 }))
-                .hover(|s| {
-                    s.bg(rgb(if self.state.selected.is_none() {
-                        semantic(Role::InteractionSelected)
-                    } else {
-                        semantic(Role::InteractionHover)
-                    }))
-                })
+                .on_hover(cx.listener(|v, hovered: &bool, _, cx| {
+                    if v.history_hover.wip != *hovered {
+                        v.history_hover.wip = *hovered;
+                        cx.notify();
+                    }
+                }))
                 .children(self.history_layout.visible().map(|entry| {
                     let cell = match entry.column {
                         HistoryColumn::Graph => (canvas(
@@ -549,7 +952,7 @@ impl GitCrab {
                                     band_y,
                                     band_y + band_height,
                                     band_right,
-                                    branch_tint(wip_color, 0x24),
+                                    branch_tint(wip_color, band_tint),
                                 );
                                 w.paint_quad(fill(
                                     Bounds::new(
@@ -686,7 +1089,17 @@ impl GitCrab {
                             .into_any_element(),
                         _ => div().into_any_element(),
                     };
-                    self.history_cell(entry).child(cell).into_any_element()
+                    self.history_cell(entry)
+                        .when(
+                            (wip_hover_fill || wip_selected)
+                                && matches!(
+                                    entry.column,
+                                    HistoryColumn::Graph | HistoryColumn::References
+                                ),
+                            |cell| cell.bg_role(Role::SurfaceCanvas),
+                        )
+                        .child(cell)
+                        .into_any_element()
                 }))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -724,28 +1137,39 @@ impl GitCrab {
         }
 
         let decorations = resolve_decorations(snap, &c.refs);
-        let primary = decorations
-            .iter()
-            .position(|d| d.kind == DecorationKind::HeadBranch)
-            .or_else(|| {
-                decorations
-                    .iter()
-                    .position(|d| d.kind != DecorationKind::Head)
-            })
-            .or((!decorations.is_empty()).then_some(0));
-        let full_refs = decorations
-            .iter()
-            .map(Decoration::label)
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let others = decorations.len().saturating_sub(1);
-        let primary = primary.map(|index| decorations[index].clone());
-        let checked_out = primary
-            .as_ref()
-            .is_some_and(|d| d.kind == DecorationKind::HeadBranch);
-        let refs = primary.as_ref().map(|d| d.name.clone()).unwrap_or_default();
+        let hover = &self.history_hover;
+        // An undecorated commit that is hovered or selected shows the nearest
+        // branch containing it as a faded "ghost" label.
+        let row_hovered = hover.row_hovered(i);
+        let ghost = decorations.is_empty() && (row_hovered || selected);
+        let (labels, ghost) = match ghost.then(|| self.state.graph.ghost_source(i)).flatten() {
+            Some(source) => (resolve_decorations(snap, &snap.commits[source].refs), true),
+            None => (decorations.clone(), false),
+        };
+        let primary_index = primary_decoration(&labels);
+        let others = labels.len().saturating_sub(1);
+        let refs_open = primary_index.is_some() && hover.refs_open(i);
+        let mut expanded = primary_index.filter(|_| refs_open).map(|primary| {
+            self.expanded_refs(i, &labels, primary, &c.id, row.color, ghost, window, cx)
+        });
+        let primary = primary_index.map(|index| labels[index].clone());
+        let checked_out = !ghost
+            && primary
+                .as_ref()
+                .is_some_and(|d| d.kind == DecorationKind::HeadBranch);
+        let dim = hover.dim(i);
+        // Hover fills only the text columns of a row; the graph
+        // and references columns keep the canvas behind them.
+        let hover_fill = row_hovered && !selected;
+        let band_tint = if selected {
+            SELECTED_BAND_TINT
+        } else {
+            BAND_TINT
+        };
+        // Text colours; a search dims the rows it leaves out.
+        let ink = RowText::new(selected, row_hovered, if matched { dim } else { 1. });
         let columns = &self.history_layout;
-        let reference_side = if refs.is_empty() {
+        let reference_side = if decorations.is_empty() {
             None
         } else {
             columns
@@ -771,23 +1195,14 @@ impl GitCrab {
             .cursor_pointer()
             .overflow_hidden()
             .when(selected, |e| e.bg_role(Role::InteractionSelected))
-            .hover(|s| {
-                s.bg(rgb(if selected {
-                    semantic(Role::InteractionSelected)
-                } else {
-                    semantic(Role::InteractionHover)
-                }))
-            })
-            .text_color(rgb(if matched {
-                semantic(Role::TextDefault)
-            } else {
-                semantic(Role::TextMuted)
-            }))
+            .when(hover_fill, |e| e.bg_role(Role::InteractionHover))
+            .text_color(ink.title)
+            .on_hover(
+                cx.listener(move |v, hovered: &bool, _, cx| v.hover_history_row(i, *hovered, cx)),
+            )
             .children(self.history_layout.visible().map(|entry| {
                 let row = row.clone();
                 let incoming = incoming.clone();
-                let refs = refs.clone();
-                let full_refs = full_refs.clone();
                 let cell = match entry.column {
                     HistoryColumn::References => (div()
                         .id(("refs", i))
@@ -798,120 +1213,66 @@ impl GitCrab {
                         .overflow_hidden()
                         .text_size(scaled(12.))
                         .text_role(Role::TextDefault)
+                        .on_hover(cx.listener(move |v, hovered: &bool, _, cx| {
+                            v.hover_refs(i, RefsPart::Cell, *hovered, cx)
+                        }))
                         // The link runs from the label's edge to the graph,
                         // so the label can stay the size of its content.
                         .when(matches!(reference_side, Some(ReferenceSide::Right)), |e| {
                             e.child(reference_link_filler(color, checked_out))
                         })
+                        // The expanded list starts where the inline label does.
+                        .children(expanded.take())
                         .when_some(primary.clone(), |e, primary| {
-                            let marker = decoration_marker(&primary);
-                            let location = decoration_location(&primary);
-                            let label = primary.label();
                             e.child(
-                                components::tinted_fill(
-                                    self.button(("ref-detail", i), ""),
-                                    // The checked-out branch reads as highlighted.
-                                    branch_tint(
-                                        color,
-                                        if checked_out { REF_HEAD_TINT } else { REF_TINT },
-                                    ),
-                                    branch_tint(
-                                        color,
-                                        if checked_out {
-                                            REF_HEAD_HOVER_TINT
-                                        } else {
-                                            REF_HOVER_TINT
-                                        },
-                                    ),
-                                    Role::TextDefault,
+                                self.ref_pill(
+                                    ("ref-detail", i),
+                                    primary,
+                                    c.id.clone(),
+                                    color,
+                                    true,
                                     cx,
                                 )
-                                .children(marker)
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        // The font sits low in its line box;
-                                        // lift it so it lines up with the icons.
-                                        .relative()
-                                        .top(px(-1.))
-                                        // Set here: the button's inner content
-                                        // overrides a size set on the button.
-                                        .text_size(scaled(REF_BADGE_FONT_SIZE))
-                                        .text_role(Role::TextDefault)
-                                        .child(refs),
-                                )
-                                .children(location)
                                 .flex_shrink(1.)
                                 .min_w_0()
-                                .gap_1()
-                                .justify_center()
-                                .items_center()
                                 .overflow_hidden()
-                                .px(px(7.))
-                                .h(scaled(REF_BADGE_HEIGHT))
-                                .tooltip(format!("{label} · Click to preview"))
-                                .on_click(cx.listener({
-                                    let id = c.id.clone();
-                                    move |v, _, w, cx| {
-                                        v.activate_decoration(&primary, id.clone(), w, cx)
-                                    }
-                                })),
+                                .when(ghost, |pill| pill.opacity(GHOST_OPACITY))
+                                // The expanded list shows it in its place. Still
+                                // painted, so it reports the pointer leaving.
+                                .when(refs_open, |pill| pill.opacity(0.))
+                                .on_hover(cx.listener(
+                                    move |v, hovered: &bool, _, cx| {
+                                        v.hover_refs(i, RefsPart::InlineLabel, *hovered, cx)
+                                    },
+                                )),
                             )
                         })
                         .when(others > 0, |e| {
-                            let weak = cx.weak_entity();
-                            let entries = decorations.clone();
-                            let id = c.id.clone();
                             e.child(
-                                components::tinted_fill(
-                                    self.button(("ref-more", i), ""),
-                                    branch_tint(color, REF_TINT),
-                                    branch_tint(color, REF_HOVER_TINT),
-                                    Role::TextDefault,
-                                    cx,
-                                )
-                                .child(
-                                    div()
-                                        .relative()
-                                        .top(px(-1.))
-                                        .text_size(scaled(REF_BADGE_FONT_SIZE))
-                                        .child(format!("+{others}")),
-                                )
-                                .flex_none()
-                                .ml_1()
-                                .h(scaled(REF_BADGE_HEIGHT))
-                                .px(px(4.))
-                                .tooltip(format!("{others} more · Open the list of references"))
-                                .dropdown_menu(
-                                    move |mut menu, _, _| {
-                                        for entry in &entries {
-                                            let weak = weak.clone();
-                                            let entry_for_click = entry.clone();
-                                            let id = id.clone();
-                                            menu = menu.item(
-                                                components::menu_item(entry.label(), true)
-                                                    .on_click(move |_, w, cx| {
-                                                        let _ = weak.update(cx, |v, cx| {
-                                                            v.activate_decoration(
-                                                                &entry_for_click,
-                                                                id.clone(),
-                                                                w,
-                                                                cx,
-                                                            )
-                                                        });
-                                                    }),
-                                            );
-                                        }
-                                        menu
-                                    },
-                                ),
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .ml_1()
+                                    .h(scaled(REF_BADGE_HEIGHT))
+                                    .px(px(4.))
+                                    .rounded(px(4.))
+                                    .bg(branch_tint(color, REF_TINT))
+                                    .when(ghost, |count| count.opacity(GHOST_OPACITY))
+                                    // Hide the count while the list is open.
+                                    .when(refs_open, |count| count.invisible())
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .top(px(-1.))
+                                            .text_size(scaled(REF_BADGE_FONT_SIZE))
+                                            .child(format!("+{others}")),
+                                    ),
                             )
                         })
                         .when(matches!(reference_side, Some(ReferenceSide::Left)), |e| {
                             e.child(reference_link_filler(color, checked_out))
-                        })
-                        .tooltip(move |w, cx| Tooltip::new(full_refs.clone()).build(w, cx)))
+                        }))
                     .into_any_element(),
                     HistoryColumn::Graph => {
                         let outgoing = outgoing.clone();
@@ -933,7 +1294,7 @@ impl GitCrab {
                                             point(center_x, band_y),
                                             size(band_right - center_x, band_height),
                                         ),
-                                        branch_tint(color, 0x24),
+                                        branch_tint(color, band_tint),
                                     ));
                                     w.paint_quad(fill(
                                         Bounds::new(
@@ -1050,8 +1411,9 @@ impl GitCrab {
                             SharedString::from(format!("{}  {}", c.subject, c.body_preview))
                         };
                         let preview = HighlightStyle {
-                            color: Some(role_color(Role::TextSecondary).into()),
-                            font_weight: Some(FontWeight::NORMAL),
+                            // Faded, not recoloured: a highlight colour blends over the
+                            // title colour and keeps its alpha, so it would not dim.
+                            fade_out: Some(1. - BODY_FACTOR),
                             ..Default::default()
                         };
                         let highlights = (!c.body_preview.is_empty())
@@ -1061,7 +1423,6 @@ impl GitCrab {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .when(selected, |e| e.font_weight(FontWeight::MEDIUM))
                             .py(px(3.))
                             .child(StyledText::new(text).with_highlights(highlights))
                             // The full subject stays available when the column clips it.
@@ -1075,22 +1436,31 @@ impl GitCrab {
                         .truncate()
                         .text_size(scaled(12.))
                         .font_family(CODE_FONT)
-                        .text_role(Role::TextSecondary)
+                        .text_color(ink.meta)
                         .child(c.id[..8.min(c.id.len())].to_string()))
                     .into_any_element(),
                     HistoryColumn::Author => div()
                         .truncate()
-                        .text_role(Role::TextSecondary)
+                        .text_color(ink.meta)
                         .child(c.author.clone())
                         .into_any_element(),
                     HistoryColumn::Date => div()
                         .truncate()
                         .text_size(scaled(12.))
-                        .text_role(Role::TextSecondary)
+                        .text_color(ink.meta)
                         .child(display_date(&c.date))
                         .into_any_element(),
                 };
                 self.history_cell(entry)
+                    // Hover and selection fill only the text columns; a selected row's graph band shows it instead.
+                    .when(
+                        (hover_fill || selected)
+                            && matches!(
+                                entry.column,
+                                HistoryColumn::Graph | HistoryColumn::References
+                            ),
+                        |cell| cell.bg_role(Role::SurfaceCanvas),
+                    )
                     .when_some(
                         reference_side.filter(|_| entry.column == HistoryColumn::References),
                         |frame, side| {

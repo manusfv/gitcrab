@@ -13,6 +13,37 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// The row whose refs name the nearest branch containing `row`'s commit,
+    /// shown as a "ghost" label when `row` has no refs of its own. `None` when
+    /// `row` has refs itself or no loaded descendant has any.
+    pub fn ghost_source(&self, row: usize) -> Option<usize> {
+        self.rows
+            .get(row)
+            .and_then(|data| data.ref_source)
+            .map(|source| source as usize)
+            .filter(|source| *source != row)
+    }
+
+    /// Marks the rows whose commits are reachable from `row`'s commit,
+    /// including itself: the history of a ref pointing at `row`.
+    pub fn reachable_from(&self, row: usize) -> Vec<bool> {
+        let mut seen = vec![false; self.rows.len()];
+        let mut stack = vec![row];
+        while let Some(next) = stack.pop() {
+            if next >= seen.len() || seen[next] {
+                continue;
+            }
+            seen[next] = true;
+            stack.extend(
+                self.rows[next]
+                    .parents
+                    .iter()
+                    .map(|parent| *parent as usize),
+            );
+        }
+        seen
+    }
+
     /// Returns the segments from `row` to the next row, including passing lanes.
     ///
     /// # Panics
@@ -54,6 +85,13 @@ pub struct GraphRow {
     edges: Vec<Edge>,
     // Passing lanes that meet the next row's commit.
     joins: Vec<Edge>,
+    /// Rows of this commit's parents that are in the loaded history.
+    #[serde(default)]
+    parents: Vec<u32>,
+    /// The nearest row at or above this one whose commit has refs and
+    /// contains this one, preferring first-parent links.
+    #[serde(default)]
+    ref_source: Option<u32>,
 }
 impl GraphRow {
     /// Reports whether multiple paths meet at this node from either direction.
@@ -248,6 +286,7 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
             color,
             edges,
             joins: Vec::new(),
+            ..Default::default()
         });
         while lanes.last().is_some_and(Option::is_none) {
             lanes.pop();
@@ -258,7 +297,47 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
             close_pass(&mut graph.pass_through, index, active, commits.len());
         }
     }
+    link_ancestry(&mut graph, commits);
     graph
+}
+
+/// Fills in each row's loaded parents and the nearest decorated row that
+/// contains it. Rows come child before parent, so one pass downwards sees
+/// every child of a commit before the commit itself.
+fn link_ancestry(graph: &mut Graph, commits: &[Commit]) {
+    let index: std::collections::HashMap<&str, u32> = commits
+        .iter()
+        .enumerate()
+        .map(|(row, commit)| (commit.id.as_str(), row as u32))
+        .collect();
+    // The source handed down to each row, and whether a first parent link
+    // handed it down; a first-parent link replaces one from a merge.
+    let mut inherited: Vec<Option<(u32, bool)>> = vec![None; commits.len()];
+    for ((row, commit), data) in commits.iter().enumerate().zip(&mut graph.rows) {
+        data.parents = commit
+            .parents
+            .iter()
+            .filter_map(|parent| index.get(parent.as_str()).copied())
+            .collect();
+        data.ref_source = if commit.refs.is_empty() {
+            inherited[row].map(|(source, _)| source)
+        } else {
+            Some(row as u32)
+        };
+        let Some(source) = data.ref_source else {
+            continue;
+        };
+        for (k, parent) in commit.parents.iter().enumerate() {
+            let Some(&parent) = index.get(parent.as_str()) else {
+                continue;
+            };
+            let first = k == 0;
+            let slot = &mut inherited[parent as usize];
+            if slot.is_none() || first && slot.is_some_and(|(_, via_first)| !via_first) {
+                *slot = Some((source, first));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +350,65 @@ mod tests {
             ..Default::default()
         }
     }
+    fn r(id: &str, parents: &[&str], refs: &[&str]) -> Commit {
+        Commit {
+            refs: refs.iter().map(|s| (*s).into()).collect(),
+            ..c(id, parents)
+        }
+    }
+
+    #[test]
+    fn ghost_source_names_the_nearest_containing_ref() {
+        // main: m2 -> m1 -> base; feature: f1 -> base, merged nowhere.
+        let commits = [
+            r("m2", &["m1"], &["main"]),
+            r("f1", &["base"], &["feature"]),
+            c("m1", &["base"]),
+            c("base", &[]),
+        ];
+        let graph = layout(&commits);
+        assert_eq!(graph.ghost_source(0), None, "a row with refs has no ghost");
+        assert_eq!(graph.ghost_source(2), Some(0));
+        // Both reach base by a first parent; the nearer row, f1, names it.
+        assert_eq!(graph.ghost_source(3), Some(1));
+    }
+
+    #[test]
+    fn ghost_source_prefers_first_parent_over_an_earlier_merge() {
+        // The merge's second parent is the feature tip; its own branch names it.
+        let commits = [
+            r("merge", &["m1", "f1"], &["main"]),
+            r("f1", &["base"], &["feature"]),
+            c("m1", &["base"]),
+            c("base", &[]),
+        ];
+        let graph = layout(&commits);
+        assert_eq!(graph.ghost_source(1), None);
+        assert_eq!(graph.ghost_source(2), Some(0));
+        assert_eq!(
+            graph.ghost_source(3),
+            Some(1),
+            "f1 reaches base by its first parent"
+        );
+    }
+
+    #[test]
+    fn reachable_from_follows_every_parent() {
+        let commits = [
+            r("merge", &["m1", "f1"], &["main"]),
+            r("other", &["base"], &["other"]),
+            c("f1", &["base"]),
+            c("m1", &["base"]),
+            c("base", &[]),
+        ];
+        let graph = layout(&commits);
+        assert_eq!(graph.reachable_from(0), vec![true, false, true, true, true]);
+        assert_eq!(
+            graph.reachable_from(1),
+            vec![false, true, false, false, true]
+        );
+    }
+
     #[test]
     #[ignore = "repeatable graph allocation and timing fixture"]
     fn benchmark_graph_layout() {

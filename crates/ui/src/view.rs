@@ -403,6 +403,9 @@ pub struct GitCrab {
     single_pane: bool,
     /// History columns as displayed this frame, adapted to the pane width.
     history_layout: gitcrab_core::history_columns::HistoryColumns,
+    /// What the pointer is over in the history graph, and the reference
+    /// whose history it highlights.
+    history_hover: history::HistoryHover,
     /// The open repository's own history column layout, as the user edits it.
     history_columns: gitcrab_core::history_columns::HistoryColumns,
     /// Preference key of the repository `history_columns` belongs to.
@@ -605,6 +608,7 @@ impl GitCrab {
             references_open: false,
             single_pane: false,
             history_layout: Default::default(),
+            history_hover: Default::default(),
             history_columns: Default::default(),
             history_columns_repository: None,
             history_available: 0.,
