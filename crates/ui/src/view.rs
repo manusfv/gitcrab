@@ -1375,8 +1375,10 @@ impl GitCrab {
                 );
             }
             if let Some(index) = index {
-                self.history_scroll
-                    .scroll_to_item(index + usize::from(self.has_wip_row()), ScrollStrategy::Center);
+                self.history_scroll.scroll_to_item(
+                    index + usize::from(self.has_wip_row()),
+                    ScrollStrategy::Center,
+                );
             } else if id.is_none() {
                 self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
             } else {
