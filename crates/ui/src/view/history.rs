@@ -1165,7 +1165,7 @@ impl GitCrab {
             .checked_sub(1)
             .map(|p| self.state.graph.edges_at(p))
             .unwrap_or_default();
-        if i == 0 && !snap.head_id.is_empty() {
+        if wip_rows == 1 && i == 0 && !snap.head_id.is_empty() {
             incoming.push(gitcrab_core::graph::Edge {
                 from_lane: 0,
                 to_lane: 0,
