@@ -125,10 +125,7 @@ isolated repositories using the Git on PATH. Set `GITCRAB_TEST_GIT` to an absolu
 executable path to test a specific Git installation.
 
 The [architecture notes](docs/architecture.md) describe which module owns
-each part of the state and its effects, and
-native qualification covers the renderer
-smoke test. The behavior decisions define repository trust,
-confirmation lifetime, bulk staging scope, and draft recovery.
+each part of the state and its effects.
 
 CI injects the verified checkout revision into its release binary. Other builds
 identify themselves as `local build` or `source archive`. Builds with
