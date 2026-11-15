@@ -61,9 +61,10 @@ fn command_glyph(command: Command) -> &'static str {
 
 const GRAPH_LANE_PITCH: f32 = geometry::SIZE_GRAPH_LANE_PITCH;
 const GRAPH_LANE_INSET: f32 = 35.;
-// At the minimum width, the rightmost drawable lane is the first lane.
-const GRAPH_RIGHT_INSET: f32 =
-    gitcrab_core::history_columns::HistoryColumn::Graph.minimum_width() - GRAPH_LANE_INSET;
+/// Room after the last lane, so its node and band edge stay clear of the column edge.
+const GRAPH_LANE_END: f32 = 16.;
+/// Width of the shade over a graph edge that hides scrolled-out lanes.
+const GRAPH_EDGE_SHADE: f32 = 18.;
 
 fn local_author_images() -> std::collections::HashMap<String, std::path::PathBuf> {
     let Some(directory) = std::env::var_os("GITCRAB_AVATAR_DIR") else {
@@ -95,21 +96,71 @@ fn snap_graph_stroke_center(center: Pixels, scale: f32) -> Pixels {
     px(edge) + half_stroke
 }
 
+/// Whether a graph column this wide shows every lane on the first one.
+fn graph_collapsed(width: f32) -> bool {
+    width <= gitcrab_core::history_columns::HistoryColumn::Graph.minimum_width() + 0.5
+}
+
+/// The width the lanes need in a graph column `width` wide. A minimized column
+/// collapses them, so it never needs more than its own width.
+fn graph_content_width(width: f32, lane_count: usize) -> f32 {
+    if graph_collapsed(width) {
+        width
+    } else {
+        GRAPH_LANE_INSET + lane_count.saturating_sub(1) as f32 * GRAPH_LANE_PITCH + GRAPH_LANE_END
+    }
+}
+
+/// Lane centres in a graph cell: a fixed pitch, shifted left
+/// by how far the column is `scrolled`. A minimized column puts every lane on
+/// the first.
 fn graph_lane_positions(
     bounds: Bounds<Pixels>,
-    lane_count: usize,
     scale: f32,
+    scrolled: f32,
 ) -> impl Fn(usize) -> Pixels {
-    let span = (f32::from(bounds.size.width) - GRAPH_LANE_INSET - GRAPH_RIGHT_INSET).max(0.);
-    let span = (span * scale).floor();
-    let gaps = lane_count.saturating_sub(1).max(1) as f32;
-    let min_pitch = (f32::from(graph_stroke(scale)) * scale).round();
-    let max_pitch = (GRAPH_LANE_PITCH * scale).round();
-    let pitch = (span / gaps).floor().clamp(min_pitch, max_pitch);
-    // If the strokes no longer fit side by side, share the last full slot.
-    let last_lane = (span / pitch) as usize;
-    let first = snap_graph_stroke_center(bounds.origin.x + px(GRAPH_LANE_INSET), scale);
-    move |lane| first + px(lane.min(last_lane) as f32 * pitch / scale)
+    let collapsed = graph_collapsed(f32::from(bounds.size.width));
+    let pitch = (GRAPH_LANE_PITCH * scale).round();
+    // Whole device pixels, so scrolled strokes stay crisp.
+    let scrolled = (scrolled.max(0.) * scale).round() / scale;
+    let first = snap_graph_stroke_center(bounds.origin.x + px(GRAPH_LANE_INSET - scrolled), scale);
+    move |lane| {
+        if collapsed {
+            first
+        } else {
+            first + px(lane as f32 * pitch / scale)
+        }
+    }
+}
+
+/// Shades the graph cell's edges where lanes are scrolled out of view.
+fn paint_graph_edge_shades(w: &mut Window, bounds: Bounds<Pixels>, scrolled: f32, max: f32) {
+    let shade = hsla(0., 0., 0., 0.55);
+    let clear = shade.alpha(0.);
+    let width = px(GRAPH_EDGE_SHADE).min(bounds.size.width / 2.);
+    if scrolled > 0.5 {
+        w.paint_quad(fill(
+            Bounds::new(bounds.origin, size(width, bounds.size.height)),
+            linear_gradient(
+                90.,
+                linear_color_stop(shade, 0.),
+                linear_color_stop(clear, 1.),
+            ),
+        ));
+    }
+    if max - scrolled > 0.5 {
+        w.paint_quad(fill(
+            Bounds::new(
+                point(bounds.right() - width, bounds.origin.y),
+                size(width, bounds.size.height),
+            ),
+            linear_gradient(
+                90.,
+                linear_color_stop(clear, 0.),
+                linear_color_stop(shade, 1.),
+            ),
+        ));
+    }
 }
 
 fn paint_vertical_lane(w: &mut Window, x: Pixels, top: Pixels, bottom: Pixels, color: u32) {
@@ -358,7 +409,9 @@ pub struct GitCrab {
     error_heading: String,
     appearance_status: AppearanceStatus,
     history_scroll: UniformListScrollHandle,
-    history_horizontal_scroll: ScrollHandle,
+    /// Width of the history table, measured when it paints.
+    history_viewport: std::rc::Rc<std::cell::Cell<f32>>,
+    graph_scroll: history::GraphScroll,
     history_column_drag:
         Option<components::rail::RailDrag<gitcrab_core::history_columns::HistoryColumn>>,
     history_column_drag_start: Option<(gitcrab_core::history_columns::HistoryColumn, Pixels)>,
@@ -568,7 +621,8 @@ impl GitCrab {
             error_heading: String::new(),
             appearance_status: AppearanceStatus::Idle,
             history_scroll: UniformListScrollHandle::new(),
-            history_horizontal_scroll: ScrollHandle::new(),
+            history_viewport: Default::default(),
+            graph_scroll: history::GraphScroll::default(),
             history_column_drag: None,
             history_column_drag_start: None,
             history_column_resize: None,
@@ -3105,33 +3159,41 @@ mod graph_geometry_tests {
     use gitcrab_core::history_columns::HistoryColumn;
 
     #[::core::prelude::v1::test]
-    fn a_minimized_graph_uses_one_lane_and_separates_lanes_as_it_widens() {
+    fn a_minimized_graph_uses_one_lane_and_wider_ones_keep_the_full_pitch() {
         let origin = point(px(211.4), px(0.));
         let minimum = HistoryColumn::Graph.minimum_width();
         let narrow = Bounds::new(origin, size(px(minimum), px(30.)));
         let slightly_wider = Bounds::new(origin, size(px(minimum + 8.), px(30.)));
+        assert_eq!(graph_content_width(minimum, 50), minimum);
         for scale in [1., 1.25, 2.] {
-            let collapsed = graph_lane_positions(narrow, 50, scale);
-            let expanded = graph_lane_positions(slightly_wider, 50, scale);
+            let collapsed = graph_lane_positions(narrow, scale, 0.);
+            let expanded = graph_lane_positions(slightly_wider, scale, 0.);
             let first = collapsed(0);
             for lane in [1, 3, 49] {
                 assert_eq!(collapsed(lane), first);
             }
             assert_eq!(expanded(0), first);
-            assert!(expanded(1) > first);
-            assert!(expanded(3) > expanded(2));
-            assert_eq!(expanded(10), expanded(49));
+            // Lanes past the edge are not squeezed in; the column scrolls to them.
+            let pitch = f32::from(expanded(1) - expanded(0));
+            assert!((pitch - GRAPH_LANE_PITCH).abs() < 0.01);
+            assert!((f32::from(expanded(49) - expanded(0)) - 49. * pitch).abs() < 0.01);
             assert!(first + px(9.) < narrow.right());
         }
+        let content = graph_content_width(minimum + 8., 50);
+        assert_eq!(
+            content,
+            GRAPH_LANE_INSET + 49. * GRAPH_LANE_PITCH + GRAPH_LANE_END
+        );
     }
 
     #[::core::prelude::v1::test]
-    fn five_graph_lanes_have_equal_pixel_aligned_gaps_at_default_and_wide_widths() {
+    fn scrolled_graph_lanes_have_equal_pixel_aligned_gaps() {
         let origin = point(px(211.4), px(0.));
         for scale in [1., 1.25, 1.5, 2.] {
-            for width in [100., 180.] {
+            for (width, scrolled) in [(100., 0.), (180., 0.), (100., 13.3), (180., 57.9)] {
                 let bounds = Bounds::new(origin, size(px(width), px(30.)));
-                let x = graph_lane_positions(bounds, 5, scale);
+                let x = graph_lane_positions(bounds, scale, scrolled);
+                let unscrolled = graph_lane_positions(bounds, scale, 0.);
                 let gap = f32::from(x(1) - x(0)) * scale;
                 assert!(gap > 0.);
                 for lane in 1..5 {
@@ -3140,7 +3202,9 @@ mod graph_geometry_tests {
                     let edge = f32::from(x(lane) - graph_stroke(scale) / 2.) * scale;
                     assert!((edge - edge.round()).abs() < 0.001);
                 }
-                assert!(x(4) + px(9.) < bounds.right());
+                // Scrolling moves every lane left by about the scrolled amount.
+                let shift = f32::from(unscrolled(3) - x(3));
+                assert!((shift - scrolled).abs() <= 1. / scale);
             }
         }
     }

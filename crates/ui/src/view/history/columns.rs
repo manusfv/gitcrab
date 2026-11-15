@@ -132,13 +132,65 @@ impl GitCrab {
                 move |_, w, cx| {
                     let _ = weak.update(cx, |v, cx| {
                         v.history_columns = HistoryColumns::default();
-                        v.history_horizontal_scroll
-                            .set_offset(point(px(0.), px(0.)));
                         v.columns_changed(w, cx);
                     });
                 },
             ),
         )
+    }
+
+    /// The graph column's own horizontal scrollbar, along the bottom of the
+    /// table under that column only.
+    pub(super) fn graph_scrollbar(&self) -> AnyElement {
+        div()
+            .absolute()
+            .left_0()
+            .bottom_0()
+            .w_full()
+            .h(px(10.))
+            .pr(px(self.history_gutter()))
+            .flex()
+            .children(self.history_layout.visible().map(|entry| {
+                column_frame(div(), entry).h_full().relative().when(
+                    entry.column == HistoryColumn::Graph,
+                    |cell| {
+                        cell.child(
+                            div().absolute().inset_0().child(slim_scrollbar(
+                                gpui::component::scroll::Scrollbar::horizontal(&self.graph_scroll)
+                                    .id("history-graph-scrollbar")
+                                    .viewport_from_layout()
+                                    .mode(gpui::component::scroll::ScrollbarMode::Always),
+                            )),
+                        )
+                    },
+                )
+            }))
+            .into_any_element()
+    }
+
+    /// Scrolls the graph column with a horizontal (or Shift+vertical) wheel,
+    /// leaving vertical scrolling to the list.
+    pub(super) fn scroll_graph(
+        &mut self,
+        event: &ScrollEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.graph_scroll.max() <= 0. {
+            return;
+        }
+        let delta = event.delta.pixel_delta(window.line_height());
+        let dx = if delta.x != px(0.) {
+            delta.x
+        } else if event.modifiers.shift {
+            delta.y
+        } else {
+            return;
+        };
+        if self.graph_scroll.scroll_by(-f32::from(dx)) {
+            cx.notify();
+        }
+        cx.stop_propagation();
     }
 
     /// The trailing padding of the header and every row, under the Columns button.

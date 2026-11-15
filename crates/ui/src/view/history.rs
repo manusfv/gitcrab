@@ -1,6 +1,8 @@
 use super::*;
 use gitcrab_core::history_columns::{HistoryColumn, HistoryColumns};
 mod columns;
+mod graph_scroll;
+pub(super) use graph_scroll::GraphScroll;
 
 const HISTORY_CELL_INSET: Rems = Rems(0.5);
 
@@ -688,6 +690,16 @@ impl GitCrab {
             self.history_available - self.history_gutter() - f32::from(SCROLLBAR_GUTTER),
             self.preferences.font_size / 13.,
         );
+        // Lanes keep their pitch; the graph column scrolls when they don't fit.
+        let graph_width = self
+            .history_layout
+            .visible()
+            .find(|entry| entry.column == HistoryColumn::Graph)
+            .map_or(0., |entry| entry.width);
+        self.graph_scroll.set_extent(
+            graph_width,
+            graph_content_width(graph_width, self.state.graph.lanes),
+        );
         let count = self.state.graph.rows.len();
         let weak = cx.weak_entity();
         let unborn = self
@@ -706,27 +718,28 @@ impl GitCrab {
                     .flex_1()
                     .min_h_0()
                     // A fixed strip beside the table for the vertical scrollbar, so it
-                    // never sits over columns that are scrolled into view.
+                    // never sits over the last column.
                     .pr(SCROLLBAR_GUTTER)
                     .overflow_hidden()
                     .child(
-                        div()
-                            .id("history-horizontal-scroll")
-                            .size_full()
-                            .overflow_x_scroll()
-                            .map(|mut el| {
-                                el.style().restrict_scroll_to_axis = Some(true);
-                                el
-                            })
-                            .track_scroll(&self.history_horizontal_scroll)
-                            .child(
                                 div()
+                                    .relative()
                                     .flex()
                                     .flex_col()
                                     .w_full()
                                     .min_w(px(self.history_table_width()))
                                     .h_full()
                                     .child(self.history_header(cx))
+                                    .child({
+                                        // Measures the table, so the WIP editor fits its message cell.
+                                        let viewport = self.history_viewport.clone();
+                                        canvas(
+                                            move |bounds, _, _| viewport.set(f32::from(bounds.size.width)),
+                                            |_, _, _, _| (),
+                                        )
+                                        .absolute()
+                                        .inset_0()
+                                    })
                                     .child(
                                         uniform_list("history", count + 1, move |range, w, cx| {
                                             weak.update(cx, |v, cx| {
@@ -775,15 +788,11 @@ impl GitCrab {
                                                         )),
                                                 ),
                                         )
+                                    })
+                                    // Last, so it sits above the rows it overlays.
+                                    .when(self.graph_scroll.max() > 0., |table| {
+                                        table.child(self.graph_scrollbar())
                                     }),
-                            ),
-                    )
-                    .child(
-                        div().absolute().inset_0().child(slim_scrollbar(gpui::component::scroll::Scrollbar::horizontal(
-                                &self.history_horizontal_scroll,
-                            )
-                            .id("history-horizontal-scrollbar")
-                            .mode(gpui::component::scroll::ScrollbarMode::Always),)),
                     )
                     .child(pinned_scrollbar_overlay("history", &self.history_scroll, scaled(28.)))
                     .child(
@@ -848,19 +857,17 @@ impl GitCrab {
     fn history_row(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
             .max(self.preferences.font_size * 20. / 13. + 8.);
-        let lane_count = self.state.graph.lanes;
+        let graph_scrolled = self.graph_scroll.scrolled();
+        let graph_max = self.graph_scroll.max();
         if index == 0 {
-            // A saved layout can be wider than the pane; cap the message cell to the
-            // part on screen so the editor shrinks before the badges are cut off.
-            // Measured from the scroll viewport's last painted bounds, which track
-            // window and pane resizes exactly (unlike the computed pane widths).
-            let scroll = self.history_horizontal_scroll.clone();
-            let viewport = f32::from(scroll.bounds().size.width);
-            let scrolled = -f32::from(scroll.offset().x);
+            // Cap the editor to the message cell so it shrinks before the badges
+            // are cut off. Measured from the table's last painted bounds, which
+            // track window and pane resizes exactly (unlike the computed pane widths).
+            let viewport = self.history_viewport.get();
             let inset = f32::from(HISTORY_CELL_INSET.to_pixels(window.rem_size()));
             let wip_visible_cap = self
                 .history_layout
-                .visible_message_width(viewport, scrolled)
+                .visible_message_width(viewport)
                 .map(|width| (width - 2. * inset).max(WIP_EDITOR_MIN_WIDTH));
             // The editor starts at the width of its text (or placeholder) and grows
             // as the summary is typed; the cap above and the badges bound it.
@@ -932,56 +939,70 @@ impl GitCrab {
                 }))
                 .children(self.history_layout.visible().map(|entry| {
                     let cell = match entry.column {
-                        HistoryColumn::Graph => (canvas(
-                            |_, _, _| (),
-                            move |bounds, _, w, _| {
-                                let x =
-                                    graph_lane_positions(bounds, lane_count, w.scale_factor())(0);
-                                let y = bounds.origin.y + px(height / 2.);
-                                let radius = px(WIP_RADIUS);
-                                // Same branch band as the commit rows, in the
-                                // colour of the branch being worked on. Its left
-                                // edge hugs the circle, which stays hollow.
-                                let band_y = bounds.origin.y + px(3.);
-                                let band_height = bounds.size.height - px(6.);
-                                let band_right = bounds.right();
-                                paint_hugging_band(
-                                    w,
-                                    point(x, y),
-                                    radius,
-                                    band_y,
-                                    band_y + band_height,
-                                    band_right,
-                                    branch_tint(wip_color, band_tint),
-                                );
-                                w.paint_quad(fill(
-                                    Bounds::new(
-                                        point(band_right - px(1.), band_y),
-                                        size(px(1.), band_height),
-                                    ),
-                                    branch_tint(wip_color, 0x70),
-                                ));
-                                if has_head {
-                                    paint_dotted_lane(
-                                        w,
-                                        x,
-                                        y + radius,
-                                        bounds.bottom(),
-                                        lanes()[wip_color % lanes().len()],
-                                        px(0.),
-                                    );
-                                }
-                                paint_dashed_circle(
-                                    w,
-                                    point(x, y),
-                                    radius,
-                                    lanes()[wip_color % lanes().len()],
-                                );
-                            },
-                        )
-                        .w_full()
-                        .h(px(height))
-                        .flex_none())
+                        HistoryColumn::Graph => (div()
+                            .w_full()
+                            .h(px(height))
+                            .flex_none()
+                            .on_scroll(cx.listener(Self::scroll_graph))
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, w, _| {
+                                        let x = graph_lane_positions(
+                                            bounds,
+                                            w.scale_factor(),
+                                            graph_scrolled,
+                                        )(0);
+                                        let y = bounds.origin.y + px(height / 2.);
+                                        let radius = px(WIP_RADIUS);
+                                        // Same branch band as the commit rows, in the
+                                        // colour of the branch being worked on. Its left
+                                        // edge hugs the circle, which stays hollow.
+                                        let band_y = bounds.origin.y + px(3.);
+                                        let band_height = bounds.size.height - px(6.);
+                                        let band_right = bounds.right();
+                                        paint_hugging_band(
+                                            w,
+                                            point(x, y),
+                                            radius,
+                                            band_y,
+                                            band_y + band_height,
+                                            band_right,
+                                            branch_tint(wip_color, band_tint),
+                                        );
+                                        w.paint_quad(fill(
+                                            Bounds::new(
+                                                point(band_right - px(1.), band_y),
+                                                size(px(1.), band_height),
+                                            ),
+                                            branch_tint(wip_color, 0x70),
+                                        ));
+                                        if has_head {
+                                            paint_dotted_lane(
+                                                w,
+                                                x,
+                                                y + radius,
+                                                bounds.bottom(),
+                                                lanes()[wip_color % lanes().len()],
+                                                px(0.),
+                                            );
+                                        }
+                                        paint_dashed_circle(
+                                            w,
+                                            point(x, y),
+                                            radius,
+                                            lanes()[wip_color % lanes().len()],
+                                        );
+                                        paint_graph_edge_shades(
+                                            w,
+                                            bounds,
+                                            graph_scrolled,
+                                            graph_max,
+                                        );
+                                    },
+                                )
+                                .size_full(),
+                            ))
                         .into_any_element(),
                         HistoryColumn::Message => div()
                             .flex()
@@ -994,16 +1015,12 @@ impl GitCrab {
                             // The cap uses the previous frame's viewport. If that
                             // changed (a resize), draw once more with the new size.
                             .child({
-                                let scroll = scroll.clone();
-                                let used = (viewport, scrolled);
+                                let measured = self.history_viewport.clone();
+                                let used = viewport;
                                 canvas(
                                     |_, _, _| (),
                                     move |_, _, w, _| {
-                                        let now = (
-                                            f32::from(scroll.bounds().size.width),
-                                            -f32::from(scroll.offset().x),
-                                        );
-                                        if now != used {
+                                        if measured.get() != used {
                                             w.refresh();
                                         }
                                     },
@@ -1276,129 +1293,151 @@ impl GitCrab {
                     .into_any_element(),
                     HistoryColumn::Graph => {
                         let outgoing = outgoing.clone();
-                        (div().relative().w_full().h(px(height)).flex_none().child(
-                            canvas(
-                                move |_, _, _| (),
-                                move |bounds, _, w, _| {
-                                    let origin = bounds.origin;
-                                    let scale = w.scale_factor();
-                                    let x = graph_lane_positions(bounds, lane_count, scale);
-                                    let center_y = bounds.center().y;
-                                    let y = snap_graph_stroke_center(center_y, scale);
-                                    let center_x = x(row.lane);
-                                    let band_y = origin.y + px(3.);
-                                    let band_height = bounds.size.height - px(6.);
-                                    let band_right = bounds.right();
-                                    w.paint_quad(fill(
-                                        Bounds::new(
-                                            point(center_x, band_y),
-                                            size(band_right - center_x, band_height),
-                                        ),
-                                        branch_tint(color, band_tint),
-                                    ));
-                                    w.paint_quad(fill(
-                                        Bounds::new(
-                                            point(band_right - px(1.), band_y),
-                                            size(px(1.), band_height),
-                                        ),
-                                        branch_tint(color, 0x70),
-                                    ));
-                                    if let Some(side) = reference_side {
-                                        let edge = match side {
-                                            ReferenceSide::Left => bounds.left(),
-                                            ReferenceSide::Right => bounds.right(),
-                                        };
-                                        paint_reference_link(
-                                            w,
-                                            edge,
-                                            center_x,
-                                            center_y,
-                                            color,
-                                            checked_out,
-                                        );
-                                    }
-                                    let edges = incoming
-                                        .iter()
-                                        .map(|edge| (edge, true, Some(row.lane)))
-                                        .chain(
-                                            outgoing.iter().map(|edge| (edge, false, next_lane)),
-                                        );
-                                    let mut corners = Vec::new();
-                                    for (edge, above, lower_lane) in edges {
-                                        let from = x(edge.from_lane);
-                                        let to = x(edge.to_lane);
-                                        let edge_color = lanes()[edge.color % lanes().len()];
-                                        // Put a leftward turn on the lower row only when it meets that row's node.
-                                        let turns_below =
-                                            from > to && lower_lane == Some(edge.to_lane);
-                                        let (top, bottom) = if above {
-                                            (bounds.top(), y)
-                                        } else {
-                                            (y, bounds.bottom())
-                                        };
-                                        if from != to && above == turns_below {
-                                            let (junction_x, lane_x, row_edge) = if above {
-                                                (to, from, top)
-                                            } else {
-                                                (from, to, bottom)
+                        (div()
+                            .relative()
+                            .w_full()
+                            .h(px(height))
+                            .flex_none()
+                            .on_scroll(cx.listener(Self::scroll_graph))
+                            .child(
+                                canvas(
+                                    move |_, _, _| (),
+                                    move |bounds, _, w, _| {
+                                        let origin = bounds.origin;
+                                        let scale = w.scale_factor();
+                                        let x = graph_lane_positions(bounds, scale, graph_scrolled);
+                                        let center_y = bounds.center().y;
+                                        let y = snap_graph_stroke_center(center_y, scale);
+                                        let center_x = x(row.lane);
+                                        let band_y = origin.y + px(3.);
+                                        let band_height = bounds.size.height - px(6.);
+                                        let band_right = bounds.right();
+                                        w.paint_quad(fill(
+                                            Bounds::new(
+                                                point(center_x, band_y),
+                                                size(band_right - center_x, band_height),
+                                            ),
+                                            branch_tint(color, band_tint),
+                                        ));
+                                        w.paint_quad(fill(
+                                            Bounds::new(
+                                                point(band_right - px(1.), band_y),
+                                                size(px(1.), band_height),
+                                            ),
+                                            branch_tint(color, 0x70),
+                                        ));
+                                        if let Some(side) = reference_side {
+                                            let edge = match side {
+                                                ReferenceSide::Left => bounds.left(),
+                                                ReferenceSide::Right => bounds.right(),
                                             };
-                                            let span = edge.from_lane.abs_diff(edge.to_lane);
-                                            corners.push((
-                                                span, junction_x, lane_x, row_edge, edge_color,
-                                            ));
-                                        } else {
-                                            let lane_x = if turns_below { from } else { to };
-                                            if wip_link && above {
-                                                let travelled = px(height / 2. - WIP_RADIUS);
-                                                paint_dotted_lane(
-                                                    w, lane_x, top, bottom, edge_color, travelled,
-                                                );
+                                            paint_reference_link(
+                                                w,
+                                                edge,
+                                                center_x,
+                                                center_y,
+                                                color,
+                                                checked_out,
+                                            );
+                                        }
+                                        let edges = incoming
+                                            .iter()
+                                            .map(|edge| (edge, true, Some(row.lane)))
+                                            .chain(
+                                                outgoing
+                                                    .iter()
+                                                    .map(|edge| (edge, false, next_lane)),
+                                            );
+                                        let mut corners = Vec::new();
+                                        for (edge, above, lower_lane) in edges {
+                                            let from = x(edge.from_lane);
+                                            let to = x(edge.to_lane);
+                                            let edge_color = lanes()[edge.color % lanes().len()];
+                                            // Put a leftward turn on the lower row only when it meets that row's node.
+                                            let turns_below =
+                                                from > to && lower_lane == Some(edge.to_lane);
+                                            let (top, bottom) = if above {
+                                                (bounds.top(), y)
                                             } else {
-                                                paint_vertical_lane(
-                                                    w, lane_x, top, bottom, edge_color,
-                                                );
+                                                (y, bounds.bottom())
+                                            };
+                                            if from != to && above == turns_below {
+                                                let (junction_x, lane_x, row_edge) = if above {
+                                                    (to, from, top)
+                                                } else {
+                                                    (from, to, bottom)
+                                                };
+                                                let span = edge.from_lane.abs_diff(edge.to_lane);
+                                                corners.push((
+                                                    span, junction_x, lane_x, row_edge, edge_color,
+                                                ));
+                                            } else {
+                                                let lane_x = if turns_below { from } else { to };
+                                                if wip_link && above {
+                                                    let travelled = px(height / 2. - WIP_RADIUS);
+                                                    paint_dotted_lane(
+                                                        w, lane_x, top, bottom, edge_color,
+                                                        travelled,
+                                                    );
+                                                } else {
+                                                    paint_vertical_lane(
+                                                        w, lane_x, top, bottom, edge_color,
+                                                    );
+                                                }
                                             }
                                         }
-                                    }
-                                    // Paint longer runs first so each nearer branch keeps its color at the turn.
-                                    corners.sort_by_key(|corner| std::cmp::Reverse(corner.0));
-                                    for (_, junction_x, lane_x, row_edge, edge_color) in corners {
-                                        paint_lane_corner(
-                                            w,
-                                            point(junction_x, y),
-                                            lane_x,
-                                            row_edge,
-                                            edge_color,
-                                        );
-                                    }
-                                    if junction {
-                                        let radius = px(6.);
-                                        let mut diamond = PathBuilder::fill();
-                                        diamond.move_to(point(center_x, y - radius));
-                                        diamond.line_to(point(center_x + radius, y));
-                                        diamond.line_to(point(center_x, y + radius));
-                                        diamond.line_to(point(center_x - radius, y));
-                                        diamond.close();
-                                        if let Ok(path) = diamond.build() {
-                                            w.paint_path(path, rgb(lanes()[color % lanes().len()]));
+                                        // Paint longer runs first so each nearer branch keeps its color at the turn.
+                                        corners.sort_by_key(|corner| std::cmp::Reverse(corner.0));
+                                        for (_, junction_x, lane_x, row_edge, edge_color) in corners
+                                        {
+                                            paint_lane_corner(
+                                                w,
+                                                point(junction_x, y),
+                                                lane_x,
+                                                row_edge,
+                                                edge_color,
+                                            );
                                         }
-                                    } else {
-                                        let radius = 4.;
-                                        w.paint_quad(
-                                            fill(
-                                                Bounds::new(
-                                                    point(center_x - px(radius), y - px(radius)),
-                                                    size(px(radius * 2.), px(radius * 2.)),
-                                                ),
-                                                rgb(lanes()[color % lanes().len()]),
-                                            )
-                                            .corner_radii(px(radius)),
+                                        if junction {
+                                            let radius = px(6.);
+                                            let mut diamond = PathBuilder::fill();
+                                            diamond.move_to(point(center_x, y - radius));
+                                            diamond.line_to(point(center_x + radius, y));
+                                            diamond.line_to(point(center_x, y + radius));
+                                            diamond.line_to(point(center_x - radius, y));
+                                            diamond.close();
+                                            if let Ok(path) = diamond.build() {
+                                                w.paint_path(
+                                                    path,
+                                                    rgb(lanes()[color % lanes().len()]),
+                                                );
+                                            }
+                                        } else {
+                                            let radius = 4.;
+                                            w.paint_quad(
+                                                fill(
+                                                    Bounds::new(
+                                                        point(
+                                                            center_x - px(radius),
+                                                            y - px(radius),
+                                                        ),
+                                                        size(px(radius * 2.), px(radius * 2.)),
+                                                    ),
+                                                    rgb(lanes()[color % lanes().len()]),
+                                                )
+                                                .corner_radii(px(radius)),
+                                            );
+                                        }
+                                        paint_graph_edge_shades(
+                                            w,
+                                            bounds,
+                                            graph_scrolled,
+                                            graph_max,
                                         );
-                                    }
-                                },
-                            )
-                            .size_full(),
-                        ))
+                                    },
+                                )
+                                .size_full(),
+                            ))
                         .into_any_element()
                     }
                     HistoryColumn::Message => {

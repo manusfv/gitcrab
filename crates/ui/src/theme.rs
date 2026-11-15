@@ -37,7 +37,7 @@ pub trait RoleStyled: Styled + Sized {
 }
 impl<T: Styled> RoleStyled for T {}
 
-pub fn lanes() -> [u32; 8] {
+pub fn lanes() -> [u32; 10] {
     [
         Role::GraphLane1,
         Role::GraphLane2,
@@ -47,6 +47,8 @@ pub fn lanes() -> [u32; 8] {
         Role::GraphLane6,
         Role::GraphLane7,
         Role::GraphLane8,
+        Role::GraphLane9,
+        Role::GraphLane10,
     ]
     .map(semantic)
 }

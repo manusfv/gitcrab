@@ -73,11 +73,13 @@ pub enum Role {
     GraphLane6,
     GraphLane7,
     GraphLane8,
+    GraphLane9,
+    GraphLane10,
 }
 /// Design token names in [`Role`] order.
-pub const ROLE_NAMES: &[&str] = &["surface.canvas","surface.chrome","surface.panel","surface.nav","surface.overlay","border.divider","border.control","text.default","text.secondary","text.muted","action.primary","action.primaryHover","action.primaryPressed","text.onPrimary","action.accentOutline","action.accentTint","action.accentTintHover","action.accentTintPressed","action.stage.fg","action.stage.bg","action.unstage.fg","action.unstage.bg","action.discard.fg","action.discard.bg","interaction.hover","interaction.pressed","interaction.selected","interaction.focus","interaction.selectionRail","surface.wipSelected","surface.wipInput","text.link","text.disabled","surface.disabled","status.info.fg","status.info.bg","status.success.fg","status.success.bg","status.warning.fg","status.warning.bg","status.error.fg","status.error.bg","status.conflict.fg","status.conflict.bg","diff.added.bg","diff.added.gutter","diff.removed.bg","diff.removed.gutter","diff.context.bg","diff.hunk.bg","diff.whitespace","syntax.string","syntax.keyword","syntax.number","syntax.comment","overlay.scrim","overlay.shadow","graph.lane.1","graph.lane.2","graph.lane.3","graph.lane.4","graph.lane.5","graph.lane.6","graph.lane.7","graph.lane.8"];
+pub const ROLE_NAMES: &[&str] = &["surface.canvas","surface.chrome","surface.panel","surface.nav","surface.overlay","border.divider","border.control","text.default","text.secondary","text.muted","action.primary","action.primaryHover","action.primaryPressed","text.onPrimary","action.accentOutline","action.accentTint","action.accentTintHover","action.accentTintPressed","action.stage.fg","action.stage.bg","action.unstage.fg","action.unstage.bg","action.discard.fg","action.discard.bg","interaction.hover","interaction.pressed","interaction.selected","interaction.focus","interaction.selectionRail","surface.wipSelected","surface.wipInput","text.link","text.disabled","surface.disabled","status.info.fg","status.info.bg","status.success.fg","status.success.bg","status.warning.fg","status.warning.bg","status.error.fg","status.error.bg","status.conflict.fg","status.conflict.bg","diff.added.bg","diff.added.gutter","diff.removed.bg","diff.removed.gutter","diff.context.bg","diff.hunk.bg","diff.whitespace","syntax.string","syntax.keyword","syntax.number","syntax.comment","overlay.scrim","overlay.shadow","graph.lane.1","graph.lane.2","graph.lane.3","graph.lane.4","graph.lane.5","graph.lane.6","graph.lane.7","graph.lane.8","graph.lane.9","graph.lane.10"];
 /// Dark palette as packed `0xRRGGBB` colors in [`Role`] order.
-pub const DARK: [u32; 65] = [
+pub const DARK: [u32; 67] = [
     0x0d0d0d, // surface.canvas
     0x161616, // surface.chrome
     0x202020, // surface.panel
@@ -135,17 +137,19 @@ pub const DARK: [u32; 65] = [
     0xababab, // syntax.comment
     0x00000099, // overlay.scrim
     0x00000066, // overlay.shadow
-    0x20b6c7, // graph.lane.1
-    0xdbb83f, // graph.lane.2
-    0xad58d5, // graph.lane.3
-    0x42b875, // graph.lane.4
-    0xda5d91, // graph.lane.5
-    0xd28a47, // graph.lane.6
-    0x329ccb, // graph.lane.7
-    0x9ab13f, // graph.lane.8
+    0x15a0bf, // graph.lane.1
+    0x0669f7, // graph.lane.2
+    0x8e00c2, // graph.lane.3
+    0xc517b6, // graph.lane.4
+    0xd90171, // graph.lane.5
+    0xcd0101, // graph.lane.6
+    0xf25d2e, // graph.lane.7
+    0xf2ca33, // graph.lane.8
+    0x7bd938, // graph.lane.9
+    0x2ece9d, // graph.lane.10
 ];
 /// Light palette as packed `0xRRGGBB` colors in [`Role`] order.
-pub const LIGHT: [u32; 65] = [
+pub const LIGHT: [u32; 67] = [
     0xfafbfc, // surface.canvas
     0xf0f3f6, // surface.chrome
     0xffffff, // surface.panel
@@ -203,14 +207,16 @@ pub const LIGHT: [u32; 65] = [
     0x516476, // syntax.comment
     0x16202e66, // overlay.scrim
     0x16202e33, // overlay.shadow
-    0x176e99, // graph.lane.1
-    0x7a5a00, // graph.lane.2
-    0x604dae, // graph.lane.3
-    0x2d7040, // graph.lane.4
-    0xad3c69, // graph.lane.5
-    0x8a4c25, // graph.lane.6
-    0x00757d, // graph.lane.7
-    0x5b6a00, // graph.lane.8
+    0x0e7d96, // graph.lane.1
+    0x0550c2, // graph.lane.2
+    0x7600a3, // graph.lane.3
+    0x9c1290, // graph.lane.4
+    0xb3005d, // graph.lane.5
+    0xad0000, // graph.lane.6
+    0xbd4218, // graph.lane.7
+    0x8a6a00, // graph.lane.8
+    0x467f1c, // graph.lane.9
+    0x13806a, // graph.lane.10
 ];
 /// Layout tokens for spacing, control sizes, typography and layer order.
 pub mod geometry {

@@ -51,7 +51,7 @@ impl HistoryColumn {
     fn default_width(self) -> f32 {
         match self {
             Self::References => 130.,
-            Self::Graph => 100.,
+            Self::Graph => 140.,
             Self::Message => 320.,
             Self::Sha => 90.,
             Self::Author => 160.,
@@ -98,55 +98,100 @@ impl Default for HistoryColumns {
 impl HistoryColumns {
     /// Returns the layout to display in `available` logical pixels at a text `scale`.
     ///
-    /// A customized layout is shown as saved. Otherwise text columns grow with
-    /// the text size, Author and Date appear when they fit, SHA yields its
-    /// space first, and the message shrinks toward its minimum. The message
-    /// takes any remaining space when displayed.
+    /// A customized layout keeps its saved widths where they fit. Otherwise
+    /// text columns grow with the text size, Author and Date appear when they
+    /// fit and SHA yields its space first. Either way the table never needs to
+    /// scroll sideways: see [`HistoryColumns::fit`].
     pub fn adapted(&self, available: f32, scale: f32) -> Self {
-        if self.customized || !available.is_finite() || available <= 0. {
+        if !available.is_finite() || available <= 0. {
             return self.clone();
         }
-        let scale = if scale.is_finite() {
-            scale.clamp(1., 2.5)
-        } else {
-            1.
-        };
         let mut layout = self.clone();
-        for entry in &mut layout.columns {
-            if entry.column != HistoryColumn::Graph {
-                entry.width = (entry.width * scale).min(1600.);
+        if !self.customized {
+            let scale = if scale.is_finite() {
+                scale.clamp(1., 2.5)
+            } else {
+                1.
+            };
+            for entry in &mut layout.columns {
+                if entry.column != HistoryColumn::Graph {
+                    entry.width = (entry.width * scale).min(1600.);
+                }
             }
-        }
-        let total = |l: &Self| l.visible().map(|e| e.width).sum::<f32>();
-        for column in [HistoryColumn::Author, HistoryColumn::Date] {
-            if let Some(index) = layout.columns.iter().position(|e| e.column == column) {
-                let width = layout.columns[index].width;
-                if !layout.columns[index].visible && total(&layout) + width <= available {
-                    layout.columns[index].visible = true;
+            let total = |l: &Self| l.visible().map(|e| e.width).sum::<f32>();
+            for column in [HistoryColumn::Author, HistoryColumn::Date] {
+                if let Some(index) = layout.columns.iter().position(|e| e.column == column) {
+                    let width = layout.columns[index].width;
+                    if !layout.columns[index].visible && total(&layout) + width <= available {
+                        layout.columns[index].visible = true;
+                    }
+                }
+            }
+            if total(&layout) > available {
+                if let Some(sha) = layout
+                    .columns
+                    .iter_mut()
+                    .find(|e| e.column == HistoryColumn::Sha)
+                {
+                    sha.visible = false;
                 }
             }
         }
-        if total(&layout) > available {
-            if let Some(sha) = layout
-                .columns
-                .iter_mut()
-                .find(|e| e.column == HistoryColumn::Sha)
-            {
-                sha.visible = false;
-            }
-        }
-        let overflow = total(&layout) - available;
-        if overflow > 0. {
-            if let Some(message) = layout
-                .columns
-                .iter_mut()
-                .find(|e| e.column == HistoryColumn::Message)
-            {
-                message.width =
-                    (message.width - overflow).max(HistoryColumn::Message.minimum_width());
-            }
-        }
+        layout.fit(available);
         layout
+    }
+
+    /// Shrinks visible columns until they fit in `available` pixels, instead of scrolling the table: the message gives up
+    /// its space first, then the other columns shrink in proportion to how far
+    /// each is above its minimum. Columns never go below their minimum width.
+    fn fit(&mut self, available: f32) {
+        let total = self.visible().map(|e| e.width).sum::<f32>();
+        let mut overflow = total - available;
+        if overflow <= 0. {
+            return;
+        }
+        if let Some(message) = self
+            .columns
+            .iter_mut()
+            .find(|e| e.visible && e.column == HistoryColumn::Message)
+        {
+            let give = (message.width - HistoryColumn::Message.minimum_width())
+                .max(0.)
+                .min(overflow);
+            message.width -= give;
+            overflow -= give;
+        }
+        let spare = |e: &ColumnLayout| (e.width - e.column.minimum_width()).max(0.);
+        let shrinkable = self
+            .visible()
+            .filter(|e| e.column != HistoryColumn::Message)
+            .map(spare)
+            .sum::<f32>();
+        if overflow <= 0. || shrinkable <= 0. {
+            return;
+        }
+        let ratio = (overflow / shrinkable).min(1.);
+        for entry in &mut self.columns {
+            if entry.visible && entry.column != HistoryColumn::Message {
+                entry.width -= spare(entry) * ratio;
+            }
+        }
+    }
+
+    /// Width of the message cell in a table `viewport` pixels wide, or `None`
+    /// before the history viewport has been measured. The message takes any
+    /// slack beyond the visible columns' widths.
+    pub fn visible_message_width(&self, viewport: f32) -> Option<f32> {
+        if !(viewport.is_finite() && viewport > 0.) {
+            return None;
+        }
+        let table = self.visible().map(|entry| entry.width).sum::<f32>();
+        let others = self
+            .visible()
+            .filter(|entry| entry.column != HistoryColumn::Message)
+            .map(|entry| entry.width)
+            .sum::<f32>();
+        Some((table.max(viewport) - others).max(0.))
     }
 
     /// Moves a visible column one visible position left (`-1`) or right (`1`).
@@ -219,40 +264,6 @@ impl HistoryColumns {
         self.columns.iter().filter(|entry| entry.visible)
     }
 
-    /// Width of the message cell that is on screen, in logical pixels, or `None`
-    /// before the history viewport has been measured.
-    ///
-    /// The table is `max(sum of visible widths, viewport)` wide, with the message
-    /// taking any slack. A layout wider than the `viewport` scrolls horizontally;
-    /// `scrolled` is how far it is scrolled right. The result is cut at the
-    /// viewport's right edge but not its left, so it can exceed the visible part
-    /// when the message is scrolled partly out on the left.
-    pub fn visible_message_width(&self, viewport: f32, scrolled: f32) -> Option<f32> {
-        if !(viewport.is_finite() && viewport > 0.) {
-            return None;
-        }
-        let scrolled = if scrolled.is_finite() {
-            scrolled.max(0.)
-        } else {
-            0.
-        };
-        let mut seen = false;
-        let (before, after) =
-            self.visible()
-                .fold((0., 0.), |(before, after), entry| match entry.column {
-                    HistoryColumn::Message => {
-                        seen = true;
-                        (before, after)
-                    }
-                    _ if seen => (before, after + entry.width),
-                    _ => (before + entry.width, after),
-                });
-        let table = self.visible().map(|entry| entry.width).sum::<f32>();
-        let message_right = table.max(viewport) - after;
-        let visible_right = viewport + scrolled;
-        Some((message_right.min(visible_right) - before).max(0.))
-    }
-
     /// Toggles an existing column's visibility. The message column stays visible.
     pub fn toggle(&mut self, column: HistoryColumn) {
         if column != HistoryColumn::Message {
@@ -300,7 +311,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn visible_message_width_is_cut_at_the_viewport_edge() {
+    fn the_message_takes_the_slack_of_a_wider_viewport() {
         // References 124, Graph 148, Message 475: a 747px table.
         let mut layout = HistoryColumns::default();
         for entry in &mut layout.columns {
@@ -311,16 +322,44 @@ mod tests {
                 _ => (entry.width, false),
             };
         }
-        assert_eq!(layout.visible_message_width(0., 0.), None);
-        // A wider viewport gives the message the slack.
-        assert_eq!(layout.visible_message_width(900., 0.), Some(628.));
-        // An overflowing layout loses what is cut off, until scrolled into view.
-        assert_eq!(layout.visible_message_width(709., 0.), Some(437.));
-        assert_eq!(layout.visible_message_width(709., 38.), Some(475.));
+        assert_eq!(layout.visible_message_width(0.), None);
+        assert_eq!(layout.visible_message_width(900.), Some(628.));
+        assert_eq!(layout.visible_message_width(747.), Some(475.));
         // A column to the right of the message keeps its space.
         layout.toggle(HistoryColumn::Sha);
         layout.resize(HistoryColumn::Sha, 90.);
-        assert_eq!(layout.visible_message_width(1000., 0.), Some(638.));
+        assert_eq!(layout.visible_message_width(1000.), Some(638.));
+    }
+
+    #[test]
+    fn saved_layouts_shrink_to_fit_instead_of_scrolling() {
+        let mut layout = HistoryColumns::default();
+        layout.resize(HistoryColumn::References, 300.);
+        layout.resize(HistoryColumn::Graph, 400.);
+        layout.resize(HistoryColumn::Message, 600.);
+        layout.toggle(HistoryColumn::Sha);
+        assert!(layout.customized);
+        let width = |l: &HistoryColumns, c| l.columns.iter().find(|e| e.column == c).unwrap().width;
+        let total = |l: &HistoryColumns| l.visible().map(|e| e.width).sum::<f32>();
+        // Room to spare keeps the saved widths.
+        assert_eq!(layout.adapted(2000., 1.), layout);
+        // The message gives way first.
+        let fitted = layout.adapted(1200., 1.);
+        assert_eq!(total(&fitted), 1200.);
+        assert_eq!(width(&fitted, HistoryColumn::Message), 500.);
+        assert_eq!(width(&fitted, HistoryColumn::Graph), 400.);
+        // Then the others shrink in proportion to their room above the minimum.
+        let fitted = layout.adapted(700., 1.);
+        assert!((total(&fitted) - 700.).abs() < 0.01);
+        assert_eq!(width(&fitted, HistoryColumn::Message), 200.);
+        assert!(width(&fitted, HistoryColumn::Graph) > width(&fitted, HistoryColumn::References));
+        // Below every minimum the columns stop at their minimums.
+        let fitted = layout.adapted(100., 1.);
+        for entry in fitted.visible() {
+            assert_eq!(entry.width, entry.column.minimum_width());
+        }
+        // The saved widths themselves are untouched.
+        assert_eq!(width(&layout, HistoryColumn::Graph), 400.);
     }
 
     #[test]
