@@ -1,9 +1,10 @@
 name: Checks
 
+# Pull requests into dev run the quick checks on Windows and Linux.
+# Pull requests from dev into main also run macOS and the release build.
 on:
-  push:
-    branches: [main]
   pull_request:
+    branches: [dev, main]
   workflow_dispatch:
     inputs:
       rust_version:
@@ -19,6 +20,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Only dev may merge into main. This job also picks the target matrix.
+  policy:
+    name: branch policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          full=false
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            full=true
+          elif [[ "$BASE" == main ]]; then
+            if [[ "$HEAD" != dev || "$HEAD_REPO" != "$REPO" ]]; then
+              echo "::error::Only the dev branch of this repository may open pull requests into main."
+              exit 1
+            fi
+            full=true
+          fi
+          windows='{"runner":"windows-2025","target":"x86_64-pc-windows-msvc"}'
+          linux='{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}'
+          mac_arm='{"runner":"macos-15","target":"aarch64-apple-darwin"}'
+          mac_intel='{"runner":"macos-15-intel","target":"x86_64-apple-darwin"}'
+          if [[ "$full" == true ]]; then
+            matrix="[$windows,$linux,$mac_arm,$mac_intel]"
+          else
+            matrix="[$windows,$linux]"
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   format:
     name: format
     runs-on: ubuntu-24.04
@@ -37,17 +77,15 @@ jobs:
 
   native:
     name: ${{ matrix.target }}
+    needs: policy
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
-          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { runner: macos-15, target: aarch64-apple-darwin }
-          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+        include: ${{ fromJSON(needs.policy.outputs.matrix) }}
     env:
+      FULL_BUILD: ${{ needs.policy.outputs.full }}
       RUST_VERSION: ${{ inputs.rust_version || '1.99.1' }}
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -101,11 +139,16 @@ jobs:
           Check clippy-native @('clippy', '--locked', '--workspace', '--all-features', '--all-targets', '--', '-D', 'warnings')
           Check core @('test', '--locked', '-p', 'gitcrab-core')
           Check native @('test', '--locked', '--workspace', '--all-features', '--exclude', 'gitcrab-core')
+      - name: Release build
+        if: env.FULL_BUILD == 'true'
+        shell: pwsh
+        run: |
           $env:GITCRAB_BUILD_REVISION = git rev-parse HEAD
           if ($LASTEXITCODE -or $env:GITCRAB_BUILD_REVISION -ne $env:GITHUB_SHA) {
             throw 'Checked-out revision differs from the CI revision'
           }
-          Check release @('build', '--locked', '--release', '--bin', 'gitcrab')
+          cargo build --locked --release --bin gitcrab 2>&1 | Tee-Object check-logs/release.log
+          if ($LASTEXITCODE) { throw "release failed with exit code $LASTEXITCODE" }
       - name: Linux renderer smoke
         if: runner.os == 'Linux'
         shell: bash

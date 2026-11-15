@@ -1,0 +1,149 @@
+name: Release
+
+# Push a version tag on main to publish a release, for example:
+#   git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1
+# A tag with a hyphen (v0.1.0-alpha.1, v0.2.0-rc.1) becomes a prerelease.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_name }}
+  RUST_VERSION: "1.99.1"
+
+jobs:
+  # Checks the tag before any expensive build, then opens a draft release.
+  prepare:
+    name: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG does not point to a commit on main."
+            exit 1
+          fi
+      - name: Tag matches the Cargo version
+        run: |
+          version=$(awk -F'"' '/^\[workspace.package\]/{f=1} f && /^version/{print $2; exit}' Cargo.toml)
+          if [[ "v$version" != "$TAG" ]]; then
+            echo "::error::Tag $TAG does not match the workspace version $version in Cargo.toml."
+            exit 1
+          fi
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags=()
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" --verify-tag --draft --generate-notes \
+            --title "GitCrab $TAG" "${flags[@]}"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config clang libclang-dev libasound2-dev \
+            libudev-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libxcb1-dev libxcb-xkb-dev libx11-xcb-dev libvulkan-dev
+      - name: Locate Windows SDK shader compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+          $fxc = Get-ChildItem "$sdk/*/x64/fxc.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$fxc) { throw "Windows SDK fxc.exe missing under $sdk" }
+          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+      - name: Check Metal toolchain
+        if: runner.os == 'macOS'
+        run: xcrun --find metal
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install "${env:RUST_VERSION}-${{ matrix.target }}" --profile minimal
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "RUSTUP_TOOLCHAIN=${env:RUST_VERSION}-${{ matrix.target }}" >> $env:GITHUB_ENV
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:GITCRAB_BUILD_REVISION = $env:GITHUB_SHA
+          cargo build --locked --release --bin gitcrab
+          if ($LASTEXITCODE) { throw "release build failed with exit code $LASTEXITCODE" }
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $name = "gitcrab-$env:TAG-${{ matrix.target }}"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          $exe = if ($IsWindows) { 'gitcrab.exe' } else { 'gitcrab' }
+          Copy-Item "target/release/$exe", LICENSE, icons/native/LICENSE-lucide.txt $stage
+          if ($IsWindows) {
+            $archive = "$name.zip"
+            Compress-Archive -Path $stage -DestinationPath $archive
+          } else {
+            # tar keeps the executable bit, which zip from PowerShell does not.
+            $archive = "$name.tar.gz"
+            tar -czf $archive -C $env:RUNNER_TEMP $name
+            if ($LASTEXITCODE) { throw "tar failed" }
+          }
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          "$hash  $archive" | Set-Content -Path "$archive.sha256" -Encoding ascii
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+      - name: Upload to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --draft=false
