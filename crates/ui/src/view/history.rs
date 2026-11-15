@@ -948,11 +948,12 @@ impl GitCrab {
                                 canvas(
                                     |_, _, _| (),
                                     move |bounds, _, w, _| {
-                                        let x = graph_lane_positions(
+                                        let scale = w.scale_factor();
+                                        let (x, _) = graph_node_x(
                                             bounds,
-                                            w.scale_factor(),
-                                            graph_scrolled,
-                                        )(0);
+                                            graph_lane_positions(bounds, scale, graph_scrolled)(0),
+                                            scale,
+                                        );
                                         let y = bounds.origin.y + px(height / 2.);
                                         let radius = px(WIP_RADIUS);
                                         // Same branch band as the commit rows, in the
@@ -987,6 +988,16 @@ impl GitCrab {
                                                 px(0.),
                                             );
                                         }
+                                        paint_graph_sticky_strips(
+                                            w,
+                                            bounds,
+                                            graph_scrolled,
+                                            graph_max,
+                                            band_y,
+                                            band_y + band_height,
+                                            branch_tint(wip_color, band_tint),
+                                            branch_tint(wip_color, 0x70),
+                                        );
                                         paint_dashed_circle(
                                             w,
                                             point(x, y),
@@ -1308,14 +1319,26 @@ impl GitCrab {
                                         let x = graph_lane_positions(bounds, scale, graph_scrolled);
                                         let center_y = bounds.center().y;
                                         let y = snap_graph_stroke_center(center_y, scale);
-                                        let center_x = x(row.lane);
+                                        // The node, its band and its label link
+                                        // stay in view; the lanes are cut off.
+                                        let (center_x, pinned) =
+                                            graph_node_x(bounds, x(row.lane), scale);
+                                        let node_color = if pinned {
+                                            tint(
+                                                lanes()[color % lanes().len()],
+                                                GRAPH_PINNED_NODE_ALPHA,
+                                            )
+                                        } else {
+                                            rgb(lanes()[color % lanes().len()])
+                                        };
                                         let band_y = origin.y + px(3.);
                                         let band_height = bounds.size.height - px(6.);
                                         let band_right = bounds.right();
+                                        let band_left = center_x;
                                         w.paint_quad(fill(
                                             Bounds::new(
-                                                point(center_x, band_y),
-                                                size(band_right - center_x, band_height),
+                                                point(band_left, band_y),
+                                                size(band_right - band_left, band_height),
                                             ),
                                             branch_tint(color, band_tint),
                                         ));
@@ -1398,6 +1421,18 @@ impl GitCrab {
                                                 edge_color,
                                             );
                                         }
+                                        // The edge strips sit between the lanes and the
+                                        // node, so lanes pass under them and nodes stay on top.
+                                        paint_graph_sticky_strips(
+                                            w,
+                                            bounds,
+                                            graph_scrolled,
+                                            graph_max,
+                                            band_y,
+                                            band_y + band_height,
+                                            branch_tint(color, band_tint),
+                                            branch_tint(color, 0x70),
+                                        );
                                         if junction {
                                             let radius = px(6.);
                                             let mut diamond = PathBuilder::fill();
@@ -1407,10 +1442,7 @@ impl GitCrab {
                                             diamond.line_to(point(center_x - radius, y));
                                             diamond.close();
                                             if let Ok(path) = diamond.build() {
-                                                w.paint_path(
-                                                    path,
-                                                    rgb(lanes()[color % lanes().len()]),
-                                                );
+                                                w.paint_path(path, node_color);
                                             }
                                         } else {
                                             let radius = 4.;
@@ -1423,7 +1455,7 @@ impl GitCrab {
                                                         ),
                                                         size(px(radius * 2.), px(radius * 2.)),
                                                     ),
-                                                    rgb(lanes()[color % lanes().len()]),
+                                                    node_color,
                                                 )
                                                 .corner_radii(px(radius)),
                                             );

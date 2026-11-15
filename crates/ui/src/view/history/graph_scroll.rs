@@ -53,6 +53,21 @@ impl GraphScroll {
         self.scrolled() != before
     }
 
+    /// Brings a node `center` pixels from the graph's unscrolled left edge into
+    /// view when it is less than `margin` inside the column (so pinned to an
+    /// edge), centring it in the column, as far as the ends
+    /// allow. A node already in view leaves the scroll alone. Returns whether
+    /// the position changed.
+    pub(crate) fn reveal(&self, center: f32, margin: f32) -> bool {
+        let extent = self.0.get();
+        let before = extent.scrolled;
+        let visible = center - before;
+        if visible < margin || visible > extent.viewport - margin {
+            self.scroll_to(center - extent.viewport / 2.);
+        }
+        self.scrolled() != before
+    }
+
     fn scroll_to(&self, scrolled: f32) {
         let mut extent = self.0.get();
         extent.scrolled = if scrolled.is_finite() {
@@ -103,5 +118,24 @@ mod tests {
         assert_eq!(scroll.scrolled(), 30.);
         scroll.set_extent(100., 80.);
         assert_eq!((scroll.scrolled(), scroll.max()), (0., 0.));
+    }
+
+    #[test]
+    fn revealing_a_node_centres_it_in_the_column() {
+        let scroll = GraphScroll::default();
+        scroll.set_extent(100., 400.);
+        // Past the right edge: scroll until it sits in the middle.
+        assert!(scroll.reveal(235., 15.));
+        assert_eq!(scroll.scrolled(), 185.);
+        // Already in view, even off-centre: nothing moves.
+        assert!(!scroll.reveal(205., 15.));
+        // Past the left edge: scroll back until it sits in the middle.
+        assert!(scroll.reveal(180., 15.));
+        assert_eq!(scroll.scrolled(), 130.);
+        // Never past either end.
+        scroll.reveal(10., 15.);
+        assert_eq!(scroll.scrolled(), 0.);
+        scroll.reveal(1000., 15.);
+        assert_eq!(scroll.scrolled(), scroll.max());
     }
 }

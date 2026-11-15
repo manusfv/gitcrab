@@ -63,6 +63,13 @@ const GRAPH_LANE_PITCH: f32 = geometry::SIZE_GRAPH_LANE_PITCH;
 const GRAPH_LANE_INSET: f32 = 35.;
 /// Room after the last lane, so its node and band edge stay clear of the column edge.
 const GRAPH_LANE_END: f32 = 16.;
+/// How far inside the graph column a node whose lane is out of view sticks.
+const GRAPH_NODE_EDGE_INSET: f32 = 14.;
+/// Room between a pinned node's centre and the lanes beside it: past a merge
+/// diamond's half-width, so the node sits wholly inside its row's band.
+const GRAPH_STICKY_PAD: f32 = 8.;
+/// Opacity of a node pinned to the graph column's edge.
+const GRAPH_PINNED_NODE_ALPHA: u8 = 0x8c;
 /// Width of the shade over a graph edge that hides scrolled-out lanes.
 const GRAPH_EDGE_SHADE: f32 = 18.;
 
@@ -129,6 +136,96 @@ fn graph_lane_positions(
             first
         } else {
             first + px(lane as f32 * pitch / scale)
+        }
+    }
+}
+
+/// Keeps a commit's node inside its graph cell: a node
+/// slides with its lane until it reaches the pin spot near an edge, then
+/// stays there while its lane moves on out of view. Narrowing the column
+/// stacks nodes along its right edge. Returns where to draw the node and
+/// whether it is pinned.
+fn graph_node_x(bounds: Bounds<Pixels>, x: Pixels, scale: f32) -> (Pixels, bool) {
+    let (left, right) = graph_pin_positions(bounds, scale);
+    if x < left {
+        (left, true)
+    } else if x > right {
+        (right, true)
+    } else {
+        (x, false)
+    }
+}
+
+/// Where nodes pinned to the left and right edges of a graph cell sit.
+fn graph_pin_positions(bounds: Bounds<Pixels>, scale: f32) -> (Pixels, Pixels) {
+    let inset = px(GRAPH_NODE_EDGE_INSET);
+    let left = snap_graph_stroke_center(bounds.left() + inset, scale);
+    let right = snap_graph_stroke_center(bounds.right() - inset, scale).max(left);
+    (left, right)
+}
+
+/// The strips along a graph cell's edges where pinned nodes sit: one along each edge with lanes hidden past it. Each is a solid
+/// layer between the lane lines and the nodes, so a lane disappears under it
+/// while a node sliding in stays on top.
+fn graph_sticky_strips(
+    bounds: Bounds<Pixels>,
+    scrolled: f32,
+    max: f32,
+    scale: f32,
+) -> Vec<Bounds<Pixels>> {
+    let (left_pin, right_pin) = graph_pin_positions(bounds, scale);
+    let pad = px(GRAPH_STICKY_PAD);
+    let mut strips = Vec::new();
+    if scrolled > 0.5 {
+        strips.push(Bounds::from_corners(
+            bounds.origin,
+            point((left_pin + pad).min(bounds.right()), bounds.bottom()),
+        ));
+    }
+    if max - scrolled > 0.5 {
+        strips.push(Bounds::from_corners(
+            point((right_pin - pad).max(bounds.left()), bounds.top()),
+            bounds.bottom_right(),
+        ));
+    }
+    strips
+}
+
+/// Paints the sticky strips of a graph cell over its lane lines, as their own
+/// layer: a solid background and, on the right strip only, the row's band
+/// colour across the strip's whole width between `band_top` and
+/// `band_bottom`, with the band's `border` at the cell's right edge. Because
+/// that strip has its own band, its edge covers a node gradually as it moves
+/// over it. The left strip shows only the pinned nodes.
+/// Nodes are painted after, on top.
+#[allow(clippy::too_many_arguments)]
+fn paint_graph_sticky_strips(
+    w: &mut Window,
+    bounds: Bounds<Pixels>,
+    scrolled: f32,
+    max: f32,
+    band_top: Pixels,
+    band_bottom: Pixels,
+    band_color: Rgba,
+    border: Rgba,
+) {
+    for strip in graph_sticky_strips(bounds, scrolled, max, w.scale_factor()) {
+        w.paint_quad(fill(strip, rgb(semantic(Role::SurfaceCanvas))));
+        if strip.right() >= bounds.right() {
+            w.paint_quad(fill(
+                Bounds::from_corners(
+                    point(strip.left(), band_top),
+                    point(strip.right(), band_bottom),
+                ),
+                band_color,
+            ));
+            w.paint_quad(fill(
+                Bounds::from_corners(
+                    point(bounds.right() - px(1.), band_top),
+                    point(bounds.right(), band_bottom),
+                ),
+                border,
+            ));
         }
     }
 }
@@ -1261,8 +1358,23 @@ impl GitCrab {
         self.selection = None;
         self.focus.focus(window, cx);
         if let Some(snapshot) = &self.state.snapshot {
-            if let Some(index) = id.and_then(|id| snapshot.commits.iter().position(|c| c.id == id))
-            {
+            let index = id.and_then(|id| snapshot.commits.iter().position(|c| c.id == id));
+            // When the selected node (or the WIP circle, on
+            // lane 0) is pinned or under an edge strip, scroll the graph
+            // sideways to centre it in the column.
+            let lane = match id {
+                Some(_) => index
+                    .and_then(|i| self.state.graph.rows.get(i))
+                    .map(|row| row.lane),
+                None => Some(0),
+            };
+            if let Some(lane) = lane {
+                self.graph_scroll.reveal(
+                    GRAPH_LANE_INSET + lane as f32 * GRAPH_LANE_PITCH,
+                    GRAPH_NODE_EDGE_INSET + GRAPH_STICKY_PAD,
+                );
+            }
+            if let Some(index) = index {
                 self.history_scroll
                     .scroll_to_item(index + 1, ScrollStrategy::Center);
             } else if id.is_none() {
@@ -3206,6 +3318,55 @@ mod graph_geometry_tests {
                 let shift = f32::from(unscrolled(3) - x(3));
                 assert!((shift - scrolled).abs() <= 1. / scale);
             }
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn nodes_out_of_view_stick_to_the_nearer_column_edge() {
+        let bounds = Bounds::new(point(px(200.), px(0.)), size(px(140.), px(30.)));
+        // 21 lanes need 451px: 311px of scrolling.
+        let max = graph_content_width(140., 21) - 140.;
+        for scale in [1., 1.25, 2.] {
+            let node = |lane: usize, scrolled| {
+                let x = graph_lane_positions(bounds, scale, scrolled);
+                graph_node_x(bounds, x(lane), scale)
+            };
+            let x = graph_lane_positions(bounds, scale, 0.);
+            assert_eq!(node(0, 0.), (x(0), false));
+            // Lane 9 is past the right edge until scrolled to.
+            let (right, pinned) = node(9, 0.);
+            assert!(pinned);
+            assert!(right < bounds.right() && right > bounds.right() - px(20.));
+            // Every lane past the edge stacks in the same place.
+            assert_eq!(node(20, 0.).0, right);
+            // A node slides with its lane and stops where it reaches the pin
+            // spot, without jumping, as the lanes move under it.
+            for step in 0..400 {
+                let scrolled = step as f32 * 0.25;
+                let x = graph_lane_positions(bounds, scale, scrolled)(6);
+                let (at, pinned) = graph_node_x(bounds, x, scale);
+                assert_eq!(at, x.clamp(at.min(x), right));
+                assert!(!pinned || (at - right).abs() < px(0.01) || at < bounds.center().x);
+            }
+            // Only the right edge hides lanes, so only it has a strip, which
+            // holds the pinned nodes whole and reaches the edge.
+            let strips = graph_sticky_strips(bounds, 0., max, scale);
+            assert_eq!(strips.len(), 1);
+            assert!(strips[0].left() < right - px(6.));
+            assert_eq!(strips[0].right(), bounds.right());
+            assert_eq!(strips[0].size.height, bounds.size.height);
+            // Scrolled right, early lanes stick to the left edge instead.
+            let (left, pinned) = node(0, 200.);
+            assert!(pinned);
+            assert!(left > bounds.left() && left < bounds.left() + px(20.));
+            let x = graph_lane_positions(bounds, scale, 200.);
+            assert_eq!(node(10, 200.), (x(10), false));
+            // Scrolled partway, both edges have a strip; at the end, only the left.
+            assert_eq!(graph_sticky_strips(bounds, 200., max, scale).len(), 2);
+            let strips = graph_sticky_strips(bounds, max, max, scale);
+            assert_eq!(strips.len(), 1);
+            assert_eq!(strips[0].left(), bounds.left());
+            assert!(strips[0].right() > left + px(6.));
         }
     }
 }
