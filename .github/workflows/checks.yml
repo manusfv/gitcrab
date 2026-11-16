@@ -1,7 +1,7 @@
 name: Checks
 
-# Pull requests into dev run the quick checks on Windows and Linux.
-# Pull requests from dev into main also run macOS and the release build.
+# Pull requests into dev or main run the checks on Windows, Linux and macOS.
+# Pull requests from dev into main also run the release build.
 on:
   pull_request:
     branches: [dev, main]
@@ -20,14 +20,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Only dev may merge into main. This job also picks the target matrix.
+  # Only dev may merge into main. This job also decides whether to run the
+  # release build.
   policy:
     name: branch policy
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      full: ${{ steps.plan.outputs.full }}
-      matrix: ${{ steps.plan.outputs.matrix }}
+      release_build: ${{ steps.plan.outputs.release_build }}
     steps:
       - id: plan
         env:
@@ -37,27 +37,17 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPO: ${{ github.repository }}
         run: |
-          full=false
+          release_build=false
           if [[ "$EVENT" == workflow_dispatch ]]; then
-            full=true
+            release_build=true
           elif [[ "$BASE" == main ]]; then
             if [[ "$HEAD" != dev || "$HEAD_REPO" != "$REPO" ]]; then
               echo "::error::Only the dev branch of this repository may open pull requests into main."
               exit 1
             fi
-            full=true
+            release_build=true
           fi
-          windows='{"runner":"windows-2025","target":"x86_64-pc-windows-msvc"}'
-          linux='{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}'
-          mac_arm='{"runner":"macos-15","target":"aarch64-apple-darwin"}'
-          mac_intel='{"runner":"macos-15-intel","target":"x86_64-apple-darwin"}'
-          if [[ "$full" == true ]]; then
-            matrix="[$windows,$linux,$mac_arm,$mac_intel]"
-          else
-            matrix="[$windows,$linux]"
-          fi
-          echo "full=$full" >> "$GITHUB_OUTPUT"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "release_build=$release_build" >> "$GITHUB_OUTPUT"
 
   format:
     name: format
@@ -83,9 +73,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.policy.outputs.matrix) }}
+        include:
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
     env:
-      FULL_BUILD: ${{ needs.policy.outputs.full }}
+      RELEASE_BUILD: ${{ needs.policy.outputs.release_build }}
       RUST_VERSION: ${{ inputs.rust_version || '1.99.1' }}
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -140,7 +134,7 @@ jobs:
           Check core @('test', '--locked', '-p', 'gitcrab-core')
           Check native @('test', '--locked', '--workspace', '--all-features', '--exclude', 'gitcrab-core')
       - name: Release build
-        if: env.FULL_BUILD == 'true'
+        if: env.RELEASE_BUILD == 'true'
         shell: pwsh
         run: |
           $env:GITCRAB_BUILD_REVISION = git rev-parse HEAD
