@@ -228,7 +228,8 @@ fn canonical_tag_identity_is_separate_from_a_same_named_branch() {
 }
 
 // APFS rejects file names that are not valid UTF-8 (EILSEQ), so macOS cannot
-// create these files. Linux filesystems store the raw bytes.
+// create these files. Linux filesystems store the raw bytes. History with such
+// names is covered on every platform by the test after this one.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn non_utf8_paths_are_distinct_disabled_rows_in_status_and_commit_details() {
@@ -248,6 +249,38 @@ fn non_utf8_paths_are_distinct_disabled_rows_in_status_and_commit_details() {
     git.commit("non-Unicode paths").unwrap();
     let details = git.changed_files("HEAD").unwrap();
     assert_eq!(details.len(), 2);
+    assert!(details.iter().all(|entry| entry.path_issue().is_some()));
+}
+
+/// A repository cloned from Linux can carry names that are not UTF-8 in its
+/// history even where the filesystem cannot hold them, as on macOS. Building
+/// the commit through the index keeps those names off the disk.
+#[test]
+fn non_utf8_paths_in_history_are_distinct_disabled_rows() {
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    fixture.write("data.txt", "data\n");
+    let blob = git.run(&["hash-object", "-w", "data.txt"]).unwrap();
+    std::fs::remove_file(git.path.join("data.txt")).unwrap();
+    let mut entries = Vec::new();
+    for raw in [b"name-\xff.txt", b"name-\xfe.txt"] {
+        entries.extend_from_slice(format!("100644 {}\t", blob.trim()).as_bytes());
+        entries.extend_from_slice(raw);
+        entries.push(0);
+    }
+    let cmd = git
+        .command(&["update-index", "-z", "--index-info"])
+        .unwrap();
+    let output = capture(cmd, Some(&entries), 0, None).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    git.commit("non-Unicode paths").unwrap();
+    let details = git.changed_files("HEAD").unwrap();
+    assert_eq!(details.len(), 2);
+    assert_ne!(details[0].path, details[1].path);
     assert!(details.iter().all(|entry| entry.path_issue().is_some()));
 }
 
