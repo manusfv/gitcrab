@@ -1,10 +1,10 @@
 name: Checks
 
-# Pull requests into dev or main run the checks on Windows, Linux and macOS.
-# Pull requests from dev into main also run the release build.
+# Pull requests into main run the checks and a release build on Windows,
+# Linux and macOS.
 on:
   pull_request:
-    branches: [dev, main]
+    branches: [main]
   workflow_dispatch:
     inputs:
       rust_version:
@@ -20,35 +20,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Only dev may merge into main. This job also decides whether to run the
-  # release build.
-  policy:
-    name: branch policy
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      release_build: ${{ steps.plan.outputs.release_build }}
-    steps:
-      - id: plan
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.base_ref }}
-          HEAD: ${{ github.head_ref }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          release_build=false
-          if [[ "$EVENT" == workflow_dispatch ]]; then
-            release_build=true
-          elif [[ "$BASE" == main ]]; then
-            if [[ "$HEAD" != dev || "$HEAD_REPO" != "$REPO" ]]; then
-              echo "::error::Only the dev branch of this repository may open pull requests into main."
-              exit 1
-            fi
-            release_build=true
-          fi
-          echo "release_build=$release_build" >> "$GITHUB_OUTPUT"
-
   format:
     name: format
     runs-on: ubuntu-24.04
@@ -67,7 +38,6 @@ jobs:
 
   native:
     name: ${{ matrix.target }}
-    needs: policy
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -79,7 +49,6 @@ jobs:
           - { runner: macos-15, target: aarch64-apple-darwin }
           - { runner: macos-15-intel, target: x86_64-apple-darwin }
     env:
-      RELEASE_BUILD: ${{ needs.policy.outputs.release_build }}
       RUST_VERSION: ${{ inputs.rust_version || '1.99.1' }}
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -134,7 +103,6 @@ jobs:
           Check core @('test', '--locked', '-p', 'gitcrab-core')
           Check native @('test', '--locked', '--workspace', '--all-features', '--exclude', 'gitcrab-core')
       - name: Release build
-        if: env.RELEASE_BUILD == 'true'
         shell: pwsh
         run: |
           $env:GITCRAB_BUILD_REVISION = git rev-parse HEAD

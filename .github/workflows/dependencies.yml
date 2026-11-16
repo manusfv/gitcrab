@@ -2,7 +2,7 @@ name: Dependencies
 
 on:
   pull_request:
-    branches: [dev, main]
+    branches: [main]
     paths: [Cargo.toml, Cargo.lock, deny.toml, .github/workflows/dependencies.yml]
   schedule:
     - cron: '30 9 * * 1'
