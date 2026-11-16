@@ -25,12 +25,15 @@ pub fn peak_memory_bytes() -> Option<usize> {
         let value = status
             .lines()
             .find_map(|line| line.strip_prefix("VmHWM:"))?;
-        return value
+        // Return only on success, like the other platforms, so the shared
+        // `None` below stays reachable on Linux too.
+        if let Some(kb) = value
             .split_whitespace()
-            .next()?
-            .parse::<usize>()
-            .ok()
-            .map(|kb| kb * 1024);
+            .next()
+            .and_then(|kb| kb.parse::<usize>().ok())
+        {
+            return Some(kb * 1024);
+        }
     }
     #[cfg(target_os = "macos")]
     {
