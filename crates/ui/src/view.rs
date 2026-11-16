@@ -3247,7 +3247,6 @@ impl Render for GitCrab {
                                 .tooltip(move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx)),
                         )
                     })
-                    .child(concat!("v", env!("CARGO_PKG_VERSION")))
                     .when(!self.activity.is_empty(), |bar| {
                         bar.child(
                             self.button(
@@ -3257,6 +3256,7 @@ impl Render for GitCrab {
                             .on_click(cx.listener(|v, _, w, cx| v.show_activity(w, cx))),
                         )
                     })
+                    .child(concat!("v", env!("CARGO_PKG_VERSION")))
                     .when_some(self.watch_warning.clone(), |bar, warning| {
                         bar.child(
                             self.button("watch-warning", "Live refresh unavailable")
