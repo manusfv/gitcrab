@@ -227,7 +227,9 @@ fn canonical_tag_identity_is_separate_from_a_same_named_branch() {
     );
 }
 
-#[cfg(unix)]
+// APFS rejects file names that are not valid UTF-8 (EILSEQ), so macOS cannot
+// create these files. Linux filesystems store the raw bytes.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn non_utf8_paths_are_distinct_disabled_rows_in_status_and_commit_details() {
     use std::os::unix::ffi::OsStrExt;
