@@ -21,25 +21,17 @@ gpui.workspace = true
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0.12"
 
-# Installer packaging for `cargo packager`, used by .github/workflows/release.yml.
-# Kept here rather than in a Packager.toml so name, version and description come
-# from Cargo; a standalone Packager.toml would have to repeat them.
 [package.metadata.packager]
 product-name = "GitCrab"
 identifier = "io.github.manusfv.gitcrab"
 publisher = "GitCrab contributors"
 homepage = "https://github.com/manusfv/gitcrab"
 category = "DeveloperTool"
-# The .png is the 256 px frame of gitcrab.ico: macOS and Linux use it, the
-# Windows installer uses the .ico.
 icons = ["../../icons/gitcrab-256.png", "../../icons/gitcrab.ico"]
 binaries = [{ path = "gitcrab", main = true }]
-# No license-file: on a DMG it becomes a click-through EULA, which MIT does not need.
 
 [package.metadata.packager.nsis]
-# Per-user install: no administrator prompt.
 installer-mode = "currentUser"
 
-# Release CI appends `signing-identity` to this table when signing secrets are
-# configured, so keep it the last table in this file.
+# Must stay the last table: release CI appends `signing-identity` to it.
 [package.metadata.packager.macos]
