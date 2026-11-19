@@ -17,11 +17,32 @@
 
 ## Install
 
-Prebuilt executables will be published on [GitHub Releases](https://github.com/manusfv/gitcrab/releases). Until then, you can [build GitCrab from source](#build-from-source).
+Download GitCrab from [GitHub Releases](https://github.com/manusfv/gitcrab/releases), or [build it from source](#build-from-source). Every platform also needs [Git 2.43 or newer](https://git-scm.com/downloads) on PATH.
 
-1. Install [Git 2.43 or newer](https://git-scm.com/downloads) so GitCrab can work with your repositories.
-2. When release builds are available, download the asset that matches your operating system and processor architecture.
-3. Launch GitCrab, choose a local repository, and confirm that you trust its Git configuration and metadata. GitCrab remembers your approval across restarts and asks again if the resolved repository paths change. It offers to reopen the last repository on your next launch.
+| System | Installer (recommended) | Standalone binary |
+| --- | --- | --- |
+| macOS, Apple Silicon | `gitcrab-macos-arm64.dmg` | `gitcrab-macos-arm64.tar.gz` |
+| macOS, Intel | `gitcrab-macos-x86_64.dmg` | `gitcrab-macos-x86_64.tar.gz` |
+| Windows 10/11, x64 | `gitcrab-windows-x86_64-setup.exe` | `gitcrab-windows-x86_64.zip` |
+| Linux, x64 | `gitcrab-linux-x86_64.AppImage` | `gitcrab-linux-x86_64.tar.gz` |
+
+Not sure which Mac you have? Apple menu → **About This Mac**: "Apple M…" is Apple Silicon, "Intel" is Intel. Windows and Linux on ARM are not built yet.
+
+- **macOS:** open the `.dmg` and drag **GitCrab** onto **Applications**.
+- **Windows:** run the setup `.exe`. It installs for the current user without an administrator prompt and adds a Start menu entry. The installer and binary are not code-signed, so SmartScreen may warn: choose **More info → Run anyway**.
+- **Linux:** `chmod +x gitcrab-linux-x86_64.AppImage`, then run it. It needs a working Vulkan driver.
+- **Standalone binaries:** extract the archive and run `gitcrab` (`gitcrab.exe` on Windows) from anywhere; nothing else is installed. The Windows binary needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (`VCRUNTIME140.dll`), which most systems already have. The Linux binary is built on Ubuntu 24.04, needs glibc 2.39 or newer and the system's X11/Wayland, xkbcommon, fontconfig, freetype and Vulkan libraries; if it doesn't start, `ldd gitcrab | grep "not found"` lists what's missing.
+- **Checksums:** each release has a `SHA256SUMS` file. Check a download with `sha256sum -c SHA256SUMS --ignore-missing` (`shasum -a 256 -c SHA256SUMS --ignore-missing` on macOS).
+
+**macOS Gatekeeper.** Each release's notes say whether its macOS builds are signed with an Apple Developer ID and notarized. Until they are, macOS blocks the first launch with "GitCrab can't be opened" or "Apple could not verify…". Open it anyway once with **System Settings → Privacy & Security → Open Anyway** (on macOS 14 and older you can also Control-click the app and choose **Open**), or remove the download quarantine:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/GitCrab.app   # or the extracted gitcrab binary
+```
+
+Only do this for a download you have verified against `SHA256SUMS`.
+
+Launch GitCrab, choose a local repository, and confirm that you trust its Git configuration and metadata. GitCrab remembers your approval across restarts and asks again if the resolved repository paths change. It offers to reopen the last repository on your next launch.
 
 ## What you can do
 
@@ -132,6 +153,26 @@ identify themselves as `local build` or `source archive`. Builds with
 `native-evidence` add a diagnostics label.
 
 The release executable is `target/release/gitcrab.exe` on Windows and `target/release/gitcrab` on Linux and macOS. Git is also required at runtime. The optional `native-evidence` feature enables deterministic view selection and readiness markers for renderer diagnostics.
+
+### Releasing
+
+Bump `version` under `[workspace.package]` in `Cargo.toml`, merge it to `main`, then tag that commit:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The [release workflow](.github/workflows/release.yml) checks that the tag is on `main` and matches the Cargo version, runs the tests on all four targets, builds the archives and installers, and publishes them with `SHA256SUMS` as one GitHub Release, only if every build succeeded. Tags with a hyphen (`v1.0.0-rc.1`) become prereleases. Running the workflow by hand from the Actions tab builds everything without publishing.
+
+Installers are made with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager), configured under `[package.metadata.packager]` in `crates/app/Cargo.toml`. To build one locally after `cargo build --release`:
+
+```sh
+cargo install --locked cargo-packager --version 0.11.8
+cargo packager -p gitcrab --release --formats nsis   # or app,dmg on macOS, appimage on Linux
+```
+
+macOS signing and notarization run only when these repository secrets are set; without them the macOS builds are unsigned. `APPLE_CERTIFICATE` (base64 `.p12` export of a Developer ID Application certificate and its key), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` (for example `Developer ID Application: Name (TEAMID)`), and for notarization an App Store Connect API key: `APPLE_API_KEY` (key ID), `APPLE_API_ISSUER` (issuer ID) and `APPLE_API_KEY_P8` (contents of the `.p8` file). The workflow records in the release notes what `codesign`, `spctl` and `stapler` verified.
 
 ## License and acknowledgements
 
