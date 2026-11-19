@@ -1,2 +1,29 @@
 // GPUI loads icon resource 1 for the Windows window class.
 1 ICON "../../icons/gitcrab.ico"
+
+// Windows shows FileDescription in Task Manager, the taskbar tooltip and
+// notifications; without it, it falls back to the bare "gitcrab.exe".
+// VER_* macros are supplied by build.rs from Cargo metadata.
+1 VERSIONINFO
+FILEVERSION VER_MAJOR, VER_MINOR, VER_PATCH, 0
+PRODUCTVERSION VER_MAJOR, VER_MINOR, VER_PATCH, 0
+FILEOS 0x40004L
+FILETYPE 0x1L
+{
+    BLOCK "StringFileInfo"
+    {
+        BLOCK "040904B0"
+        {
+            VALUE "FileDescription", "GitCrab"
+            VALUE "ProductName", "GitCrab"
+            VALUE "InternalName", "gitcrab"
+            VALUE "OriginalFilename", "gitcrab.exe"
+            VALUE "FileVersion", VER_STRING
+            VALUE "ProductVersion", VER_STRING
+        }
+    }
+    BLOCK "VarFileInfo"
+    {
+        VALUE "Translation", 0x409, 0x4B0
+    }
+}
