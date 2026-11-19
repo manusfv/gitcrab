@@ -125,6 +125,9 @@ fn main() {
                     title: Some("GitCrab".into()),
                     ..Default::default()
                 }),
+                // Wayland app ID / X11 WM_CLASS: lets Linux desktops match the
+                // window to gitcrab.desktop from the AppImage.
+                app_id: Some("gitcrab".into()),
                 ..Default::default()
             },
             |window, cx| {
