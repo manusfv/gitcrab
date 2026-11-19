@@ -36,6 +36,23 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
       - run: cargo fmt --all -- --check
 
+  # Lints the workflow files, including their shell scripts through the
+  # runner's preinstalled shellcheck. The release workflow only runs on tags,
+  # so this is where its mistakes surface first.
+  workflows:
+    name: workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: actionlint -color
+
   native:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
