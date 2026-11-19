@@ -326,7 +326,7 @@ jobs:
             echo '### macOS signing'
             cat artifacts/*/status.md
             echo
-            echo 'Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.'
+            echo "Verify downloads with \`sha256sum -c SHA256SUMS --ignore-missing\`."
           } > notes.md
           flags=()
           if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
