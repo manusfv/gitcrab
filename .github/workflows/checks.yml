@@ -36,6 +36,23 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
       - run: cargo fmt --all -- --check
 
+  # Lints the workflow files, including their shell scripts through the
+  # runner's preinstalled shellcheck. The release workflow only runs on tags,
+  # so this is where its mistakes surface first.
+  workflows:
+    name: workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: actionlint -color
+
   native:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -116,7 +133,8 @@ jobs:
         shell: bash
         run: |
           cargo build --locked --features native-evidence --bin gitcrab
-          export XDG_RUNTIME_DIR=$(mktemp -d)
+          XDG_RUNTIME_DIR=$(mktemp -d)
+          export XDG_RUNTIME_DIR
           chmod 700 "$XDG_RUNTIME_DIR"
           xvfb-run -a dbus-run-session -- bash -c 'openbox & python3 tests/smoke-x11.py target/debug/gitcrab check-logs/renderer'
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

@@ -20,3 +20,18 @@ gpui.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0.12"
+
+[package.metadata.packager]
+product-name = "GitCrab"
+identifier = "io.github.manusfv.gitcrab"
+publisher = "GitCrab contributors"
+homepage = "https://github.com/manusfv/gitcrab"
+category = "DeveloperTool"
+icons = ["../../icons/gitcrab-256.png", "../../icons/gitcrab.ico"]
+binaries = [{ path = "gitcrab", main = true }]
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
+
+# Must stay the last table: release CI appends `signing-identity` to it.
+[package.metadata.packager.macos]

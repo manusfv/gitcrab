@@ -125,6 +125,7 @@ fn main() {
                     title: Some("GitCrab".into()),
                     ..Default::default()
                 }),
+                app_id: Some("gitcrab".into()),
                 ..Default::default()
             },
             |window, cx| {

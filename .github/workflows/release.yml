@@ -3,9 +3,13 @@ name: Release
 # Push a version tag on main to publish a release, for example:
 #   git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1
 # A tag with a hyphen (v0.1.0-alpha.1, v0.2.0-rc.1) becomes a prerelease.
+#
+# Run it by hand (Actions > Release > Run workflow) to build and test every
+# artifact without publishing; the files are kept as workflow artifacts.
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,60 +21,56 @@ concurrency:
 env:
   TAG: ${{ github.ref_name }}
   RUST_VERSION: "1.99.1"
+  CARGO_PACKAGER_VERSION: "0.11.8"
 
 jobs:
-  # Checks the tag before any expensive build, then opens a draft release.
+  # Cheap checks before any expensive build.
   prepare:
     name: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Tag is on main
+        if: github.event_name == 'push'
         run: |
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::$TAG does not point to a commit on main."
             exit 1
           fi
       - name: Tag matches the Cargo version
+        if: github.event_name == 'push'
         run: |
           version=$(awk -F'"' '/^\[workspace.package\]/{f=1} f && /^version/{print $2; exit}' Cargo.toml)
           if [[ "v$version" != "$TAG" ]]; then
             echo "::error::Tag $TAG does not match the workspace version $version in Cargo.toml."
             exit 1
           fi
-      - name: Create draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+      - name: Format
         run: |
-          flags=()
-          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$TAG" --verify-tag --draft --generate-notes \
-            --title "GitCrab $TAG" "${flags[@]}"
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt
+          cargo "+$RUST_VERSION" fmt --all -- --check
 
   build:
     name: ${{ matrix.target }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-    permissions:
-      contents: write
+    timeout-minutes: 120
     strategy:
       fail-fast: true
       matrix:
         include:
-          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
-          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { runner: macos-15, target: aarch64-apple-darwin }
-          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc, platform: windows-x86_64, formats: nsis }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, platform: linux-x86_64, formats: appimage }
+          - { runner: macos-15, target: aarch64-apple-darwin, platform: macos-arm64, formats: 'app,dmg' }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin, platform: macos-x86_64, formats: 'app,dmg' }
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      ASSET: gitcrab-${{ matrix.platform }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -99,51 +99,213 @@ jobs:
           rustup toolchain install "${env:RUST_VERSION}-${{ matrix.target }}" --profile minimal
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "RUSTUP_TOOLCHAIN=${env:RUST_VERSION}-${{ matrix.target }}" >> $env:GITHUB_ENV
+      # Tag refs can only restore caches saved by the same tag or by main, so this
+      # mainly speeds up re-runs of a failed release.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-${{ matrix.target }}
+      - name: Test
+        shell: bash
+        run: |
+          scripts/check-boundaries.sh --skip-tests
+          cargo test --locked --workspace --all-features
       - name: Build
-        shell: pwsh
+        shell: bash
+        run: GITCRAB_BUILD_REVISION="$GITHUB_SHA" cargo build --locked --release --bin gitcrab
+      - name: Install cargo-packager
+        shell: bash
         run: |
-          $env:GITCRAB_BUILD_REVISION = $env:GITHUB_SHA
-          cargo build --locked --release --bin gitcrab
-          if ($LASTEXITCODE) { throw "release build failed with exit code $LASTEXITCODE" }
-      - name: Package
-        id: package
-        shell: pwsh
-        run: |
-          $name = "gitcrab-$env:TAG-${{ matrix.target }}"
-          $stage = Join-Path $env:RUNNER_TEMP $name
-          New-Item -ItemType Directory -Path $stage | Out-Null
-          $exe = if ($IsWindows) { 'gitcrab.exe' } else { 'gitcrab' }
-          Copy-Item "target/release/$exe", LICENSE, icons/native/LICENSE-lucide.txt $stage
-          if ($IsWindows) {
-            $archive = "$name.zip"
-            Compress-Archive -Path $stage -DestinationPath $archive
-          } else {
-            # tar keeps the executable bit, which zip from PowerShell does not.
-            $archive = "$name.tar.gz"
-            tar -czf $archive -C $env:RUNNER_TEMP $name
-            if ($LASTEXITCODE) { throw "tar failed" }
-          }
-          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
-          "$hash  $archive" | Set-Content -Path "$archive.sha256" -Encoding ascii
-          "archive=$archive" >> $env:GITHUB_OUTPUT
-      - name: Upload to the draft release
+          if [[ "$(cargo packager --version 2>/dev/null)" != *" $CARGO_PACKAGER_VERSION" ]]; then
+            cargo install --locked cargo-packager --version "$CARGO_PACKAGER_VERSION"
+          fi
+
+      # macOS signing is optional. Without the secrets below the job builds
+      # unsigned artifacts; with only some of them it fails rather than
+      # quietly publishing an unsigned app.
+      - name: Configure macOS signing
+        id: signing
+        if: runner.os == 'macOS'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          ARCHIVE: ${{ steps.package.outputs.archive }}
-        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          count() { local n=0; for v in "$@"; do [[ -n "$v" ]] && n=$((n + 1)); done; echo $n; }
+          signing=$(count "$APPLE_CERTIFICATE" "$APPLE_CERTIFICATE_PASSWORD" "$APPLE_SIGNING_IDENTITY")
+          notary=$(count "$APPLE_API_KEY" "$APPLE_API_ISSUER" "$APPLE_API_KEY_P8")
+          if (( signing % 3 || notary % 3 )); then
+            echo "::error::Set all of APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD and APPLE_SIGNING_IDENTITY, and all or none of APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_KEY_P8."
+            exit 1
+          fi
+          if (( notary && !signing )); then
+            echo "::error::Notarization secrets are set but the signing secrets are not."
+            exit 1
+          fi
+          if (( !signing )); then
+            echo "::warning::macOS signing secrets are not configured; building an unsigned app."
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # cargo-packager reads the identity only from its config. The macos
+          # table is the last one in crates/app/Cargo.toml.
+          id=${APPLE_SIGNING_IDENTITY//\\/\\\\}
+          id=${id//\"/\\\"}
+          printf 'signing-identity = "%s"\n' "$id" >> crates/app/Cargo.toml
+          echo "sign=true" >> "$GITHUB_OUTPUT"
+          if (( notary )); then
+            key="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY.p8"
+            printf '%s\n' "$APPLE_API_KEY_P8" > "$key"
+            chmod 600 "$key"
+            echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Notarization secrets are not configured; the app is signed but not notarized."
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+          fi
 
+      - name: Package installers
+        shell: bash
+        env:
+          # cargo-packager imports the certificate into a temporary keychain and
+          # notarizes the .app when these are present; empty values are ignored.
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
+        run: |
+          # Unset empty values so cargo-packager doesn't treat them as configured.
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY APPLE_API_ISSUER; do
+            [[ -n "${!v}" ]] || unset "$v"
+          done
+          cargo packager -p gitcrab --release --formats '${{ matrix.formats }}' --out-dir "$PWD/target/packager"
+
+      - name: Notarize the DMG
+        if: steps.signing.outputs.notarize == 'true'
+        shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          dmg=$(ls target/packager/*.dmg)
+          result=$(xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" --wait --output-format json || true)
+          echo "$result"
+          if [[ "$(jq -r .status <<<"$result")" != Accepted ]]; then
+            xcrun notarytool log "$(jq -r .id <<<"$result")" --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" || true
+            exit 1
+          fi
+          xcrun stapler staple "$dmg"
+
+      - name: Remove the notarization key
+        if: always() && steps.signing.outputs.notarize == 'true'
+        shell: bash
+        run: rm -f "$APPLE_API_KEY_PATH"
+
+      - name: Verify macOS packages
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          SIGN: ${{ steps.signing.outputs.sign }}
+          NOTARIZE: ${{ steps.signing.outputs.notarize }}
+        run: |
+          flags=()
+          if [[ "$SIGN" == true ]]; then flags+=(--expect-signed); fi
+          if [[ "$NOTARIZE" == true ]]; then flags+=(--expect-notarized); fi
+          status=$(scripts/verify-macos-packages.sh "${flags[@]}" target/packager/GitCrab.app target/packager/*.dmg)
+          echo "macOS ${{ matrix.platform }}: $status" | tee -a "$GITHUB_STEP_SUMMARY"
+          mkdir -p out
+          echo "- macOS ${{ matrix.platform }}: $status" > out/status.md
+
+      # Silent install into a temp folder, then a silent uninstall, on the
+      # throwaway runner. `_?=` keeps the uninstaller in place so it runs
+      # synchronously instead of relaunching itself from %TEMP%.
+      - name: Verify Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/verify-windows-installer.ps1 (Get-Item target/packager/*-setup.exe).FullName target/release/gitcrab.exe
+
+      - name: Verify Linux AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y desktop-file-utils
+          scripts/verify-appimage.sh target/packager/*.AppImage
+
+      - name: Collect assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out/assets | Out-Null
+          $stage = Join-Path $env:RUNNER_TEMP $env:ASSET
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          # On macOS the standalone binary is the one inside the .app, so it
+          # carries the same signature when signing is configured.
+          if ($IsWindows) { $exe = 'target/release/gitcrab.exe' }
+          elseif ($IsMacOS) { $exe = 'target/packager/GitCrab.app/Contents/MacOS/gitcrab' }
+          else { $exe = 'target/release/gitcrab' }
+          Copy-Item $exe, LICENSE, THIRD_PARTY.md, icons/native/LICENSE-lucide.txt $stage
+          if ($IsWindows) {
+            Compress-Archive -Path $stage -DestinationPath "out/assets/$env:ASSET.zip"
+            Copy-Item (Get-Item target/packager/*-setup.exe) "out/assets/$env:ASSET-setup.exe"
+          } else {
+            # tar keeps the executable bit, which zip from PowerShell does not.
+            tar -czf "out/assets/$env:ASSET.tar.gz" -C $env:RUNNER_TEMP $env:ASSET
+            if ($LASTEXITCODE) { throw "tar failed" }
+            if ($IsMacOS) {
+              Copy-Item (Get-Item target/packager/*.dmg) "out/assets/$env:ASSET.dmg"
+            } else {
+              Copy-Item (Get-Item target/packager/*.AppImage) "out/assets/$env:ASSET.AppImage"
+            }
+          }
+          Get-ChildItem out/assets | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-${{ matrix.platform }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Runs only when every build succeeded, so a release never has missing assets.
   publish:
     name: publish
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - name: Publish the draft release
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: release-*
+          path: artifacts
+      - name: Checksums
+        run: |
+          mkdir dist
+          mv artifacts/*/assets/* dist/
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release edit "$TAG" --draft=false
+        run: |
+          {
+            echo '### macOS signing'
+            cat artifacts/*/status.md
+            echo
+            echo "Verify downloads with \`sha256sum -c SHA256SUMS --ignore-missing\`."
+          } > notes.md
+          flags=()
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          # gh uploads every asset to a draft and publishes it only once all
+          # uploads have succeeded.
+          gh release create "$TAG" --verify-tag --title "GitCrab $TAG" \
+            --notes-file notes.md --generate-notes "${flags[@]}" dist/*
