@@ -207,8 +207,6 @@ jobs:
         shell: bash
         run: rm -f "$APPLE_API_KEY_PATH"
 
-      # Reports what was verified, never what was intended: an artifact is
-      # called signed or notarized only if codesign, spctl and stapler agree.
       - name: Verify macOS packages
         if: runner.os == 'macOS'
         shell: bash
@@ -216,34 +214,11 @@ jobs:
           SIGN: ${{ steps.signing.outputs.sign }}
           NOTARIZE: ${{ steps.signing.outputs.notarize }}
         run: |
-          app=target/packager/GitCrab.app
-          dmg=$(ls target/packager/*.dmg)
-          test -x "$app/Contents/MacOS/gitcrab"
-          plutil -lint "$app/Contents/Info.plist"
-          hdiutil verify "$dmg"
-          mnt=$(mktemp -d)
-          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
-          test -d "$mnt/GitCrab.app" && test -L "$mnt/Applications"
-          hdiutil detach "$mnt"
-
-          status="unsigned (not notarized)"
-          signature=$(codesign -dv --verbose=4 "$app" 2>&1 || true)
-          if grep -q '^Authority=Developer ID Application' <<<"$signature"; then
-            codesign --verify --deep --strict --verbose=2 "$app"
-            status="signed with Developer ID, not notarized"
-            if xcrun stapler validate "$dmg" && xcrun stapler validate "$app" \
-              && spctl --assess --type execute --verbose "$app" \
-              && spctl --assess --type open --context context:primary-signature --verbose "$dmg"; then
-              status="signed with Developer ID and notarized"
-            fi
-          fi
+          flags=()
+          if [[ "$SIGN" == true ]]; then flags+=(--expect-signed); fi
+          if [[ "$NOTARIZE" == true ]]; then flags+=(--expect-notarized); fi
+          status=$(scripts/verify-macos-packages.sh "${flags[@]}" target/packager/GitCrab.app target/packager/*.dmg)
           echo "macOS ${{ matrix.platform }}: $status" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [[ "$SIGN" == true && "$status" == unsigned* ]]; then
-            echo "::error::Signing was configured but the app is not Developer ID signed."; exit 1
-          fi
-          if [[ "$NOTARIZE" == true && "$status" != *"and notarized" ]]; then
-            echo "::error::Notarization was configured but could not be verified."; exit 1
-          fi
           mkdir -p out
           echo "- macOS ${{ matrix.platform }}: $status" > out/status.md
 
