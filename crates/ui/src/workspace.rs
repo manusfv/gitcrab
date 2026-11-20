@@ -170,7 +170,6 @@ fn update_notice(
                 .text_role(Role::TextDefault)
                 .child(format!("GitCrab {} is available", update.version)),
         )
-        // Installing in place adds an "Install and restart" button here.
         .child(
             button("update-release-notes", "Release notes")
                 .tooltip(update.release_url.clone())

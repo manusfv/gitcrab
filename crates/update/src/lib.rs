@@ -16,13 +16,10 @@ use gitcrab_core::updates::{self, AvailableUpdate, UpdateChannel, UpdateCheck, U
 use std::time::Duration;
 use tokio::sync::oneshot;
 
-/// The minisign public key that update bundles are signed with, as printed
-/// by `cargo packager signer generate` (the contents of the `.pub` file).
-///
-/// The maintainer fills this in when release signing is set up; see
-/// `docs/updates.md`. Checking for updates does not use it: the key only
-/// verifies a downloaded bundle before it is installed, so checks work with
-/// this empty placeholder and installing must refuse to run without a key.
+/// The minisign public key update bundles are signed with (the contents of
+/// the `.pub` file from `cargo packager signer generate`; see
+/// `docs/updates.md`). Checks work while it is empty, but installing must
+/// refuse to run without it.
 pub const UPDATE_PUBLIC_KEY: &str = "";
 
 /// Where each channel's manifest is published: `<base>/<channel>.json`.
@@ -32,19 +29,13 @@ const MANIFEST_BASE: &str = "https://raw.githubusercontent.com/manusfv/gitcrab/u
 /// `{channel}` in it is replaced by `stable` or `prerelease`.
 pub const ENDPOINT_VARIABLE: &str = "GITCRAB_UPDATE_ENDPOINT";
 
-/// Longest time one check may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The published manifest of `channel`.
 pub fn manifest_url(channel: UpdateChannel) -> String {
     format!("{MANIFEST_BASE}/{}.json", channel.name())
 }
 
 /// The manifest URL to read for `channel`, honouring a non-empty override.
-///
-/// # Errors
-///
-/// Returns a message if the URL does not parse.
 fn endpoint(channel: UpdateChannel, overridden: Option<String>) -> Result<Url, String> {
     let url = overridden
         .map(|url| url.trim().replace("{channel}", channel.name()))
@@ -142,7 +133,6 @@ mod tests {
         assert!(endpoint(UpdateChannel::Stable, Some("not a url".into())).is_err());
     }
 
-    /// Serves one HTTP response on a local port and returns its address.
     fn serve_once(status: &'static str, body: String) -> Url {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();

@@ -77,7 +77,6 @@ impl AvailableUpdate {
     }
 }
 
-/// The release page of `version`.
 pub fn release_page(version: &str) -> String {
     format!(
         "{RELEASES_URL}/tag/v{}",
@@ -85,7 +84,6 @@ pub fn release_page(version: &str) -> String {
     )
 }
 
-/// Parses a version with or without a leading `v`.
 fn parse(version: &str) -> Option<Version> {
     Version::parse(version.trim().trim_start_matches('v')).ok()
 }
@@ -138,8 +136,7 @@ pub type UpdateCheck = oneshot::Receiver<Result<Option<AvailableUpdate>, String>
 
 /// Finds releases newer than the running build.
 ///
-/// Implementations do their network work off the calling thread. Downloading
-/// and installing an update will be added here.
+/// Implementations do their network work off the calling thread.
 pub trait Updater: Send + Sync {
     /// Starts checking `channel` for a release newer than `current_version`.
     ///
