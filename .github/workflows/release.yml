@@ -197,7 +197,7 @@ jobs:
             if package; then exit 0; fi
             echo "::warning::DMG packaging failed (attempt $attempt); cleaning up and retrying."
             for vol in /Volumes/GitCrab*; do
-              [[ -d "$vol" ]] && hdiutil detach "$vol" -force || true
+              if [[ -d "$vol" ]]; then hdiutil detach "$vol" -force || true; fi
             done
             rm -f target/packager/rw.*.dmg target/packager/*.dmg
             sleep $((attempt * 15))
