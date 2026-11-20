@@ -120,6 +120,89 @@ pub struct Workspace {
     tab_drag_start: Option<(EntityId, Pixels)>,
     /// One keyboard focus stop per tab, kept across renders.
     tab_focus: std::collections::HashMap<EntityId, FocusHandle>,
+    /// Redraws the update notice when a check finishes.
+    _updates: Subscription,
+}
+
+/// The notice announcing an available release, above the repository panel.
+/// It never blocks the window: the user can act on it or close it.
+fn update_notice(
+    update: crate::updates::AvailableUpdate,
+    cx: &mut Context<Workspace>,
+) -> Stateful<Div> {
+    let button = |id: &'static str, label: &'static str| {
+        components::basic(
+            Button::new(id).label(label),
+            components::ButtonKind::Secondary,
+            components::ControlSize::Compact,
+        )
+        .tab_stop(true)
+    };
+    let url = update.release_url.clone();
+    let skip = update.version.clone();
+    let dismiss = update.version.clone();
+    div()
+        .id("update-notice")
+        .flex_none()
+        .mx_2()
+        .mt_2()
+        .p_2()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(CONTROL_RADIUS))
+        .border_1()
+        .border_role(Role::StatusInfoFg)
+        .bg_role(Role::StatusInfoBg)
+        .child(
+            div()
+                .size(px(8.))
+                .flex_none()
+                .rounded_full()
+                .bg_role(Role::StatusInfoFg),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_role(Role::TextDefault)
+                .child(format!("GitCrab {} is available", update.version)),
+        )
+        // Installing in place adds an "Install and restart" button here.
+        .child(
+            button("update-release-notes", "Release notes")
+                .tooltip(update.release_url.clone())
+                .on_click(move |_, _, cx| cx.open_url(&url)),
+        )
+        .child(
+            button("update-skip", "Skip this version")
+                .tooltip("Don't announce this version again")
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    crate::updates::skip(&skip, cx);
+                    cx.notify();
+                })),
+        )
+        .child(
+            Button::new("update-dismiss")
+                .ghost()
+                .small()
+                .tab_stop(true)
+                .w(scaled(28.))
+                .h(scaled(28.))
+                .child(
+                    div()
+                        .text_size(scaled(16.))
+                        .line_height(scaled(16.))
+                        .child("×"),
+                )
+                .tooltip("Close until GitCrab restarts")
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    crate::updates::dismiss(&dismiss, cx);
+                    cx.notify();
+                })),
+        )
 }
 
 impl Workspace {
@@ -157,6 +240,7 @@ impl Workspace {
             tab_drag: None,
             tab_drag_start: None,
             tab_focus: Default::default(),
+            _updates: cx.observe_global::<crate::updates::Updates>(|_, cx| cx.notify()),
         }
     }
 
@@ -876,6 +960,7 @@ impl Render for Workspace {
             .build(window, cx)
         };
         let active = self.tabs[self.active].clone();
+        let update = crate::updates::notice(cx);
         div()
             .relative()
             .size_full()
@@ -922,6 +1007,7 @@ impl Render for Workspace {
                     .child(new_tab)
                     .child(tab_list),
             )
+            .when_some(update, |el, update| el.child(update_notice(update, cx)))
             .when_some(self.picker_error.clone(), |el, error| {
                 el.child(div().px_3().text_role(Role::StatusErrorFg).child(error))
             })
