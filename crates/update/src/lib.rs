@@ -13,8 +13,9 @@
 //! installing, and installing hands it to `cargo-packager-updater`:
 //!
 //! - Windows: the bundle is the per-user NSIS setup. It is saved to a
-//!   temporary file and started with `/P /R` (progress bar only, start
-//!   GitCrab when done), and this process exits at once.
+//!   temporary file and started with [`WINDOWS_INSTALLER_ARGS`] through a
+//!   hidden PowerShell, and this process exits at once. The setup shows no
+//!   window and starts GitCrab again when it finishes.
 //! - Linux: the bundle is the AppImage. It replaces the file in `$APPIMAGE`,
 //!   keeping its permissions; the old one is restored if writing fails.
 //! - macOS: the bundle is `GitCrab.app.tar.gz`. It is unpacked to a
@@ -25,6 +26,7 @@
 //! signatures, inspects how GitCrab was installed and runs the install.
 use cargo_packager_updater::{
     http::header::USER_AGENT, semver::Version, url::Url, Config, Error, Update, UpdaterBuilder,
+    WindowsConfig, WindowsUpdateInstallMode,
 };
 use gitcrab_core::updates::{
     self, AvailableUpdate, DownloadProgress, InstallSupport, Packaging, UpdateChannel, UpdateCheck,
@@ -55,6 +57,19 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Longest time a bundle download may take, start to finish.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// What the NSIS setup is started with: `/S` runs it with no window, `/R`
+/// makes it start GitCrab once installed (the template honours `/R` only in
+/// silent or passive mode), and `/NS` keeps it from recreating shortcuts the
+/// user removed. The setup installs per user, so it never asks to elevate.
+pub const WINDOWS_INSTALLER_ARGS: [&str; 3] = ["/S", "/R", "/NS"];
+
+fn windows_config() -> WindowsConfig {
+    WindowsConfig {
+        install_mode: Some(WindowsUpdateInstallMode::Quiet),
+        installer_args: Some(vec!["/NS".to_owned()]),
+    }
+}
 
 pub fn manifest_url(channel: UpdateChannel) -> String {
     format!("{MANIFEST_BASE}/{}.json", channel.name())
@@ -254,7 +269,7 @@ fn check_manifest(current: Version, url: Url, key: String) -> Result<Option<Upda
         Config {
             endpoints: vec![url],
             pubkey: key,
-            windows: None,
+            windows: Some(windows_config()),
         },
     )
     .version_comparator(|current, release| {
@@ -398,6 +413,20 @@ mod tests {
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn the_windows_setup_runs_silently_and_restarts_gitcrab() {
+        let config = windows_config();
+        let args: Vec<&str> = config
+            .install_mode
+            .unwrap_or_default()
+            .nsis_args()
+            .iter()
+            .copied()
+            .chain(config.installer_args.iter().flatten().map(String::as_str))
+            .collect();
+        assert_eq!(args, WINDOWS_INSTALLER_ARGS);
+    }
 
     #[test]
     fn channels_read_their_own_manifest() {
