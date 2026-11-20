@@ -168,6 +168,27 @@ jobs:
             echo "notarize=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Update signing is optional too. With the key, cargo-packager writes a
+      # minisign .sig next to every package, which the in-app updater checks
+      # against the public key built into the app. The key must have a
+      # password, so a key alone is treated as a half configuration.
+      - name: Configure update signing
+        id: update-signing
+        shell: bash
+        env:
+          UPDATER_PRIVATE_KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
+          UPDATER_PRIVATE_KEY_PASSWORD: ${{ secrets.UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$UPDATER_PRIVATE_KEY" && -z "$UPDATER_PRIVATE_KEY_PASSWORD" ]]; then
+            echo "::warning::Update signing secrets are not configured; building without update signatures."
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+          elif [[ -z "$UPDATER_PRIVATE_KEY" || -z "$UPDATER_PRIVATE_KEY_PASSWORD" ]]; then
+            echo "::error::Set both UPDATER_PRIVATE_KEY and UPDATER_PRIVATE_KEY_PASSWORD, or neither."
+            exit 1
+          else
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Package installers
         shell: bash
         env:
@@ -177,9 +198,15 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
           APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY || '' }}
           APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
+          # With these, cargo-packager signs each package for the updater. For
+          # the .app directory it first packs GitCrab.app.tar.gz, the macOS
+          # update bundle, and signs that.
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.UPDATER_PRIVATE_KEY_PASSWORD }}
         run: |
           # Unset empty values so cargo-packager doesn't treat them as configured.
-          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY APPLE_API_ISSUER; do
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY APPLE_API_ISSUER \
+            CARGO_PACKAGER_SIGN_PRIVATE_KEY CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD; do
             [[ -n "${!v}" ]] || unset "$v"
           done
           package() {
@@ -260,12 +287,28 @@ jobs:
 
       - name: Collect assets
         shell: pwsh
+        env:
+          UPDATE_SIGN: ${{ steps.update-signing.outputs.sign }}
         run: |
           New-Item -ItemType Directory -Force -Path out/assets | Out-Null
-          # macOS ships only the .dmg: the .app inside it is already portable,
-          # and a bare binary outside the bundle loses its icon and identity.
+          # Copies a package and, when update signing is on, its .sig.
+          function Copy-Package($source, $name) {
+            Copy-Item $source "out/assets/$name"
+            if ($env:UPDATE_SIGN -eq 'true') {
+              $sig = "$source.sig"
+              if (!(Test-Path $sig)) { throw "update signature $sig is missing" }
+              Copy-Item $sig "out/assets/$name.sig"
+            }
+          }
+          # For people, macOS ships only the .dmg: the .app inside it is already
+          # portable, and a bare binary outside the bundle loses its icon and
+          # identity. The signed .app.tar.gz is for the in-app updater only. The
+          # DMG's own .sig is dropped because stapling changes the DMG afterwards.
           if ($IsMacOS) {
             Copy-Item (Get-Item target/packager/*.dmg) "out/assets/$env:ASSET.dmg"
+            if ($env:UPDATE_SIGN -eq 'true') {
+              Copy-Package target/packager/GitCrab.app.tar.gz "$env:ASSET.app.tar.gz"
+            }
           } else {
             $stage = Join-Path $env:RUNNER_TEMP $env:ASSET
             New-Item -ItemType Directory -Path $stage | Out-Null
@@ -273,12 +316,12 @@ jobs:
             Copy-Item $exe, LICENSE, THIRD_PARTY.md, icons/native/LICENSE-lucide.txt $stage
             if ($IsWindows) {
               Compress-Archive -Path $stage -DestinationPath "out/assets/$env:ASSET.zip"
-              Copy-Item (Get-Item target/packager/*-setup.exe) "out/assets/$env:ASSET-setup.exe"
+              Copy-Package (Get-Item target/packager/*-setup.exe).FullName "$env:ASSET-setup.exe"
             } else {
               # tar keeps the executable bit, which zip from PowerShell does not.
               tar -czf "out/assets/$env:ASSET.tar.gz" -C $env:RUNNER_TEMP $env:ASSET
               if ($LASTEXITCODE) { throw "tar failed" }
-              Copy-Item (Get-Item target/packager/*.AppImage) "out/assets/$env:ASSET.AppImage"
+              Copy-Package (Get-Item target/packager/*.AppImage).FullName "$env:ASSET.AppImage"
             }
           }
           Get-ChildItem out/assets | Format-Table Name, Length
@@ -300,6 +343,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # For scripts/update-manifest.sh.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: release-*
@@ -324,7 +371,89 @@ jobs:
           } > notes.md
           flags=()
           if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          # A re-run after the release was published goes straight on to the
+          # update manifests. A leftover draft has to be deleted by hand.
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$draft" == true ]]; then
+              echo "::error::A draft release $TAG exists; delete it and re-run."
+              exit 1
+            fi
+            echo "::notice::Release $TAG already exists; not creating it again."
+            exit 0
+          fi
           # gh uploads every asset to a draft and publishes it only once all
           # uploads have succeeded.
           gh release create "$TAG" --verify-tag --title "GitCrab $TAG" \
             --notes-file notes.md --generate-notes "${flags[@]}" dist/*
+
+      # The in-app updater reads <channel>.json from the update-manifests branch
+      # through raw.githubusercontent.com (see docs/updates.md). A stable tag
+      # goes to both channels, a prerelease tag only to prerelease.json. The
+      # updater rejects unsigned bundles, so without the signing key there is
+      # nothing to point it at.
+      - name: Update the manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UPDATE_SIGN: ${{ secrets.UPDATER_PRIVATE_KEY != '' }}
+        run: |
+          if [[ "$UPDATE_SIGN" != true ]]; then
+            echo "::warning::Update signing is not configured; the update manifests are unchanged."
+            exit 0
+          fi
+          # The release's own notes and publish time keep a re-run's manifest
+          # identical, so it commits nothing.
+          gh release view "$TAG" --json body --jq .body > update-notes.md
+          PUB_DATE=$(gh release view "$TAG" --json publishedAt --jq .publishedAt) \
+            scripts/update-manifest.sh "$TAG" update-notes.md dist > manifest.json
+          channels=(prerelease)
+          if [[ "$TAG" != *-* ]]; then channels+=(stable); fi
+
+          # True when semver $1 is lower than $2. sort -V alone would order
+          # 1.0.0 before 1.0.0-rc.1.
+          older() {
+            local a=$1 b=$2
+            [[ "$a" == "$b" ]] && return 1
+            if [[ "${a%%-*}" != "${b%%-*}" ]]; then
+              [[ "$(printf '%s\n' "${a%%-*}" "${b%%-*}" | sort -V | head -n1)" == "${a%%-*}" ]]
+            elif [[ "$a" != *-* ]]; then
+              return 1
+            elif [[ "$b" != *-* ]]; then
+              return 0
+            else
+              [[ "$(printf '%s\n' "$a" "$b" | sort -V | head -n1)" == "$a" ]]
+            fi
+          }
+
+          gh auth setup-git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git init -q manifests
+          cd manifests
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          if git ls-remote --exit-code --heads origin update-manifests >/dev/null; then
+            git fetch -q --depth=1 origin update-manifests
+            git checkout -q -B update-manifests FETCH_HEAD
+          else
+            git checkout -q --orphan update-manifests
+          fi
+          version=${TAG#v}
+          for channel in "${channels[@]}"; do
+            # Re-running an older tag must not roll a channel back.
+            if [[ -f "$channel.json" ]]; then
+              current=$(jq -r '.version' "$channel.json")
+              if older "$version" "$current"; then
+                echo "::warning::$channel.json already offers $current; leaving it alone."
+                continue
+              fi
+            fi
+            cp ../manifest.json "$channel.json"
+          done
+          git add -- *.json
+          if git diff --cached --quiet; then
+            echo "The update manifests already describe $TAG."
+            exit 0
+          fi
+          git commit -q -m "Update manifests for $TAG"
+          git push origin update-manifests
+          git log --stat -1
