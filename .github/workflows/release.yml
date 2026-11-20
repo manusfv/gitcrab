@@ -182,7 +182,28 @@ jobs:
           for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY APPLE_API_ISSUER; do
             [[ -n "${!v}" ]] || unset "$v"
           done
-          cargo packager -p gitcrab --release --formats '${{ matrix.formats }}' --out-dir "$PWD/target/packager"
+          package() {
+            cargo packager -p gitcrab --release --formats '${{ matrix.formats }}' --out-dir "$PWD/target/packager"
+          }
+          if [[ "$RUNNER_OS" != macOS ]]; then
+            package
+            exit
+          fi
+          # On hosted macOS runners Spotlight and XProtect scan the freshly
+          # mounted DMG volume, so create-dmg's `hdiutil detach` can fail with
+          # "Resource busy". Stop indexing, then retry with a clean slate.
+          sudo mdutil -a -i off >/dev/null || true
+          for attempt in 1 2 3; do
+            if package; then exit 0; fi
+            echo "::warning::DMG packaging failed (attempt $attempt); cleaning up and retrying."
+            for vol in /Volumes/GitCrab*; do
+              [[ -d "$vol" ]] && hdiutil detach "$vol" -force || true
+            done
+            rm -f target/packager/rw.*.dmg target/packager/*.dmg
+            sleep $((attempt * 15))
+          done
+          echo "::error::DMG packaging failed after 3 attempts."
+          exit 1
 
       - name: Notarize the DMG
         if: steps.signing.outputs.notarize == 'true'
