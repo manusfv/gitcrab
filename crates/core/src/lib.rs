@@ -32,6 +32,7 @@ pub mod presentation;
 pub mod service;
 pub mod sidebar;
 pub mod tabs;
+pub mod updates;
 pub mod watch;
 
 #[rustfmt::skip]

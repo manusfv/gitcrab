@@ -16,6 +16,7 @@ native-evidence = ["gitcrab-ui/native-evidence", "gitcrab-git/git-trace"]
 gitcrab-ui.workspace = true
 gitcrab-git.workspace = true
 gitcrab-settings.workspace = true
+gitcrab-update.workspace = true
 gpui.workspace = true
 
 [target.'cfg(windows)'.build-dependencies]

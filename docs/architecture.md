@@ -1,6 +1,6 @@
 # Application state and effects
 
-The workspace has five crates:
+The workspace has six crates:
 
 - `crates/core` (`gitcrab-core`): the controller, presentation, diff and graph
   logic, the repository data types, and the request/response protocol with the
@@ -11,15 +11,19 @@ The workspace has five crates:
   Its tests run real Git in isolated repositories.
 - `crates/settings` (`gitcrab-settings`): preferences, session and trust files
   behind core's `SettingsStore` trait.
+- `crates/update` (`gitcrab-update`): update checks behind core's `Updater`
+  trait. Reads each channel's release manifest with `cargo-packager-updater`
+  on a background thread. Holds `UPDATE_PUBLIC_KEY`.
 - `crates/ui` (`gitcrab-ui`): GPUI views and components. Depends on core only
-  and reaches Git and settings through the `GitBackend` and `SettingsStore`
-  the app installs.
-- `crates/app` (`gitcrab`): the binary. Installs `gitcrab_git::Backend` and
-  `gitcrab_settings::FileStore`, then opens the window.
+  and reaches Git, settings and updates through the `GitBackend`,
+  `SettingsStore` and `Updater` the app installs.
+- `crates/app` (`gitcrab`): the binary. Installs `gitcrab_git::Backend`,
+  `gitcrab_settings::FileStore` and `gitcrab_update::ManifestUpdater`, then
+  opens the window.
 
 `scripts/check-boundaries.sh` enforces this layout: core has no UI, platform or
-I/O dependency, the UI depends on neither I/O crate, the I/O crates do not
-depend on the UI, and core tests pass. CI runs it on every platform.
+I/O dependency, the UI depends on no I/O crate, the I/O crates do not depend on
+the UI, and core tests pass. CI runs it on every platform.
 
 Paths below are relative to each crate's `src/`.
 
@@ -78,6 +82,14 @@ Paths below are relative to each crate's `src/`.
   flushes pending saves, and file replacement uses an owned temporary file beside
   the destination. `ui/preferences.rs` only keeps the shared copy in a gpui
   global and applies the font size to the theme.
+- `updates.rs` (core) owns the update rules: the effective release channel
+  (the saved choice, else prerelease for a prerelease build), the daily limit
+  on automatic checks, semver comparison and skipped versions. It defines the
+  `Updater` trait. `ui/updates.rs` keeps the latest result in a gpui global,
+  runs the automatic schedule (10 seconds after startup, then hourly when a
+  check is due) and records the skipped version and last check through
+  `ui/preferences.rs`. The workspace shows the update notice; the Appearance
+  dialog has the Updates group.
 
 The Serde request/reply envelope is an internal diagnostic format. GitCrab does
 not expose it as a supported external protocol. Its tests continue to exercise

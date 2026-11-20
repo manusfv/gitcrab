@@ -596,6 +596,12 @@ impl GitCrab {
             .new(|cx| InputState::new(window, cx).placeholder("Branch, revision or stash message"));
         let diff_search = cx.new(|cx| InputState::new(window, cx).placeholder("Find in diff…"));
         let subscriptions = vec![
+            // The settings dialog shows the latest update check.
+            cx.observe_global::<crate::updates::Updates>(|v, cx| {
+                if v.settings_open {
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&reference_search, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe_in(
                 &target,

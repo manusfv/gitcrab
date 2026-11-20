@@ -11,6 +11,12 @@ impl GitCrab {
         }
         self.settings_open = true;
         self.appearance_status = AppearanceStatus::Idle;
+        // Update choices are app-wide: show what another tab may have set.
+        let shared = crate::preferences::current(cx);
+        for preferences in [&mut self.preferences, &mut self.saved_preferences] {
+            preferences.check_for_updates = shared.check_for_updates;
+            preferences.update_channel = shared.update_channel;
+        }
         let weak = cx.weak_entity();
         let close = weak.clone();
         window.open_dialog(cx, move |dialog, w, cx| {
@@ -164,6 +170,116 @@ impl GitCrab {
         row
     }
 
+    /// Automatic checks, the release channel and a manual check with its result.
+    fn update_settings(&self, cx: &mut Context<Self>) -> Div {
+        use crate::updates::{Status, UpdateChannel, CURRENT_VERSION};
+        let automatic = self.preferences.check_for_updates;
+        let channel = UpdateChannel::effective(self.preferences.update_channel, CURRENT_VERSION);
+        let status = crate::updates::status(cx);
+        let mut channels = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().min_w_0().child("Update channel"));
+        for (index, option) in [UpdateChannel::Stable, UpdateChannel::Prerelease]
+            .into_iter()
+            .enumerate()
+        {
+            channels = channels.child(
+                self.segment_button(("update-channel", index), option.label(), option == channel)
+                    .tab_stop(true)
+                    .on_click(cx.listener(move |v, _, w, cx| {
+                        if v.preferences.update_channel == Some(option) {
+                            return;
+                        }
+                        let previous =
+                            UpdateChannel::effective(v.preferences.update_channel, CURRENT_VERSION);
+                        v.preferences.update_channel = Some(option);
+                        if previous != option {
+                            crate::updates::channel_changed(cx);
+                        }
+                        v.persist_preferences(w, cx);
+                        cx.notify();
+                    })),
+            );
+        }
+        let (text, role) = match &status {
+            Status::Idle => (String::new(), Role::TextMuted),
+            Status::Checking => ("Checking…".to_owned(), Role::TextMuted),
+            Status::UpToDate => ("GitCrab is up to date.".to_owned(), Role::StatusSuccessFg),
+            Status::Available(update) => (
+                if crate::updates::is_skipped(&update.version, cx) {
+                    format!("GitCrab {} is available. You skipped it.", update.version)
+                } else {
+                    format!("GitCrab {} is available.", update.version)
+                },
+                Role::StatusInfoFg,
+            ),
+            Status::Failed(error) => (
+                format!("Could not check for updates: {error}"),
+                Role::StatusErrorFg,
+            ),
+        };
+        let check = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                self.action_button("check-updates-now", "Check now")
+                    .tab_stop(status != Status::Checking)
+                    .disabled_when(status == Status::Checking)
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::updates::check_now(channel, cx);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("update-check-status")
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(scaled(12.))
+                    .text_role(role)
+                    .child(text),
+            );
+        self.settings_group("Updates")
+            .child(
+                self.action_button(
+                    "automatic-update-checks",
+                    if automatic {
+                        "Check for updates automatically: On"
+                    } else {
+                        "Check for updates automatically: Off"
+                    },
+                )
+                .selected(automatic)
+                .tab_stop(true)
+                .on_click(cx.listener(|v, _, w, cx| {
+                    v.preferences.check_for_updates = !v.preferences.check_for_updates;
+                    v.persist_preferences(w, cx);
+                    cx.notify();
+                })),
+            )
+            .child(channels)
+            .child(
+                div()
+                    .text_size(scaled(12.))
+                    .text_role(Role::TextMuted)
+                    .child(if self.preferences.update_channel.is_some() {
+                        "Prerelease includes stable releases."
+                    } else {
+                        "Following this build's channel. Prerelease includes stable releases."
+                    }),
+            )
+            .child(check)
+            .child(
+                div()
+                    .text_size(scaled(12.))
+                    .text_role(Role::TextMuted)
+                    .child(format!("GitCrab {CURRENT_VERSION} · {}", crate::BUILD)),
+            )
+    }
+
     pub(super) fn settings_dialog(&self, height: f32, cx: &mut Context<Self>) -> AnyElement {
         let small = scaled(12.);
         let muted = |text: &'static str| {
@@ -262,9 +378,13 @@ impl GitCrab {
                 self.action_button("reset-appearance", "Reset appearance and layout")
                     .tab_stop(true)
                     .on_click(cx.listener(|v, _, w, cx| {
-                        let recent = v.preferences.recent.clone();
-                        v.preferences = Preferences::default();
-                        v.preferences.recent = recent;
+                        let kept = v.preferences.clone();
+                        v.preferences = Preferences {
+                            recent: kept.recent,
+                            check_for_updates: kept.check_for_updates,
+                            update_channel: kept.update_channel,
+                            ..Preferences::default()
+                        };
                         v.compact = false;
                         v.split = false;
                         v.layout_revision += 1;
@@ -278,12 +398,7 @@ impl GitCrab {
                         cx.notify();
                     })),
             );
-        let about = self.settings_group("About").child(muted(concat!(
-            "GitCrab ",
-            env!("CARGO_PKG_VERSION"),
-            " · ",
-            env!("GITCRAB_BUILD")
-        )));
+        let updates = self.update_settings(cx);
         scroll_area(
             "appearance-settings",
             &self.settings_scroll,
@@ -303,7 +418,7 @@ impl GitCrab {
                 .child(text)
                 .child(code)
                 .child(layout)
-                .child(about),
+                .child(updates),
         )
         .into_any_element()
     }

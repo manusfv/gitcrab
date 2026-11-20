@@ -5,6 +5,7 @@ use crate::{
     history_columns::HistoryColumns,
     platform::RepositoryLocation,
     presentation::{display_path, same_path, unique_paths},
+    updates::UpdateChannel,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,6 +36,15 @@ pub struct Preferences {
     pub repository_columns: BTreeMap<String, HistoryColumns>,
     /// Main window size when GitCrab last closed.
     pub window: Option<WindowSize>,
+    /// Whether GitCrab checks for updates on its own, at most once a day.
+    pub check_for_updates: bool,
+    /// The release channel the user chose. `None` follows the running
+    /// build; see [`UpdateChannel::effective`].
+    pub update_channel: Option<UpdateChannel>,
+    /// A release version the user chose not to be told about again.
+    pub skipped_update: Option<String>,
+    /// When the last successful update check finished, in Unix seconds.
+    pub last_update_check: Option<u64>,
 }
 
 /// Saved main window size in logical pixels.
@@ -77,6 +87,10 @@ impl Default for Preferences {
             history_columns: Default::default(),
             repository_columns: Default::default(),
             window: None,
+            check_for_updates: true,
+            update_channel: None,
+            skipped_update: None,
+            last_update_check: None,
         }
     }
 }
@@ -106,6 +120,11 @@ impl Preferences {
             .values_mut()
             .for_each(HistoryColumns::normalize);
         self.window = self.window.and_then(WindowSize::normalized);
+        self.skipped_update = self
+            .skipped_update
+            .take()
+            .map(|version| version.trim().to_owned())
+            .filter(|version| !version.is_empty());
     }
 
     /// Moves `path` to the top of the recent list, dropping other spellings of
@@ -138,7 +157,8 @@ impl Preferences {
     ///
     /// Only fields the tab changed are copied, so changes other tabs made to
     /// fields this tab left alone survive. App-wide appearance (theme and
-    /// font size) is never taken from a tab.
+    /// font size) and the update state the app records (the skipped version
+    /// and the last check) are never taken from a tab.
     pub fn merge_tab_changes(&mut self, previous: &Self, edited: &Self) {
         macro_rules! merge {
             ($($field:ident),+ $(,)?) => {$(
@@ -154,7 +174,9 @@ impl Preferences {
             split,
             code_size,
             compact_diff,
-            always_show_file_actions
+            always_show_file_actions,
+            check_for_updates,
+            update_channel
         );
         for (repository, columns) in &edited.repository_columns {
             if previous.repository_columns.get(repository) != Some(columns) {
@@ -301,6 +323,53 @@ mod tests {
         let p: Preferences = serde_json::from_str(r#"{"theme":"missing","code_size":17}"#).unwrap();
         assert_eq!(p.code_size, 17.);
         assert_eq!(p.theme.resolve(false), "dark");
+    }
+
+    #[test]
+    fn old_preferences_check_for_updates_on_the_build_channel() {
+        let p: Preferences = serde_json::from_str(r#"{"compact":true}"#).unwrap();
+        assert!(p.check_for_updates);
+        assert_eq!(p.update_channel, None);
+        assert_eq!(p.skipped_update, None);
+        assert_eq!(p.last_update_check, None);
+        let p: Preferences = serde_json::from_str(
+            r#"{"check_for_updates":false,"update_channel":"stable","skipped_update":"0.2.0","last_update_check":42}"#,
+        )
+        .unwrap();
+        assert!(!p.check_for_updates);
+        assert_eq!(p.update_channel, Some(UpdateChannel::Stable));
+        assert_eq!(p.skipped_update.as_deref(), Some("0.2.0"));
+        assert_eq!(p.last_update_check, Some(42));
+    }
+
+    #[test]
+    fn update_choices_merge_but_recorded_update_state_stays_shared() {
+        let original = Preferences::default();
+        let mut shared = original.clone();
+        shared.skipped_update = Some("0.2.0".into());
+        shared.last_update_check = Some(100);
+        let mut edited = original.clone();
+        edited.check_for_updates = false;
+        edited.update_channel = Some(UpdateChannel::Stable);
+        edited.last_update_check = Some(1);
+        shared.merge_tab_changes(&original, &edited);
+        assert!(!shared.check_for_updates);
+        assert_eq!(shared.update_channel, Some(UpdateChannel::Stable));
+        assert_eq!(shared.skipped_update.as_deref(), Some("0.2.0"));
+        assert_eq!(shared.last_update_check, Some(100));
+    }
+
+    #[test]
+    fn blank_skipped_versions_are_dropped() {
+        let mut p = Preferences {
+            skipped_update: Some("  ".into()),
+            ..Default::default()
+        };
+        p.normalize();
+        assert_eq!(p.skipped_update, None);
+        p.skipped_update = Some(" 0.2.0 ".into());
+        p.normalize();
+        assert_eq!(p.skipped_update.as_deref(), Some("0.2.0"));
     }
 
     #[test]

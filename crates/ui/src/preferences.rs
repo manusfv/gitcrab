@@ -72,6 +72,18 @@ pub fn remember_window(size: WindowSize, cx: &mut App) -> Result<PersistenceResu
     store(cx).save_preferences(&shared)
 }
 
+/// Changes state the app records for itself, such as the last update check,
+/// in shared preferences and queues a save. Tabs never merge these fields.
+pub fn record_app_state(
+    edit: impl FnOnce(&mut Preferences),
+    cx: &mut App,
+) -> Result<PersistenceResult, String> {
+    let mut shared = current(cx);
+    edit(&mut shared);
+    cx.set_global(SharedPreferences(shared.clone()));
+    store(cx).save_preferences(&shared)
+}
+
 /// Merges one tab's edits since `previous` into shared preferences and
 /// queues a save. Changes made by other tabs to fields this tab left alone
 /// are preserved.

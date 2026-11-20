@@ -10,6 +10,7 @@ pub mod preferences;
 pub mod theme;
 #[cfg(feature = "native-evidence")]
 mod trace;
+pub mod updates;
 pub mod view;
 mod watch;
 pub mod workspace;
