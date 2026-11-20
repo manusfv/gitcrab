@@ -24,7 +24,10 @@ fn main() {
         );
         // Diagnostic captures stay offline and deterministic.
         #[cfg(not(feature = "native-evidence"))]
-        gitcrab_ui::updates::install(std::sync::Arc::new(gitcrab_update::ManifestUpdater), cx);
+        gitcrab_ui::updates::install(
+            std::sync::Arc::new(gitcrab_update::ManifestUpdater::default()),
+            cx,
+        );
         Theme::change(ThemeMode::Dark, None, cx);
         theme::initialize(cx);
         cx.set_menus(vec![Menu {
