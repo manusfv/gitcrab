@@ -1,10 +1,11 @@
-//! Update checks: which release channel to follow, when to check, whether a
-//! release is newer and whether the user skipped it. Fetching the release
-//! manifest sits behind [`Updater`].
+//! Updates: which release channel to follow, when to check, whether a
+//! release is newer, whether the user skipped it, and whether this copy of
+//! GitCrab can install a release in place. Fetching, verifying and
+//! installing sit behind [`Updater`].
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
-use tokio::sync::oneshot;
+use std::{cmp::Ordering, path::PathBuf};
+use tokio::sync::{oneshot, watch};
 
 /// Least time between two automatic checks, in seconds.
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
@@ -136,10 +137,114 @@ pub fn should_check(automatic: bool, last_check: Option<u64>, now: u64, manual: 
 /// running build, `None` when up to date, or a message on failure.
 pub type UpdateCheck = oneshot::Receiver<Result<Option<AvailableUpdate>, String>>;
 
-/// Finds releases newer than the running build.
+/// How this copy of GitCrab was installed, as far as updating it goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Packaging {
+    /// Installed on Windows by the GitCrab setup program.
+    WindowsInstaller,
+    /// Run on Windows from anywhere else, such as an unpacked zip.
+    WindowsPortable,
+    /// Run on Linux as an AppImage; `writable` when its folder can be written.
+    AppImage { writable: bool },
+    /// Run on Linux from anything but an AppImage.
+    LinuxUnpackaged,
+    /// Run on macOS from `GitCrab.app`; `writable` when the folder holding
+    /// the bundle can be written.
+    AppBundle { writable: bool },
+    /// Run on macOS outside an app bundle.
+    MacUnbundled,
+    /// Any other system.
+    Unknown,
+}
+
+/// Whether this copy of GitCrab can install an update in place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallSupport {
+    Supported,
+    /// Only announce releases; the reason is shown to the user.
+    Unsupported(String),
+}
+
+impl InstallSupport {
+    /// Decides whether a copy can update itself.
+    ///
+    /// `can_verify` is whether the build has the public key update bundles
+    /// are signed with: without it no bundle can be verified, so none is
+    /// installed. Development builds never replace themselves.
+    pub fn decide(debug_build: bool, can_verify: bool, packaging: Packaging) -> Self {
+        let reason = if !can_verify {
+            "This build can't verify updates."
+        } else if debug_build {
+            "Development builds don't install updates."
+        } else {
+            match packaging {
+                Packaging::WindowsInstaller
+                | Packaging::AppImage { writable: true }
+                | Packaging::AppBundle { writable: true } => return Self::Supported,
+                Packaging::WindowsPortable => "This copy wasn't installed by the GitCrab setup.",
+                Packaging::AppImage { writable: false } => {
+                    "The folder holding the AppImage is read-only."
+                }
+                Packaging::LinuxUnpackaged => "Only the AppImage installs updates itself.",
+                Packaging::AppBundle { writable: false } => {
+                    "GitCrab.app is in a folder GitCrab can't change. Move it to Applications."
+                }
+                Packaging::MacUnbundled => "GitCrab isn't running from GitCrab.app.",
+                Packaging::Unknown => "Updates can't be installed on this system.",
+            }
+        };
+        Self::Unsupported(reason.to_owned())
+    }
+
+    pub fn is_supported(&self) -> bool {
+        *self == Self::Supported
+    }
+}
+
+/// Bytes of an update bundle received so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DownloadProgress {
+    pub received: u64,
+    /// The bundle's size, when the server sent it.
+    pub total: Option<u64>,
+}
+
+impl DownloadProgress {
+    /// Bytes per step when the size is unknown.
+    const UNKNOWN_SIZE_STEP: u64 = 1024 * 1024;
+
+    /// The share received, from 0 to 100, when the size is known.
+    pub fn percent(self) -> Option<u8> {
+        let total = self.total.filter(|&total| total > 0)?;
+        let percent = self.received.min(total).saturating_mul(100) / total;
+        u8::try_from(percent).ok()
+    }
+
+    /// A number that grows by one per whole percent, or per MiB when the size
+    /// is unknown. Progress is worth reporting when it changes.
+    pub fn step(self) -> u64 {
+        match self.percent() {
+            Some(percent) => u64::from(percent),
+            None => self.received / Self::UNKNOWN_SIZE_STEP,
+        }
+    }
+}
+
+/// A download in progress. `progress` closes when the download ends, then
+/// `done` says whether the bundle arrived and its signature verified.
+#[derive(Debug)]
+pub struct UpdateDownload {
+    pub progress: watch::Receiver<DownloadProgress>,
+    pub done: oneshot::Receiver<Result<(), String>>,
+}
+
+/// Completion of an install: the program to start in place of the running
+/// one, or a message on failure.
+pub type UpdateInstall = oneshot::Receiver<Result<PathBuf, String>>;
+
+/// Finds, downloads and installs releases newer than the running build.
 ///
-/// Implementations do their network work off the calling thread. Downloading
-/// and installing an update will be added here.
+/// Implementations do their network and disk work off the calling thread.
 pub trait Updater: Send + Sync {
     /// Starts checking `channel` for a release newer than `current_version`.
     ///
@@ -147,6 +252,32 @@ pub trait Updater: Send + Sync {
     ///
     /// Returns a message if the check cannot be started.
     fn check(&self, channel: UpdateChannel, current_version: &str) -> Result<UpdateCheck, String>;
+
+    /// Whether this copy can install updates in place. When it cannot,
+    /// releases are only announced.
+    fn install_support(&self) -> InstallSupport;
+
+    /// Starts downloading `version`, the release the last check found, and
+    /// verifies its signature. A bundle that fails verification is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the download cannot be started, for example
+    /// because the last check did not find `version`.
+    fn download(&self, version: &str) -> Result<UpdateDownload, String>;
+
+    /// Starts installing `version` from its verified download.
+    ///
+    /// On success the new version is in place: start the returned program
+    /// and quit. Some systems hand over to an installer that restarts
+    /// GitCrab and end this process without replying, so save state before
+    /// calling this.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if nothing verified is ready to install or this copy
+    /// cannot install updates.
+    fn install(&self, version: &str) -> Result<UpdateInstall, String>;
 }
 
 #[cfg(test)]
@@ -245,5 +376,59 @@ mod tests {
             release_page("0.1.0-alpha.4"),
             format!("{RELEASES_URL}/tag/v0.1.0-alpha.4")
         );
+    }
+
+    #[test]
+    fn installing_needs_a_key_a_release_build_and_a_writable_package() {
+        use Packaging::*;
+        let decide = InstallSupport::decide;
+        for packaging in [
+            WindowsInstaller,
+            AppImage { writable: true },
+            AppBundle { writable: true },
+        ] {
+            assert!(
+                decide(false, true, packaging).is_supported(),
+                "{packaging:?}"
+            );
+            assert_eq!(
+                decide(false, false, packaging),
+                InstallSupport::Unsupported("This build can't verify updates.".into())
+            );
+            assert_eq!(
+                decide(true, true, packaging),
+                InstallSupport::Unsupported("Development builds don't install updates.".into())
+            );
+        }
+        for packaging in [
+            WindowsPortable,
+            AppImage { writable: false },
+            LinuxUnpackaged,
+            AppBundle { writable: false },
+            MacUnbundled,
+            Unknown,
+        ] {
+            assert!(
+                !decide(false, true, packaging).is_supported(),
+                "{packaging:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn progress_reports_whole_percents() {
+        let progress = |received, total| DownloadProgress { received, total };
+        assert_eq!(progress(0, Some(200)).percent(), Some(0));
+        assert_eq!(progress(84, Some(200)).percent(), Some(42));
+        assert_eq!(progress(200, Some(200)).percent(), Some(100));
+        // More than announced still reads as complete.
+        assert_eq!(progress(300, Some(200)).percent(), Some(100));
+        assert_eq!(progress(10, None).percent(), None);
+        assert_eq!(progress(10, Some(0)).percent(), None);
+        // Reported once per percent, or per MiB without a size.
+        assert_eq!(progress(1, Some(200)).step(), progress(0, Some(200)).step());
+        assert_ne!(progress(2, Some(200)).step(), progress(0, Some(200)).step());
+        assert_eq!(progress(1024 * 1024 - 1, None).step(), 0);
+        assert_eq!(progress(3 * 1024 * 1024, None).step(), 3);
     }
 }
