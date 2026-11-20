@@ -83,6 +83,14 @@ pub const CONTROL_RADIUS: f32 = 4.;
 pub const GLYPH_SIZE: f32 = 16.;
 pub const SECTION_INSET: f32 = 12.;
 pub const SEAM: f32 = 1.;
+/// The status bar is taller than its 28-pixel buttons, except at compact
+/// density.
+pub const STATUS_BAR_HEIGHT: f32 = geometry::SIZE_TARGET_REGULAR;
+pub const STATUS_BAR_COMPACT_HEIGHT: f32 = geometry::SIZE_SHELL_STATUS;
+/// Between the status bar's left and right groups.
+pub const STATUS_BAR_GROUP_GAP: f32 = geometry::SIZE_REPOSITORY_TOOLBAR_GROUP_GAP;
+/// Between items within a status bar group, on each side of a rule.
+pub const STATUS_BAR_ITEM_GAP: f32 = geometry::SIZE_GUTTER_PADDING;
 /// Scales a size given in pixels at the default 13-pixel font to the current
 /// font size.
 ///

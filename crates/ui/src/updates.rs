@@ -1,13 +1,14 @@
-//! Update checks shared by every window: the installed [`Updater`], the
-//! latest result, the automatic schedule and the user's answers to an
-//! available release.
+//! Updates shared by every window: the installed [`Updater`], the latest
+//! check, the automatic schedule, the user's answers to an available release
+//! and the progress of installing it.
 //!
 //! The rules live in [`gitcrab_core::updates`]; this module keeps the state
-//! in a gpui global. Views observe the global to redraw.
-use gitcrab_core::updates::{self as rules, Updater};
-pub use gitcrab_core::updates::{AvailableUpdate, UpdateChannel};
-use gpui::{App, BorrowAppContext as _, Global};
-use std::{sync::Arc, time::Duration};
+//! in a gpui global. Views observe the global to redraw. The workspace
+//! decides when installing is safe and restarts GitCrab afterwards.
+use gitcrab_core::updates::{self as rules, UpdateDownload, Updater};
+pub use gitcrab_core::updates::{AvailableUpdate, InstallSupport, UpdateChannel};
+use gpui::{App, BorrowAppContext as _, Global, Task};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -28,9 +29,33 @@ pub enum Status {
     Failed(String),
 }
 
+/// Where installing the available release stands.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Install {
+    #[default]
+    Idle,
+    /// Downloading, with the share received when the size is known.
+    Downloading(Option<u8>),
+    /// Replacing GitCrab; it restarts next.
+    Installing,
+    /// The last attempt failed. The user can try again.
+    Failed(String),
+}
+
+impl Install {
+    pub fn in_progress(&self) -> bool {
+        matches!(self, Self::Downloading(_) | Self::Installing)
+    }
+}
+
 pub(crate) struct Updates {
     updater: Arc<dyn Updater>,
     status: Status,
+    /// Whether this copy installs updates, asked when a release is found.
+    support: Option<InstallSupport>,
+    install: Install,
+    /// The release downloaded and verified, ready to install.
+    downloaded: Option<String>,
     /// Identifies the check in flight; results of older checks are dropped.
     generation: u64,
     /// The latest result came from a manual check, which shows a release
@@ -48,6 +73,9 @@ pub fn install(updater: Arc<dyn Updater>, cx: &mut App) {
     cx.set_global(Updates {
         updater,
         status: Status::Idle,
+        support: None,
+        install: Install::Idle,
+        downloaded: None,
         generation: 0,
         manual: false,
         dismissed: None,
@@ -108,14 +136,118 @@ pub fn check_now(channel: UpdateChannel, cx: &mut App) {
     start(channel, true, cx);
 }
 
-/// Forgets the result of a check on another channel.
+/// Forgets the result of a check on another channel, unless that release is
+/// being installed.
 pub fn channel_changed(cx: &mut App) {
     if cx.has_global::<Updates>() {
         cx.update_global::<Updates, _>(|updates, _| {
+            if updates.install.in_progress() {
+                return;
+            }
             updates.generation += 1;
             updates.status = Status::Idle;
+            updates.install = Install::Idle;
         });
     }
+}
+
+pub fn install_state(cx: &App) -> Install {
+    cx.try_global::<Updates>()
+        .map(|updates| updates.install.clone())
+        .unwrap_or_default()
+}
+
+/// Whether this copy installs the available release itself, or only
+/// announces it. `None` until a check finds a release.
+pub fn install_support(cx: &App) -> Option<InstallSupport> {
+    cx.try_global::<Updates>()?.support.clone()
+}
+
+/// Shows why installing stopped.
+pub fn install_failed(message: impl Into<String>, cx: &mut App) {
+    set_install(Install::Failed(message.into()), cx);
+}
+
+fn set_install(install: Install, cx: &mut App) {
+    if cx.has_global::<Updates>() {
+        cx.update_global::<Updates, _>(|updates, _| updates.install = install);
+    }
+}
+
+/// Downloads and verifies `version` unless that is already done. Resolves
+/// once the bundle is ready to install; failures are shown in the notice.
+pub fn download_update(version: &str, cx: &mut App) -> Task<Result<(), String>> {
+    let Some(updates) = cx.try_global::<Updates>() else {
+        return Task::ready(Err("Updates are off.".into()));
+    };
+    if updates.install.in_progress() {
+        return Task::ready(Err("The update is already being installed.".into()));
+    }
+    if updates.downloaded.as_deref() == Some(version) {
+        return Task::ready(Ok(()));
+    }
+    let version = version.to_owned();
+    let started = updates.updater.download(&version);
+    let UpdateDownload { mut progress, done } = match started {
+        Ok(download) => download,
+        Err(error) => {
+            install_failed(error.clone(), cx);
+            return Task::ready(Err(error));
+        }
+    };
+    cx.update_global::<Updates, _>(|updates, _| {
+        updates.install = Install::Downloading(None);
+        updates.downloaded = None;
+    });
+    cx.spawn(async move |cx| {
+        while progress.changed().await.is_ok() {
+            let percent = progress.borrow_and_update().percent();
+            cx.update(|cx| set_install(Install::Downloading(percent), cx));
+        }
+        let result = done
+            .await
+            .unwrap_or_else(|_| Err("The download stopped.".into()));
+        cx.update(|cx| {
+            cx.update_global::<Updates, _>(|updates, _| match &result {
+                Ok(()) => {
+                    updates.downloaded = Some(version);
+                    updates.install = Install::Idle;
+                }
+                Err(error) => updates.install = Install::Failed(error.clone()),
+            })
+        });
+        result
+    })
+}
+
+/// Installs the downloaded `version`. Resolves to the program to start in
+/// place of this one; the caller saves state first and restarts after.
+pub fn install_update(version: &str, cx: &mut App) -> Task<Result<PathBuf, String>> {
+    let Some(updates) = cx.try_global::<Updates>() else {
+        return Task::ready(Err("Updates are off.".into()));
+    };
+    let started = updates.updater.install(version);
+    let installing = match started {
+        Ok(installing) => installing,
+        Err(error) => {
+            install_failed(error.clone(), cx);
+            return Task::ready(Err(error));
+        }
+    };
+    cx.update_global::<Updates, _>(|updates, _| {
+        updates.install = Install::Installing;
+        // The verified bundle is used up.
+        updates.downloaded = None;
+    });
+    cx.spawn(async move |cx| {
+        let result = installing
+            .await
+            .unwrap_or_else(|_| Err("Installing stopped.".into()));
+        if let Err(error) = &result {
+            cx.update(|cx| install_failed(error.clone(), cx));
+        }
+        result
+    })
 }
 
 /// Closes the notice for `version` until GitCrab restarts.
@@ -146,6 +278,10 @@ fn start(channel: UpdateChannel, manual: bool, cx: &mut App) {
     };
     // A manual check while an automatic one runs takes over its result.
     if updates.status == Status::Checking && !manual {
+        return;
+    }
+    // Keep the release being installed on screen.
+    if updates.install.in_progress() {
         return;
     }
     let updater = updates.updater.clone();
@@ -185,6 +321,16 @@ fn finish(generation: u64, result: Result<Option<AvailableUpdate>, String>, cx: 
         );
     }
     cx.update_global::<Updates, _>(|updates, _| {
+        if let Ok(found) = &result {
+            let version = found.as_ref().map(|update| update.version.as_str());
+            if updates.downloaded.as_deref() != version {
+                updates.downloaded = None;
+            }
+            updates.install = Install::Idle;
+            if found.is_some() && updates.support.is_none() {
+                updates.support = Some(updates.updater.install_support());
+            }
+        }
         updates.status = match result {
             Ok(Some(update)) => Status::Available(update),
             Ok(None) => Status::UpToDate,

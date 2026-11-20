@@ -1,6 +1,6 @@
 [package]
 name = "gitcrab-update"
-description = "GitCrab's update checks: reads the release manifests behind gitcrab-core's Updater."
+description = "GitCrab's updates: reads the release manifests, verifies and installs update bundles behind gitcrab-core's Updater."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,3 +12,8 @@ name = "gitcrab_update"
 gitcrab-core.workspace = true
 tokio.workspace = true
 cargo-packager-updater.workspace = true
+
+[dev-dependencies]
+# Signs test bundles with a key pair generated in each test.
+minisign = "0.7.9"
+base64 = "0.22"

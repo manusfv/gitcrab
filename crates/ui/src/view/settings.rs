@@ -172,7 +172,7 @@ impl GitCrab {
 
     /// Automatic checks, the release channel and a manual check with its result.
     fn update_settings(&self, cx: &mut Context<Self>) -> Div {
-        use crate::updates::{Status, UpdateChannel, CURRENT_VERSION};
+        use crate::updates::{InstallSupport, Status, UpdateChannel, CURRENT_VERSION};
         let automatic = self.preferences.check_for_updates;
         let channel = UpdateChannel::effective(self.preferences.update_channel, CURRENT_VERSION);
         let status = crate::updates::status(cx);
@@ -203,31 +203,40 @@ impl GitCrab {
                     })),
             );
         }
+        let installing = crate::updates::install_state(cx).in_progress();
+        let mut install = None;
         let (text, role) = match &status {
             Status::Idle => (String::new(), Role::TextMuted),
             Status::Checking => ("Checking…".to_owned(), Role::TextMuted),
             Status::UpToDate => ("GitCrab is up to date.".to_owned(), Role::StatusSuccessFg),
-            Status::Available(update) => (
-                if crate::updates::is_skipped(&update.version, cx) {
+            Status::Available(update) => {
+                let mut text = if crate::updates::is_skipped(&update.version, cx) {
                     format!("GitCrab {} is available. You skipped it.", update.version)
                 } else {
                     format!("GitCrab {} is available.", update.version)
-                },
-                Role::StatusInfoFg,
-            ),
+                };
+                let support = crate::updates::install_support(cx);
+                if let Some(InstallSupport::Unsupported(reason)) = &support {
+                    text.push(' ');
+                    text.push_str(reason);
+                }
+                install = Some(self.update_install(update, support, cx));
+                (text, Role::StatusInfoFg)
+            }
             Status::Failed(error) => (
                 format!("Could not check for updates: {error}"),
                 Role::StatusErrorFg,
             ),
         };
+        let checking = status == Status::Checking || installing;
         let check = div()
             .flex()
             .items_center()
             .gap_2()
             .child(
                 self.action_button("check-updates-now", "Check now")
-                    .tab_stop(status != Status::Checking)
-                    .disabled_when(status == Status::Checking)
+                    .tab_stop(!checking)
+                    .disabled_when(checking)
                     .on_click(cx.listener(move |_, _, _, cx| {
                         crate::updates::check_now(channel, cx);
                         cx.notify();
@@ -272,12 +281,117 @@ impl GitCrab {
                     }),
             )
             .child(check)
+            .children(install)
             .child(
                 div()
                     .text_size(scaled(12.))
                     .text_role(Role::TextMuted)
                     .child(format!("GitCrab {CURRENT_VERSION} · {}", crate::BUILD)),
             )
+    }
+
+    /// Installing the available release from here: the install button, its
+    /// progress or error, and the release page. The workspace closes this
+    /// dialog just before installing.
+    fn update_install(
+        &self,
+        update: &crate::updates::AvailableUpdate,
+        support: Option<crate::updates::InstallSupport>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        use crate::updates::{Install, InstallSupport};
+        let install = crate::updates::install_state(cx);
+        let url = update.release_url.clone();
+        let notes = self
+            .action_button("settings-release-notes", "Release notes")
+            .tab_stop(true)
+            .tooltip(url.clone())
+            .on_click(move |_, _, cx| cx.open_url(&url));
+        let mut row = div().flex().items_center().gap_2();
+        if support == Some(InstallSupport::Supported) {
+            let progress = match &install {
+                Install::Downloading(Some(percent)) => {
+                    Some((format!("Downloading {percent}%"), Some(f32::from(*percent))))
+                }
+                Install::Downloading(None) => Some(("Downloading…".to_owned(), None)),
+                Install::Installing => Some(("Installing…".to_owned(), None)),
+                Install::Idle | Install::Failed(_) => None,
+            };
+            row = match progress {
+                Some((label, value)) => row.child(
+                    div()
+                        .id("settings-update-progress")
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_size(scaled(12.))
+                        .text_role(Role::TextMuted)
+                        .child(label.clone())
+                        .child(update_progress_bar(
+                            "settings-update-progress-bar",
+                            value,
+                            label,
+                        )),
+                ),
+                None => {
+                    let version = update.version.clone();
+                    let focus = self.focus.clone();
+                    row.child(
+                        components::basic(
+                            Button::new("settings-install-update").label(
+                                if matches!(install, Install::Failed(_)) {
+                                    "Try again"
+                                } else {
+                                    "Install and restart"
+                                },
+                            ),
+                            components::ButtonKind::Primary,
+                            ControlSize::Compact,
+                        )
+                        .tab_stop(true)
+                        .tooltip("Download, verify and install this version, then restart GitCrab")
+                        // Dispatched from the tab's own focus node so the
+                        // workspace, which owns restarting, handles it.
+                        .on_click(move |_, w, cx| {
+                            focus.dispatch_action(
+                                &crate::workspace::InstallUpdateFromSettings(version.clone()),
+                                w,
+                                cx,
+                            )
+                        }),
+                    )
+                }
+            };
+        }
+        let failed = match install {
+            Install::Failed(error) => Some(error),
+            _ => None,
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when_some(failed, |el, error| {
+                el.child(
+                    div()
+                        .id("settings-update-error")
+                        .text_size(scaled(12.))
+                        .text_role(Role::StatusErrorFg)
+                        .child(error),
+                )
+            })
+            .child(row.child(notes))
+    }
+
+    /// Closes Settings the way its Close button does, for an update that
+    /// installs and restarts next.
+    pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open {
+            self.finish_settings(window, cx);
+            window.close_dialog(cx);
+        }
     }
 
     pub(super) fn settings_dialog(&self, height: f32, cx: &mut Context<Self>) -> AnyElement {
