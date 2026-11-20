@@ -168,10 +168,8 @@ jobs:
             echo "notarize=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Update signing is optional too. With the key, cargo-packager writes a
-      # minisign .sig next to every package, which the in-app updater checks
-      # against the public key built into the app. The key must have a
-      # password, so a key alone is treated as a half configuration.
+      # Update signing is optional too. The key must have a password, so a key
+      # alone is treated as a half configuration.
       - name: Configure update signing
         id: update-signing
         shell: bash
@@ -198,9 +196,8 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
           APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY || '' }}
           APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
-          # With these, cargo-packager signs each package for the updater. For
-          # the .app directory it first packs GitCrab.app.tar.gz, the macOS
-          # update bundle, and signs that.
+          # For the .app, cargo-packager packs and signs GitCrab.app.tar.gz, the
+          # macOS update bundle.
           CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
           CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.UPDATER_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -291,7 +288,6 @@ jobs:
           UPDATE_SIGN: ${{ steps.update-signing.outputs.sign }}
         run: |
           New-Item -ItemType Directory -Force -Path out/assets | Out-Null
-          # Copies a package and, when update signing is on, its .sig.
           function Copy-Package($source, $name) {
             Copy-Item $source "out/assets/$name"
             if ($env:UPDATE_SIGN -eq 'true') {
