@@ -21,23 +21,23 @@ Download GitCrab from [GitHub Releases](https://github.com/manusfv/gitcrab/relea
 
 | System | Installer (recommended) | Standalone binary |
 | --- | --- | --- |
-| macOS, Apple Silicon | `gitcrab-macos-arm64.dmg` | `gitcrab-macos-arm64.tar.gz` |
-| macOS, Intel | `gitcrab-macos-x86_64.dmg` | `gitcrab-macos-x86_64.tar.gz` |
+| macOS, Apple Silicon | `gitcrab-macos-arm64.dmg` | — |
+| macOS, Intel | `gitcrab-macos-x86_64.dmg` | — |
 | Windows 10/11, x64 | `gitcrab-windows-x86_64-setup.exe` | `gitcrab-windows-x86_64.zip` |
 | Linux, x64 | `gitcrab-linux-x86_64.AppImage` | `gitcrab-linux-x86_64.tar.gz` |
 
 Not sure which Mac you have? Apple menu → **About This Mac**: "Apple M…" is Apple Silicon, "Intel" is Intel. Windows and Linux on ARM are not built yet.
 
-- **macOS:** open the `.dmg` and drag **GitCrab** onto **Applications**.
+- **macOS:** open the `.dmg` and drag **GitCrab** onto **Applications** (or any other folder; the app is self-contained).
 - **Windows:** run the setup `.exe`. It installs for the current user without an administrator prompt and adds a Start menu entry. The installer and binary are not code-signed, so SmartScreen may warn: choose **More info → Run anyway**.
 - **Linux:** `chmod +x gitcrab-linux-x86_64.AppImage`, then run it. It needs a working Vulkan driver.
-- **Standalone binaries:** extract the archive and run `gitcrab` (`gitcrab.exe` on Windows) from anywhere; nothing else is installed. The Windows binary needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (`VCRUNTIME140.dll`), which most systems already have. The Linux binary is built on Ubuntu 24.04, needs glibc 2.39 or newer and the system's X11/Wayland, xkbcommon, fontconfig, freetype and Vulkan libraries; if it doesn't start, `ldd gitcrab | grep "not found"` lists what's missing.
-- **Checksums:** each release has a `SHA256SUMS` file. Check a download with `sha256sum -c SHA256SUMS --ignore-missing` (`shasum -a 256 -c SHA256SUMS --ignore-missing` on macOS).
+- **Standalone binaries (Windows and Linux):** extract the archive and run `gitcrab` (`gitcrab.exe` on Windows) from anywhere; nothing else is installed. On macOS, `GitCrab.app` from the `.dmg` already works from any folder. The Windows binary needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (`VCRUNTIME140.dll`), which most systems already have. The Linux binary is built on Ubuntu 24.04, needs glibc 2.39 or newer and the system's X11/Wayland, xkbcommon, fontconfig, freetype and Vulkan libraries; if it doesn't start, `ldd gitcrab | grep "not found"` lists what's missing.
+- **Checksums:** each release has a `SHA256SUMS` file. Check a download with `sha256sum -c SHA256SUMS --ignore-missing` (`shasum -a 256 -c SHA256SUMS --ignore-missing` on macOS). On Windows, compare `Get-FileHash <file>` with the matching line. GitHub also shows each file's SHA-256 next to it on the release page.
 
 **macOS Gatekeeper.** Each release's notes say whether its macOS builds are signed with an Apple Developer ID and notarized. Until they are, macOS blocks the first launch with "GitCrab can't be opened" or "Apple could not verify…". Open it anyway once with **System Settings → Privacy & Security → Open Anyway** (on macOS 14 and older you can also Control-click the app and choose **Open**), or remove the download quarantine:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/GitCrab.app   # or the extracted gitcrab binary
+xattr -dr com.apple.quarantine /Applications/GitCrab.app
 ```
 
 Only do this for a download you have verified against `SHA256SUMS`.
