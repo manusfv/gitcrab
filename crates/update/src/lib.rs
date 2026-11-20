@@ -317,7 +317,6 @@ fn restart_target(update: &Update) -> Result<PathBuf, String> {
     }
 }
 
-/// How the running copy of GitCrab was installed.
 fn packaging() -> Packaging {
     let Ok(exe) = std::env::current_exe() else {
         return Packaging::Unknown;
@@ -427,8 +426,7 @@ mod tests {
         assert!(endpoint(UpdateChannel::Stable, Some("not a url".into())).is_err());
     }
 
-    /// Serves fixed responses by path on a local port, for the rest of the
-    /// test run, and returns its base address.
+    /// Serves `routes` on a local port for the rest of the test run.
     fn serve(routes: Vec<(&'static str, &'static str, Vec<u8>)>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -624,7 +622,6 @@ mod tests {
         updater
     }
 
-    /// Downloads 9.0.0 and returns the outcome and the last progress seen.
     fn download(updater: &ManifestUpdater) -> (Result<(), String>, DownloadProgress) {
         let UpdateDownload { progress, done } = updater.download("9.0.0").unwrap();
         let result = done.blocking_recv().unwrap();
@@ -707,8 +704,6 @@ mod tests {
 
     #[test]
     fn test_builds_never_install() {
-        // Installing replaces the running program, so tests never get that
-        // far, even with a verified bundle.
         let key = TestKey::new();
         let updater = offered(&key.public(), &key.sign(BUNDLE), BUNDLE);
         assert_eq!(download(&updater).0, Ok(()));

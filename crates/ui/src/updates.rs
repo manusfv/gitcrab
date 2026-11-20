@@ -43,7 +43,6 @@ pub enum Install {
 }
 
 impl Install {
-    /// A download or install is running.
     pub fn in_progress(&self) -> bool {
         matches!(self, Self::Downloading(_) | Self::Installing)
     }
@@ -152,7 +151,6 @@ pub fn channel_changed(cx: &mut App) {
     }
 }
 
-/// Where installing the available release stands.
 pub fn install_state(cx: &App) -> Install {
     cx.try_global::<Updates>()
         .map(|updates| updates.install.clone())
@@ -165,7 +163,7 @@ pub fn install_support(cx: &App) -> Option<InstallSupport> {
     cx.try_global::<Updates>()?.support.clone()
 }
 
-/// Shows why installing stopped. The user can try again.
+/// Shows why installing stopped.
 pub fn install_failed(message: impl Into<String>, cx: &mut App) {
     set_install(Install::Failed(message.into()), cx);
 }

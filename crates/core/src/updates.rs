@@ -164,8 +164,6 @@ pub enum InstallSupport {
 }
 
 impl InstallSupport {
-    /// Decides whether a copy can update itself.
-    ///
     /// `can_verify` is whether the build has the public key update bundles
     /// are signed with: without it no bundle can be verified, so none is
     /// installed. Development builds never replace themselves.
@@ -208,7 +206,6 @@ pub struct DownloadProgress {
 }
 
 impl DownloadProgress {
-    /// Bytes per step when the size is unknown.
     const UNKNOWN_SIZE_STEP: u64 = 1024 * 1024;
 
     /// The share received, from 0 to 100, when the size is known.
@@ -423,7 +420,6 @@ mod tests {
         assert_eq!(progress(300, Some(200)).percent(), Some(100));
         assert_eq!(progress(10, None).percent(), None);
         assert_eq!(progress(10, Some(0)).percent(), None);
-        // Reported once per percent, or per MiB without a size.
         assert_eq!(progress(1, Some(200)).step(), progress(0, Some(200)).step());
         assert_ne!(progress(2, Some(200)).step(), progress(0, Some(200)).step());
         assert_eq!(progress(1024 * 1024 - 1, None).step(), 0);
