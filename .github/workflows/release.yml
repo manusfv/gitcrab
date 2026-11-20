@@ -262,24 +262,22 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out/assets | Out-Null
-          $stage = Join-Path $env:RUNNER_TEMP $env:ASSET
-          New-Item -ItemType Directory -Path $stage | Out-Null
-          # On macOS the standalone binary is the one inside the .app, so it
-          # carries the same signature when signing is configured.
-          if ($IsWindows) { $exe = 'target/release/gitcrab.exe' }
-          elseif ($IsMacOS) { $exe = 'target/packager/GitCrab.app/Contents/MacOS/gitcrab' }
-          else { $exe = 'target/release/gitcrab' }
-          Copy-Item $exe, LICENSE, THIRD_PARTY.md, icons/native/LICENSE-lucide.txt $stage
-          if ($IsWindows) {
-            Compress-Archive -Path $stage -DestinationPath "out/assets/$env:ASSET.zip"
-            Copy-Item (Get-Item target/packager/*-setup.exe) "out/assets/$env:ASSET-setup.exe"
+          # macOS ships only the .dmg: the .app inside it is already portable,
+          # and a bare binary outside the bundle loses its icon and identity.
+          if ($IsMacOS) {
+            Copy-Item (Get-Item target/packager/*.dmg) "out/assets/$env:ASSET.dmg"
           } else {
-            # tar keeps the executable bit, which zip from PowerShell does not.
-            tar -czf "out/assets/$env:ASSET.tar.gz" -C $env:RUNNER_TEMP $env:ASSET
-            if ($LASTEXITCODE) { throw "tar failed" }
-            if ($IsMacOS) {
-              Copy-Item (Get-Item target/packager/*.dmg) "out/assets/$env:ASSET.dmg"
+            $stage = Join-Path $env:RUNNER_TEMP $env:ASSET
+            New-Item -ItemType Directory -Path $stage | Out-Null
+            $exe = if ($IsWindows) { 'target/release/gitcrab.exe' } else { 'target/release/gitcrab' }
+            Copy-Item $exe, LICENSE, THIRD_PARTY.md, icons/native/LICENSE-lucide.txt $stage
+            if ($IsWindows) {
+              Compress-Archive -Path $stage -DestinationPath "out/assets/$env:ASSET.zip"
+              Copy-Item (Get-Item target/packager/*-setup.exe) "out/assets/$env:ASSET-setup.exe"
             } else {
+              # tar keeps the executable bit, which zip from PowerShell does not.
+              tar -czf "out/assets/$env:ASSET.tar.gz" -C $env:RUNNER_TEMP $env:ASSET
+              if ($LASTEXITCODE) { throw "tar failed" }
               Copy-Item (Get-Item target/packager/*.AppImage) "out/assets/$env:ASSET.AppImage"
             }
           }
