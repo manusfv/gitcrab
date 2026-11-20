@@ -1,0 +1,14 @@
+[package]
+name = "gitcrab-update"
+description = "GitCrab's update checks: reads the release manifests behind gitcrab-core's Updater."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gitcrab_update"
+
+[dependencies]
+gitcrab-core.workspace = true
+tokio.workspace = true
+cargo-packager-updater.workspace = true

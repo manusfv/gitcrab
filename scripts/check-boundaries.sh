@@ -3,9 +3,11 @@
 #
 #   1. gitcrab-core has no UI, platform or I/O dependency, including build and
 #      test dependencies on every target.
-#   2. gitcrab-ui reaches Git and settings only through core's traits: it does
-#      not depend on gitcrab-git or gitcrab-settings.
-#   3. The I/O crates (gitcrab-git, gitcrab-settings) do not depend on the UI.
+#   2. gitcrab-ui reaches Git, settings and updates only through core's
+#      traits: it does not depend on gitcrab-git, gitcrab-settings or
+#      gitcrab-update.
+#   3. The I/O crates (gitcrab-git, gitcrab-settings, gitcrab-update) do not
+#      depend on the UI.
 #   4. gitcrab-core's tests pass without a window or Git.
 #
 # Usage: scripts/check-boundaries.sh [--skip-tests]
@@ -24,7 +26,7 @@ done
 
 failed=0
 UI_CRATES='gpui|gpui-kit|gpui-pre.*|gpui-base|gpui-component|gitcrab-ui'
-IO_CRATES='notify|async-channel|windows-sys|libc|gitcrab-git|gitcrab-settings'
+IO_CRATES='notify|async-channel|windows-sys|libc|gitcrab-git|gitcrab-settings|gitcrab-update|cargo-packager-updater|reqwest'
 
 # Reports every dependency of `package` whose name matches `pattern`.
 # A failing `cargo tree` stops the script rather than passing silently.
@@ -49,10 +51,11 @@ forbid() {
 
 forbid gitcrab-core "($UI_CRATES|$IO_CRATES)" "UI, platform or I/O dependencies" \
     --all-features -e normal,build,dev
-forbid gitcrab-ui "gitcrab-git|gitcrab-settings" "direct dependencies on I/O crates" \
+forbid gitcrab-ui "gitcrab-git|gitcrab-settings|gitcrab-update" "direct dependencies on I/O crates" \
     --all-features -e normal --depth 1
 forbid gitcrab-git "$UI_CRATES" "UI dependencies" --all-features -e normal,build
 forbid gitcrab-settings "$UI_CRATES" "UI dependencies" --all-features -e normal,build
+forbid gitcrab-update "$UI_CRATES" "UI dependencies" --all-features -e normal,build
 
 if [ "$failed" -ne 0 ]; then
     echo "Crate boundaries broken. See the rules at the top of $0." >&2
