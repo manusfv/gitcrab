@@ -172,7 +172,7 @@ impl GitCrab {
 
     /// Automatic checks, the release channel and a manual check with its result.
     fn update_settings(&self, cx: &mut Context<Self>) -> Div {
-        use crate::updates::{Status, UpdateChannel, CURRENT_VERSION};
+        use crate::updates::{InstallSupport, Status, UpdateChannel, CURRENT_VERSION};
         let automatic = self.preferences.check_for_updates;
         let channel = UpdateChannel::effective(self.preferences.update_channel, CURRENT_VERSION);
         let status = crate::updates::status(cx);
@@ -207,14 +207,23 @@ impl GitCrab {
             Status::Idle => (String::new(), Role::TextMuted),
             Status::Checking => ("Checking…".to_owned(), Role::TextMuted),
             Status::UpToDate => ("GitCrab is up to date.".to_owned(), Role::StatusSuccessFg),
-            Status::Available(update) => (
-                if crate::updates::is_skipped(&update.version, cx) {
+            Status::Available(update) => {
+                let mut text = if crate::updates::is_skipped(&update.version, cx) {
                     format!("GitCrab {} is available. You skipped it.", update.version)
                 } else {
                     format!("GitCrab {} is available.", update.version)
-                },
-                Role::StatusInfoFg,
-            ),
+                };
+                match crate::updates::install_support(cx) {
+                    Some(InstallSupport::Supported) => {
+                        text.push_str(" Install it from the notice above the tabs.");
+                    }
+                    Some(InstallSupport::Unsupported(reason)) => {
+                        text.push_str(&format!(" {reason} Download it from the release page."));
+                    }
+                    None => {}
+                }
+                (text, Role::StatusInfoFg)
+            }
             Status::Failed(error) => (
                 format!("Could not check for updates: {error}"),
                 Role::StatusErrorFg,

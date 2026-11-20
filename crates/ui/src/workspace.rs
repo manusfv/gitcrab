@@ -125,19 +125,55 @@ pub struct Workspace {
 }
 
 /// The notice announcing an available release, above the repository panel.
-/// It never blocks the window: the user can act on it or close it.
+/// It never blocks the window: the user can act on it or close it. When this
+/// copy installs updates itself it offers to, and shows the progress and any
+/// error in place; otherwise it links to the release page.
 fn update_notice(
     update: crate::updates::AvailableUpdate,
     cx: &mut Context<Workspace>,
 ) -> Stateful<Div> {
-    let button = |id: &'static str, label: &'static str| {
+    use crate::updates::{Install, InstallSupport};
+    let button = |id: &'static str, label: &'static str, kind| {
         components::basic(
             Button::new(id).label(label),
-            components::ButtonKind::Secondary,
+            kind,
             components::ControlSize::Compact,
         )
         .tab_stop(true)
     };
+    let install = crate::updates::install_state(cx);
+    let support = crate::updates::install_support(cx);
+    let busy = install.in_progress();
+    let (detail, detail_role) = match &install {
+        Install::Idle => (None, Role::TextMuted),
+        Install::Downloading(Some(percent)) => {
+            (Some(format!("Downloading {percent}%")), Role::TextMuted)
+        }
+        Install::Downloading(None) => (Some("Downloading…".to_owned()), Role::TextMuted),
+        Install::Installing => (Some("Installing…".to_owned()), Role::TextMuted),
+        Install::Failed(error) => (Some(error.clone()), Role::StatusErrorFg),
+    };
+    let notes_tooltip = match &support {
+        Some(InstallSupport::Unsupported(reason)) => {
+            format!("{reason} Download it from {}", update.release_url)
+        }
+        _ => update.release_url.clone(),
+    };
+    let install_button = (support == Some(InstallSupport::Supported) && !busy).then(|| {
+        let version = update.version.clone();
+        let failed = matches!(install, Install::Failed(_));
+        button(
+            "update-install",
+            if failed {
+                "Try again"
+            } else {
+                "Install and restart"
+            },
+            components::ButtonKind::Primary,
+        )
+        .tooltip("Download, verify and install this version, then restart GitCrab")
+        .on_click(cx.listener(move |v, _, w, cx| v.install_update(version.clone(), w, cx)))
+    });
     let url = update.release_url.clone();
     let skip = update.version.clone();
     let dismiss = update.version.clone();
@@ -165,44 +201,70 @@ fn update_notice(
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_role(Role::TextDefault)
-                .child(format!("GitCrab {} is available", update.version)),
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_role(Role::TextDefault)
+                        .child(format!("GitCrab {} is available", update.version)),
+                )
+                .when_some(detail, |el, detail| {
+                    el.child(
+                        div()
+                            .id("update-install-status")
+                            .text_size(scaled(12.))
+                            .text_role(detail_role)
+                            .child(detail),
+                    )
+                }),
         )
-        // Installing in place adds an "Install and restart" button here.
+        .when_some(install_button, |el, install| el.child(install))
         .child(
-            button("update-release-notes", "Release notes")
-                .tooltip(update.release_url.clone())
-                .on_click(move |_, _, cx| cx.open_url(&url)),
+            button(
+                "update-release-notes",
+                "Release notes",
+                components::ButtonKind::Secondary,
+            )
+            .tooltip(notes_tooltip)
+            .on_click(move |_, _, cx| cx.open_url(&url)),
         )
-        .child(
-            button("update-skip", "Skip this version")
+        .when(!busy, |el| {
+            el.child(
+                button(
+                    "update-skip",
+                    "Skip this version",
+                    components::ButtonKind::Secondary,
+                )
                 .tooltip("Don't announce this version again")
                 .on_click(cx.listener(move |_, _, _, cx| {
                     crate::updates::skip(&skip, cx);
                     cx.notify();
                 })),
-        )
-        .child(
-            Button::new("update-dismiss")
-                .ghost()
-                .small()
-                .tab_stop(true)
-                .w(scaled(28.))
-                .h(scaled(28.))
-                .child(
-                    div()
-                        .text_size(scaled(16.))
-                        .line_height(scaled(16.))
-                        .child("×"),
-                )
-                .tooltip("Close until GitCrab restarts")
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    crate::updates::dismiss(&dismiss, cx);
-                    cx.notify();
-                })),
-        )
+            )
+        })
+        .when(!busy, |el| {
+            el.child(
+                Button::new("update-dismiss")
+                    .ghost()
+                    .small()
+                    .tab_stop(true)
+                    .w(scaled(28.))
+                    .h(scaled(28.))
+                    .child(
+                        div()
+                            .text_size(scaled(16.))
+                            .line_height(scaled(16.))
+                            .child("×"),
+                    )
+                    .tooltip("Close until GitCrab restarts")
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::updates::dismiss(&dismiss, cx);
+                        cx.notify();
+                    })),
+            )
+        })
 }
 
 impl Workspace {
@@ -427,6 +489,20 @@ impl Workspace {
         cx: &mut Context<Self>,
         finished: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) {
+        self.flush_then(window, cx, move |v, result, w, cx| match result {
+            Ok(()) => finished(v, w, cx),
+            Err(error) => v.confirm_close_without_saving(error, w, cx, finished),
+        });
+    }
+
+    /// Saves every tab's preferences and the shared settings, then calls
+    /// `finished` with the outcome.
+    fn flush_then(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        finished: impl FnOnce(&mut Self, Result<(), String>, &mut Window, &mut Context<Self>) + 'static,
+    ) {
         let result = self
             .tabs
             .iter()
@@ -435,7 +511,7 @@ impl Workspace {
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                self.confirm_close_without_saving(error, window, cx, finished);
+                finished(self, Err(error), window, cx);
                 return;
             }
         };
@@ -446,14 +522,107 @@ impl Workspace {
                 .unwrap_or_else(|_| Err("Settings writer closed.".into()));
             let _ = workspace.update_in(cx, |v, w, cx| {
                 v.confirming_draft_loss = false;
-                match result {
-                    Ok(()) => finished(v, w, cx),
-                    Err(error) => v.confirm_close_without_saving(error, w, cx, finished),
-                }
+                finished(v, result, w, cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Downloads and verifies `version`, then installs it and restarts
+    /// GitCrab. Waits for no Git write to be running and asks before
+    /// discarding drafts. Progress and errors show in the update notice.
+    fn install_update(&mut self, version: String, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::updates::install_state(cx).in_progress() {
+            return;
+        }
+        let download = crate::updates::download_update(&version, cx);
+        cx.notify();
+        cx.spawn_in(window, async move |workspace, cx| {
+            if download.await.is_ok() {
+                let _ = workspace.update_in(cx, |v, w, cx| v.restart_into_update(version, w, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn restart_into_update(
+        &mut self,
+        version: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tabs.iter().any(|tab| tab.read(cx).mutating()) {
+            crate::updates::install_failed(
+                "A Git operation is running. Try again when it finishes.",
+                cx,
+            );
+            return;
+        }
+        if self.blocked(window, cx) {
+            crate::updates::install_failed("Close the open dialog, then try again.", cx);
+            return;
+        }
+        if self.tabs.iter().any(|tab| tab.read(cx).has_drafts()) {
+            self.confirm_close(
+                "Restart GitCrab to install the update and discard all drafts?",
+                "Commit drafts are kept in memory for the lifetime of their tab.",
+                "Discard drafts and restart",
+                window,
+                cx,
+                move |v, w, cx| v.install_after_flush(version, w, cx),
+            );
+        } else {
+            self.install_after_flush(version, window, cx);
+        }
+    }
+
+    /// Saves settings and the window size like quitting does, installs and
+    /// restarts. On Windows the installer ends this process and starts the
+    /// new version itself.
+    fn install_after_flush(
+        &mut self,
+        version: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.remember_window_size(window, cx);
+        let identities: Vec<_> = self
+            .tabs
+            .iter()
+            .map(|tab| (tab.entity_id(), tab.read(cx).close_identity()))
+            .collect();
+        self.flush_then(window, cx, move |v, saved, w, cx| {
+            if let Err(error) = saved {
+                crate::updates::install_failed(
+                    format!("Could not save settings, so nothing was installed: {error}"),
+                    cx,
+                );
+                return;
+            }
+            let current: Vec<_> = v
+                .tabs
+                .iter()
+                .map(|tab| (tab.entity_id(), tab.read(cx).close_identity()))
+                .collect();
+            if current != identities || v.tabs.iter().any(|tab| tab.read(cx).mutating()) {
+                crate::updates::install_failed(
+                    "A tab changed while preparing to restart. Try again.",
+                    cx,
+                );
+                return;
+            }
+            let installing = crate::updates::install_update(&version, cx);
+            cx.spawn_in(w, async move |workspace, cx| {
+                if let Ok(program) = installing.await {
+                    let _ = workspace.update(cx, |_, cx| {
+                        cx.set_restart_path(program);
+                        cx.restart();
+                    });
+                }
+            })
+            .detach();
+        });
     }
 
     /// Handles a window close request while keeping the window alive.

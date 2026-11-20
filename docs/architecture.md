@@ -11,9 +11,10 @@ The workspace has six crates:
   Its tests run real Git in isolated repositories.
 - `crates/settings` (`gitcrab-settings`): preferences, session and trust files
   behind core's `SettingsStore` trait.
-- `crates/update` (`gitcrab-update`): update checks behind core's `Updater`
-  trait. Reads each channel's release manifest with `cargo-packager-updater`
-  on a background thread. Holds `UPDATE_PUBLIC_KEY`.
+- `crates/update` (`gitcrab-update`): updates behind core's `Updater` trait.
+  Reads each channel's release manifest, downloads and verifies the bundle and
+  installs it with `cargo-packager-updater`, each on a background thread.
+  Holds `UPDATE_PUBLIC_KEY`.
 - `crates/ui` (`gitcrab-ui`): GPUI views and components. Depends on core only
   and reaches Git, settings and updates through the `GitBackend`,
   `SettingsStore` and `Updater` the app installs.
@@ -84,12 +85,23 @@ Paths below are relative to each crate's `src/`.
   global and applies the font size to the theme.
 - `updates.rs` (core) owns the update rules: the effective release channel
   (the saved choice, else prerelease for a prerelease build), the daily limit
-  on automatic checks, semver comparison and skipped versions. It defines the
-  `Updater` trait. `ui/updates.rs` keeps the latest result in a gpui global,
-  runs the automatic schedule (10 seconds after startup, then hourly when a
-  check is due) and records the skipped version and last check through
-  `ui/preferences.rs`. The workspace shows the update notice; the Appearance
-  dialog has the Updates group.
+  on automatic checks, semver comparison, skipped versions, which copies can
+  install updates in place (`InstallSupport::decide`) and download progress.
+  It defines the `Updater` trait: check, install support, download (progress
+  on a `watch` channel, then a verified result) and install.
+  `gitcrab-update` keeps the manifest entry of the last check so the download
+  is verified against it, refuses to download without a public key, and
+  inspects how GitCrab was installed (NSIS `uninstall.exe`, `$APPIMAGE`,
+  `GitCrab.app` in a writable folder); copies that cannot install, and debug
+  builds, only announce releases. `ui/updates.rs` keeps the latest result and
+  the install progress in a gpui global, runs the automatic schedule (10
+  seconds after startup, then hourly when a check is due) and records the
+  skipped version and last check through `ui/preferences.rs`. The workspace
+  shows the update notice and runs "Install and restart": download, then,
+  with no Git write running and drafts confirmed, save settings like quitting
+  does, install and restart through gpui's `restart` (on Windows the NSIS
+  setup ends the process and starts GitCrab itself). The Appearance dialog
+  has the Updates group.
 
 The Serde request/reply envelope is an internal diagnostic format. GitCrab does
 not expose it as a supported external protocol. Its tests continue to exercise
