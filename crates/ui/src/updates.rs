@@ -10,7 +10,6 @@ pub use gitcrab_core::updates::{AvailableUpdate, InstallSupport, UpdateChannel};
 use gpui::{App, BorrowAppContext as _, Global, Task};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-/// The running version.
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Delay before the first automatic check, so startup work comes first.
@@ -93,7 +92,6 @@ pub fn install(updater: Arc<dyn Updater>, cx: &mut App) {
     .detach();
 }
 
-/// The latest check's outcome.
 pub fn status(cx: &App) -> Status {
     cx.try_global::<Updates>()
         .map(|updates| updates.status.clone())
@@ -113,7 +111,6 @@ pub fn notice(cx: &mut App) -> Option<AvailableUpdate> {
     (!hidden).then(|| update.clone())
 }
 
-/// Whether the user skipped `version`.
 pub fn is_skipped(version: &str, cx: &mut App) -> bool {
     rules::is_skipped(
         crate::preferences::current(cx).skipped_update.as_deref(),
@@ -121,8 +118,6 @@ pub fn is_skipped(version: &str, cx: &mut App) -> bool {
     )
 }
 
-/// Runs an automatic check when automatic checks are on and the last one is
-/// at least a day old.
 fn check_if_due(cx: &mut App) {
     let preferences = crate::preferences::current(cx);
     if rules::should_check(
@@ -346,7 +341,6 @@ fn finish(generation: u64, result: Result<Option<AvailableUpdate>, String>, cx: 
     });
 }
 
-/// The current time in Unix seconds.
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

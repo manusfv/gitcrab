@@ -78,7 +78,6 @@ impl AvailableUpdate {
     }
 }
 
-/// The release page of `version`.
 pub fn release_page(version: &str) -> String {
     format!(
         "{RELEASES_URL}/tag/v{}",
@@ -86,7 +85,6 @@ pub fn release_page(version: &str) -> String {
     )
 }
 
-/// Parses a version with or without a leading `v`.
 fn parse(version: &str) -> Option<Version> {
     Version::parse(version.trim().trim_start_matches('v')).ok()
 }

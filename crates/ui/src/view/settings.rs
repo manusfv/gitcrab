@@ -407,7 +407,6 @@ impl GitCrab {
                         cx.notify();
                     })),
             );
-        // Also shows the running version and build.
         let updates = self.update_settings(cx);
         scroll_area(
             "appearance-settings",

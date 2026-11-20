@@ -38,14 +38,10 @@ use std::{
 };
 use tokio::sync::{oneshot, watch};
 
-/// The minisign public key that update bundles are signed with, as printed
-/// by `cargo packager signer generate` (the contents of the `.pub` file).
-///
-/// The maintainer fills this in when release signing is set up; see
-/// `docs/updates.md`. Checking for updates does not use it, so checks work
-/// with this empty placeholder. Installing does: without a key no bundle can
-/// be verified, so [`ManifestUpdater`] reports installing as unsupported and
-/// the app only announces releases.
+/// The minisign public key update bundles are signed with (the contents of
+/// the `.pub` file from `cargo packager signer generate`; see
+/// `docs/updates.md`). Checks work while it is empty, but without it no bundle
+/// can be verified, so [`ManifestUpdater`] reports installing as unsupported.
 pub const UPDATE_PUBLIC_KEY: &str = "";
 
 /// Where each channel's manifest is published: `<base>/<channel>.json`.
@@ -55,22 +51,16 @@ const MANIFEST_BASE: &str = "https://raw.githubusercontent.com/manusfv/gitcrab/u
 /// `{channel}` in it is replaced by `stable` or `prerelease`.
 pub const ENDPOINT_VARIABLE: &str = "GITCRAB_UPDATE_ENDPOINT";
 
-/// Longest time one check may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Longest time a bundle download may take, start to finish.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-/// The published manifest of `channel`.
 pub fn manifest_url(channel: UpdateChannel) -> String {
     format!("{MANIFEST_BASE}/{}.json", channel.name())
 }
 
 /// The manifest URL to read for `channel`, honouring a non-empty override.
-///
-/// # Errors
-///
-/// Returns a message if the URL does not parse.
 fn endpoint(channel: UpdateChannel, overridden: Option<String>) -> Result<Url, String> {
     let url = overridden
         .map(|url| url.trim().replace("{channel}", channel.name()))
