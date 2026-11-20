@@ -418,6 +418,22 @@ impl PendingChange {
     }
 }
 
+/// The bar for an update being installed: filled to `value` percent, or
+/// moving when the share is unknown.
+fn update_progress_bar(
+    id: &'static str,
+    value: Option<f32>,
+    label: String,
+) -> gpui::component::progress::Progress {
+    gpui::component::progress::Progress::new(id)
+        .w(scaled(88.))
+        .with_size(gpui::component::Size::XSmall)
+        .color(role_color(Role::ActionPrimary))
+        .value(value.unwrap_or_default())
+        .loading(value.is_none())
+        .accessibility_label(label)
+}
+
 fn sorted(rows: &[usize]) -> Vec<usize> {
     let mut rows = rows.to_vec();
     rows.sort_unstable();
@@ -1882,15 +1898,7 @@ impl GitCrab {
                 .items_center()
                 .gap_2()
                 .child(label.clone())
-                .child(
-                    gpui::component::progress::Progress::new("update-progress-bar")
-                        .w(scaled(88.))
-                        .with_size(gpui::component::Size::XSmall)
-                        .color(role_color(Role::ActionPrimary))
-                        .value(value.unwrap_or_default())
-                        .loading(value.is_none())
-                        .accessibility_label(label),
-                )
+                .child(update_progress_bar("update-progress-bar", value, label))
                 .tooltip(move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx)),
         )
     }

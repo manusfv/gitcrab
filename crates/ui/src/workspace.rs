@@ -30,6 +30,38 @@ actions!(
 #[action(namespace = gitcrab, no_json)]
 pub struct OpenRecent(pub String);
 
+/// Installs the named release from the Settings dialog, which closes just
+/// before installing.
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, Action)]
+#[action(namespace = gitcrab, no_json)]
+pub struct InstallUpdateFromSettings(pub String);
+
+/// Where the user asked to install an update.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InstallOrigin {
+    Notice,
+    Settings,
+}
+
+/// Why an install can't go ahead now, if it can't. An install started from
+/// Settings may find Settings open, because the workspace closes it before
+/// installing; any other dialog, or Settings during an install started from
+/// the notice, is left for the user to close.
+fn install_refusal(
+    origin: InstallOrigin,
+    git_running: bool,
+    settings_open: bool,
+    other_dialog_open: bool,
+) -> Option<&'static str> {
+    if git_running {
+        Some("A Git operation is running. Try again when it finishes.")
+    } else if other_dialog_open || (settings_open && origin != InstallOrigin::Settings) {
+        Some("Close the open dialog, then try again.")
+    } else {
+        None
+    }
+}
+
 #[derive(Clone)]
 struct DraggedTab {
     workspace: EntityId,
@@ -172,7 +204,9 @@ fn update_notice(
             components::ButtonKind::Primary,
         )
         .tooltip("Download, verify and install this version, then restart GitCrab")
-        .on_click(cx.listener(move |v, _, w, cx| v.install_update(version.clone(), w, cx)))
+        .on_click(cx.listener(move |v, _, w, cx| {
+            v.install_update(version.clone(), InstallOrigin::Notice, w, cx)
+        }))
     });
     let url = update.release_url.clone();
     let skip = update.version.clone();
@@ -531,8 +565,15 @@ impl Workspace {
 
     /// Downloads and verifies `version`, then installs it and restarts
     /// GitCrab. Waits for no Git write to be running and asks before
-    /// discarding drafts. Progress and errors show in the update notice.
-    fn install_update(&mut self, version: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// discarding drafts. Progress and errors show in the update notice, the
+    /// Settings dialog and the status bar.
+    fn install_update(
+        &mut self,
+        version: String,
+        origin: InstallOrigin,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if crate::updates::install_state(cx).in_progress() {
             return;
         }
@@ -540,7 +581,8 @@ impl Workspace {
         cx.notify();
         cx.spawn_in(window, async move |workspace, cx| {
             if download.await.is_ok() {
-                let _ = workspace.update_in(cx, |v, w, cx| v.restart_into_update(version, w, cx));
+                let _ = workspace
+                    .update_in(cx, |v, w, cx| v.restart_into_update(version, origin, w, cx));
             }
         })
         .detach();
@@ -549,19 +591,24 @@ impl Workspace {
     fn restart_into_update(
         &mut self,
         version: String,
+        origin: InstallOrigin,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.tabs.iter().any(|tab| tab.read(cx).mutating()) {
-            crate::updates::install_failed(
-                "A Git operation is running. Try again when it finishes.",
-                cx,
-            );
+        let active = self.tabs[self.active].read(cx);
+        let (settings_open, awaiting_trust) = (active.settings_open(), active.awaiting_trust);
+        let other_dialog_open = self.picking
+            || self.confirming_draft_loss
+            || awaiting_trust
+            || (!settings_open && window.has_active_dialog(cx));
+        let git_running = self.tabs.iter().any(|tab| tab.read(cx).mutating());
+        if let Some(reason) = install_refusal(origin, git_running, settings_open, other_dialog_open)
+        {
+            crate::updates::install_failed(reason, cx);
             return;
         }
-        if self.blocked(window, cx) {
-            crate::updates::install_failed("Close the open dialog, then try again.", cx);
-            return;
+        if settings_open {
+            self.tabs[self.active].update(cx, |tab, cx| tab.close_settings(window, cx));
         }
         if self.tabs.iter().any(|tab| tab.read(cx).has_drafts()) {
             self.confirm_close(
@@ -1156,6 +1203,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|v, _: &PreviousTab, w, cx| v.cycle(-1, w, cx)))
             .on_action(cx.listener(|v, _: &MoveTabLeft, w, cx| v.move_active_tab(-1, w, cx)))
             .on_action(cx.listener(|v, _: &MoveTabRight, w, cx| v.move_active_tab(1, w, cx)))
+            .on_action(cx.listener(|v, action: &InstallUpdateFromSettings, w, cx| {
+                v.install_update(action.0.clone(), InstallOrigin::Settings, w, cx)
+            }))
             .on_action(cx.listener(|v, action: &OpenRecent, w, cx| {
                 if !v.blocked(w, cx) {
                     v.open_path(action.0.clone(), w, cx);
@@ -1187,5 +1237,28 @@ impl Render for Workspace {
                     .min_h_0()
                     .child(active),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{install_refusal, InstallOrigin};
+
+    const GIT: &str = "A Git operation is running. Try again when it finishes.";
+    const DIALOG: &str = "Close the open dialog, then try again.";
+
+    #[test]
+    fn settings_only_stays_open_for_an_install_it_started() {
+        use InstallOrigin::{Notice, Settings};
+        assert_eq!(install_refusal(Settings, false, true, false), None);
+        assert_eq!(install_refusal(Notice, false, true, false), Some(DIALOG));
+        assert_eq!(install_refusal(Notice, false, false, false), None);
+        assert_eq!(install_refusal(Settings, false, false, false), None);
+        for origin in [Notice, Settings] {
+            assert_eq!(install_refusal(origin, false, false, true), Some(DIALOG));
+            assert_eq!(install_refusal(origin, false, true, true), Some(DIALOG));
+            assert_eq!(install_refusal(origin, true, true, false), Some(GIT));
+            assert_eq!(install_refusal(origin, true, false, false), Some(GIT));
+        }
     }
 }
