@@ -524,6 +524,9 @@ pub struct GitCrab {
     _subscriptions: Vec<Subscription>,
     preferences: Preferences,
     settings_open: bool,
+    /// The install state the status bar last drew, so update checks that
+    /// leave it unchanged do not redraw the view.
+    update_install: crate::updates::Install,
     last_repository: Option<String>,
     pub(super) awaiting_trust: bool,
     open_failure: Option<OpenFailure>,
@@ -596,9 +599,13 @@ impl GitCrab {
             .new(|cx| InputState::new(window, cx).placeholder("Branch, revision or stash message"));
         let diff_search = cx.new(|cx| InputState::new(window, cx).placeholder("Find in diff…"));
         let subscriptions = vec![
-            // The settings dialog shows the latest update check.
+            // The settings dialog shows the latest update check and the
+            // status bar shows install progress.
             cx.observe_global::<crate::updates::Updates>(|v, cx| {
-                if v.settings_open {
+                let install = crate::updates::install_state(cx);
+                let install_changed = install != v.update_install;
+                v.update_install = install;
+                if v.settings_open || install_changed {
                     cx.notify();
                 }
             }),
@@ -741,6 +748,7 @@ impl GitCrab {
             saved_preferences: preferences.clone(),
             preferences,
             settings_open: false,
+            update_install: crate::updates::install_state(cx),
             last_repository: crate::preferences::last_repository(cx),
             awaiting_trust: false,
             open_failure: None,
@@ -1845,6 +1853,46 @@ impl GitCrab {
                 }
                 menu
             })
+    }
+
+    /// The status bar's label and bar while an update downloads or installs.
+    fn render_update_progress(&self, cx: &App) -> Option<impl IntoElement> {
+        use crate::updates::Install;
+        let (label, value) = match &self.update_install {
+            Install::Downloading(Some(percent)) => {
+                (format!("Updating {percent}%"), Some(f32::from(*percent)))
+            }
+            Install::Downloading(None) => ("Updating…".to_owned(), None),
+            // Replacing the files reports no progress, so the bar keeps moving
+            // to show GitCrab has not stalled.
+            Install::Installing => ("Installing…".to_owned(), None),
+            Install::Idle | Install::Failed(_) => return None,
+        };
+        let tooltip = match crate::updates::status(cx) {
+            crate::updates::Status::Available(update) => {
+                format!("Updating to GitCrab {}", update.version)
+            }
+            _ => "Updating GitCrab".to_owned(),
+        };
+        Some(
+            div()
+                .id("update-progress")
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(label.clone())
+                .child(
+                    gpui::component::progress::Progress::new("update-progress-bar")
+                        .w(scaled(88.))
+                        .with_size(gpui::component::Size::XSmall)
+                        .color(role_color(Role::ActionPrimary))
+                        .value(value.unwrap_or_default())
+                        .loading(value.is_none())
+                        .accessibility_label(label),
+                )
+                .tooltip(move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx)),
+        )
     }
 
     /// When this worktree last fetched, for the status bar.
@@ -3262,6 +3310,7 @@ impl Render for GitCrab {
                             .on_click(cx.listener(|v, _, w, cx| v.show_activity(w, cx))),
                         )
                     })
+                    .children(self.render_update_progress(cx))
                     .child(concat!("v", env!("CARGO_PKG_VERSION")))
                     .when_some(self.watch_warning.clone(), |bar, warning| {
                         bar.child(
