@@ -3247,89 +3247,137 @@ impl Render for GitCrab {
             })
             .children(self.render_branch_prompt(cx))
             .child(main_content)
-            .child(
-                div()
-                    .h(scaled(28.))
-                    .bg_role(Role::SurfaceChrome)
-                    .border_t_1()
-                    .border_role(Role::BorderDivider)
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_3()
-                    .gap_2()
-                    .text_size(scaled(12.))
-                    .text_role(Role::TextMuted)
-                    .when(matches!(self.loader(), Some(Some(_))), |bar| {
-                        bar.child(div().flex_none().child(components::spinner(px(12.))))
-                    })
-                    .child(div().flex_1().truncate().child(if self.state.busy {
-                        self.running_label()
-                    } else if let Some(pending) = self.pending_label() {
-                        pending
-                    } else if let Some(loading) = self.loading_label() {
-                        loading.into()
-                    } else if self.state.error {
-                        String::new()
-                    } else {
-                        if self.state.notice.is_empty() {
-                            self.activity
-                                .front()
-                                .map(OperationRecord::summary)
-                                .unwrap_or_default()
-                        } else {
-                            self.state.notice.clone()
-                        }
-                    }))
-                    .when(
-                        self.running
-                            .as_ref()
-                            .is_some_and(|running| running.network && !running.cancelling),
-                        |bar| {
-                            bar.child(
-                                self.button("cancel-network", "Cancel")
-                                    .tooltip("Stop Git while it contacts the remote. A pull that has started updating the branch finishes first.")
-                                    .on_click(cx.listener(|v, _, _, cx| v.cancel_network(cx))),
-                            )
-                        },
-                    )
-                    .when_some(self.last_fetch_label(), |bar, fetched| {
-                        let tooltip = self
-                            .state
-                            .snapshot
-                            .as_ref()
-                            .map(|s| s.upstream_context.clone())
-                            .unwrap_or_default();
-                        bar.child(
-                            div()
-                                .id("last-fetch")
-                                .flex_none()
-                                .child(fetched)
-                                .tooltip(move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx)),
-                        )
-                    })
-                    .when(!self.activity.is_empty(), |bar| {
-                        bar.child(
-                            self.button(
-                                "activity-results",
-                                format!("Activity ({})", self.activity.len()),
-                            )
-                            .on_click(cx.listener(|v, _, w, cx| v.show_activity(w, cx))),
-                        )
-                    })
-                    .children(self.render_update_progress(cx))
-                    .child(concat!("v", env!("CARGO_PKG_VERSION")))
-                    .when_some(self.watch_warning.clone(), |bar, warning| {
-                        bar.child(
-                            self.button("watch-warning", "Live refresh unavailable")
-                                .text_role(Role::StatusWarningFg)
-                                .tooltip(warning),
-                        )
-                    }),
-            )
+            .child(self.render_status_bar(cx))
             .into_any_element()
     }
+}
+
+impl GitCrab {
+    /// The bottom bar: what this tab is doing on the left; the fetch time,
+    /// Activity, update progress, version and warnings on the right, with a
+    /// rule between each.
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> Div {
+        let status = if self.state.busy {
+            self.running_label()
+        } else if let Some(pending) = self.pending_label() {
+            pending
+        } else if let Some(loading) = self.loading_label() {
+            loading.into()
+        } else if self.state.error {
+            String::new()
+        } else if self.state.notice.is_empty() {
+            self.activity
+                .front()
+                .map(OperationRecord::summary)
+                .unwrap_or_default()
+        } else {
+            self.state.notice.clone()
+        };
+        let left = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(scaled(STATUS_BAR_ITEM_GAP))
+            .when(matches!(self.loader(), Some(Some(_))), |group| {
+                group.child(div().flex_none().child(components::spinner(px(12.))))
+            })
+            .child(div().flex_1().min_w_0().truncate().child(status))
+            .when(
+                self.running
+                    .as_ref()
+                    .is_some_and(|running| running.network && !running.cancelling),
+                |group| {
+                    group.child(
+                        self.button("cancel-network", "Cancel")
+                            .tooltip("Stop Git while it contacts the remote. A pull that has started updating the branch finishes first.")
+                            .on_click(cx.listener(|v, _, _, cx| v.cancel_network(cx))),
+                    )
+                },
+            );
+        let mut items: Vec<AnyElement> = Vec::new();
+        if let Some(fetched) = self.last_fetch_label() {
+            let tooltip = self
+                .state
+                .snapshot
+                .as_ref()
+                .map(|s| s.upstream_context.clone())
+                .unwrap_or_default();
+            items.push(
+                div()
+                    .id("last-fetch")
+                    .flex_none()
+                    .child(fetched)
+                    .tooltip(move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx))
+                    .into_any_element(),
+            );
+        }
+        if !self.activity.is_empty() {
+            items.push(
+                self.button(
+                    "activity-results",
+                    format!("Activity ({})", self.activity.len()),
+                )
+                .on_click(cx.listener(|v, _, w, cx| v.show_activity(w, cx)))
+                .into_any_element(),
+            );
+        }
+        if let Some(progress) = self.render_update_progress(cx) {
+            items.push(progress.into_any_element());
+        }
+        items.push(
+            div()
+                .flex_none()
+                .child(concat!("v", env!("CARGO_PKG_VERSION")))
+                .into_any_element(),
+        );
+        if let Some(warning) = self.watch_warning.clone() {
+            items.push(
+                self.button("watch-warning", "Live refresh unavailable")
+                    .text_role(Role::StatusWarningFg)
+                    .tooltip(warning)
+                    .into_any_element(),
+            );
+        }
+        let mut right = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(scaled(STATUS_BAR_ITEM_GAP));
+        for (index, item) in items.into_iter().enumerate() {
+            if index > 0 {
+                right = right.child(status_rule());
+            }
+            right = right.child(item);
+        }
+        div()
+            .h(scaled(if self.compact {
+                STATUS_BAR_COMPACT_HEIGHT
+            } else {
+                STATUS_BAR_HEIGHT
+            }))
+            .bg_role(Role::SurfaceChrome)
+            .border_t_1()
+            .border_role(Role::BorderDivider)
+            .flex_none()
+            .flex()
+            .items_center()
+            .px(scaled(SECTION_INSET))
+            .gap(scaled(STATUS_BAR_GROUP_GAP))
+            .text_size(scaled(12.))
+            .text_role(Role::TextMuted)
+            .child(left)
+            .child(right)
+    }
+}
+
+/// The rule between two of the status bar's right-hand items.
+fn status_rule() -> Div {
+    div()
+        .w(px(SEAM))
+        .h(scaled(GLYPH_SIZE))
+        .flex_none()
+        .bg_role(Role::BorderDivider)
 }
 
 #[cfg(test)]
