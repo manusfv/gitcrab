@@ -12,6 +12,18 @@ pub struct Graph {
     pass_through: Vec<Vec<PassRange>>,
 }
 
+/// Whether lane zero, which [`layout_with_head`] keeps free above HEAD
+/// without drawing a lane there, crosses the upper and the lower half of
+/// `row`. `head_row` is HEAD's row, or `None` while HEAD is not loaded.
+/// Only a Working changes row links down to HEAD through that lane.
+pub fn head_link_at(head_row: Option<usize>, row: usize) -> (bool, bool) {
+    match head_row {
+        Some(end) if row == end => (true, false),
+        Some(end) if row > end => (false, false),
+        _ => (true, true),
+    }
+}
+
 impl Graph {
     /// The row whose refs name the nearest branch containing `row`'s commit,
     /// shown as a "ghost" label when `row` has no refs of its own. `None` when
@@ -59,6 +71,7 @@ impl Graph {
                     from_lane: lane,
                     to_lane: lane,
                     color: range.color,
+                    merge: false,
                 });
             }
         }
@@ -119,6 +132,10 @@ pub struct Edge {
     pub to_lane: usize,
     /// Color index to map onto the renderer's lane palette.
     pub color: usize,
+    /// Leaves a merge for one of its later parents. Such a segment turns
+    /// next to the merge; every other one turns next to the commit it meets.
+    #[serde(default)]
+    pub merge: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -163,6 +180,8 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
             })]
         })
         .unwrap_or_default();
+    // Lane zero waits for HEAD without drawing a lane; see [`head_link_at`].
+    let mut head_reserved = !lanes.is_empty();
     let mut next_color = lanes.len();
     let mut graph = Graph::default();
     let mut previous_targets = Vec::new();
@@ -198,7 +217,9 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
         }
         for (index, occupant) in lanes.iter_mut().enumerate() {
             if let Some(active) = occupant.filter(|active| active.target == commit.id) {
-                if let Some(previous_row) = row_index
+                if head_reserved && index == 0 {
+                    head_reserved = false;
+                } else if let Some(previous_row) = row_index
                     .checked_sub(1)
                     .filter(|row| active.pass_start <= *row)
                 {
@@ -207,6 +228,7 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
                         from_lane: index,
                         to_lane: lane,
                         color: active.color,
+                        merge: false,
                     });
                 }
                 *occupant = None;
@@ -270,13 +292,14 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
         }
         let mut edges = Vec::with_capacity(parent_lanes.len());
         previous_targets.clear();
-        for dest in parent_lanes {
+        for (index, dest) in parent_lanes.into_iter().enumerate() {
             let active = lanes[dest].unwrap();
             previous_targets.push(active.target);
             edges.push(Edge {
                 from_lane: lane,
                 to_lane: dest,
                 color: active.color,
+                merge: index > 0,
             });
         }
         graph.lanes = graph.lanes.max(lanes.len()).max(lane + 1);
@@ -294,6 +317,9 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
     }
     for (index, active) in lanes.into_iter().enumerate() {
         if let Some(active) = active {
+            if head_reserved && index == 0 {
+                continue;
+            }
             close_pass(&mut graph.pass_through, index, active, commits.len());
         }
     }
@@ -607,10 +633,32 @@ mod tests {
         assert_eq!((graph.rows[0].lane, graph.rows[0].color), (1, 1));
         assert_eq!((graph.rows[1].lane, graph.rows[1].color), (0, 0));
         assert_eq!((graph.rows[2].lane, graph.rows[2].color), (0, 0));
-        assert!(graph
-            .edges_at(0)
-            .iter()
-            .any(|edge| edge.from_lane == 0 && edge.to_lane == 0));
+        // Lane zero stays free above HEAD without a lane drawn in it; only a
+        // Working changes row links down to HEAD through it.
+        assert!(graph.edges_at(0).iter().all(|edge| edge.from_lane != 0));
+        assert!(!graph.rows[1].is_junction(&graph.edges_at(0)));
+        assert_eq!(head_link_at(Some(1), 0), (true, true));
+        assert_eq!(head_link_at(Some(1), 1), (true, false));
+        assert_eq!(head_link_at(Some(1), 2), (false, false));
+    }
+    #[test]
+    fn only_later_parent_segments_are_merges() {
+        let graph = layout(&[
+            c("merge", &["main", "feature"]),
+            c("feature", &["main"]),
+            c("main", &[]),
+        ]);
+        let merges = |row| {
+            graph
+                .edges_at(row)
+                .iter()
+                .map(|edge| edge.merge)
+                .collect::<Vec<_>>()
+        };
+        // The merge's first parent keeps its lane; its second leaves as a merge.
+        assert_eq!(merges(0), [false, true]);
+        // The feature's line into main, and main passing by, are not.
+        assert!(merges(1).iter().all(|merge| !merge));
     }
     #[test]
     fn head_reservation_is_stable_when_head_arrives_on_a_later_page() {
