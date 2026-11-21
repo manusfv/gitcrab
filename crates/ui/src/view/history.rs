@@ -387,6 +387,9 @@ fn paint_dotted_lane(
     }
 }
 
+/// How round a lane's turn is; capped by the lane gap and half a row.
+const LANE_CORNER_RADIUS: f32 = 10.;
+
 fn paint_lane_corner(
     w: &mut Window,
     junction: Point<Pixels>,
@@ -396,7 +399,7 @@ fn paint_lane_corner(
 ) {
     let run = lane_x - junction.x;
     let rise = row_edge - junction.y;
-    let radius = px(6.).min(run.abs()).min(rise.abs());
+    let radius = px(LANE_CORNER_RADIUS).min(run.abs()).min(rise.abs());
     let bend_x = lane_x - if run < px(0.) { -radius } else { radius };
     let bend_y = junction.y + if rise < px(0.) { -radius } else { radius };
     let mut path = PathBuilder::stroke(graph_stroke(w.scale_factor()));
@@ -1166,17 +1169,16 @@ impl GitCrab {
         let row = self.state.graph.rows[i].clone();
         let outgoing = self.state.graph.edges_at(i);
         let next_lane = self.state.graph.rows.get(i + 1).map(|row| row.lane);
-        let mut incoming = i
+        let incoming = i
             .checked_sub(1)
             .map(|p| self.state.graph.edges_at(p))
             .unwrap_or_default();
-        if wip_rows == 1 && i == 0 && !snap.head_id.is_empty() {
-            incoming.push(gitcrab_core::graph::Edge {
-                from_lane: 0,
-                to_lane: 0,
-                color: 0,
-            });
-        }
+        let (link_above, link_below) = if wip_rows == 1 && !snap.head_id.is_empty() {
+            let head_row = snap.commits.iter().position(|c| c.id == snap.head_id);
+            gitcrab_core::graph::head_link_at(head_row, i)
+        } else {
+            (false, false)
+        };
 
         let decorations = resolve_decorations(snap, &c.refs);
         let hover = &self.history_hover;
@@ -1223,9 +1225,19 @@ impl GitCrab {
                     _ => None,
                 })
         };
-        let wip_link = wip_rows == 1 && i == 0 && !snap.head_id.is_empty();
         let color = row.color;
-        let junction = row.is_junction(&incoming);
+        let junction = if link_above && row.lane == 0 {
+            let mut joined = incoming.clone();
+            joined.push(gitcrab_core::graph::Edge {
+                from_lane: 0,
+                to_lane: 0,
+                color: 0,
+                merge: false,
+            });
+            row.is_junction(&joined)
+        } else {
+            row.is_junction(&incoming)
+        };
         let mut el = div()
             .id(("commit", i))
             .w_full()
@@ -1390,9 +1402,8 @@ impl GitCrab {
                                             let from = x(edge.from_lane);
                                             let to = x(edge.to_lane);
                                             let edge_color = lanes()[edge.color % lanes().len()];
-                                            // Put a leftward turn on the lower row only when it meets that row's node.
                                             let turns_below =
-                                                from > to && lower_lane == Some(edge.to_lane);
+                                                !edge.merge && lower_lane == Some(edge.to_lane);
                                             let (top, bottom) = if above {
                                                 (bounds.top(), y)
                                             } else {
@@ -1410,18 +1421,34 @@ impl GitCrab {
                                                 ));
                                             } else {
                                                 let lane_x = if turns_below { from } else { to };
-                                                if wip_link && above {
-                                                    let travelled = px(height / 2. - WIP_RADIUS);
-                                                    paint_dotted_lane(
-                                                        w, lane_x, top, bottom, edge_color,
-                                                        travelled,
-                                                    );
-                                                } else {
-                                                    paint_vertical_lane(
-                                                        w, lane_x, top, bottom, edge_color,
-                                                    );
-                                                }
+                                                paint_vertical_lane(
+                                                    w, lane_x, top, bottom, edge_color,
+                                                );
                                             }
+                                        }
+                                        // Dashes continue from the WIP circle's edge.
+                                        let travelled =
+                                            height / 2. - WIP_RADIUS + i as f32 * height;
+                                        let link_color = lanes()[0];
+                                        if link_above {
+                                            paint_dotted_lane(
+                                                w,
+                                                x(0),
+                                                bounds.top(),
+                                                y,
+                                                link_color,
+                                                px(travelled),
+                                            );
+                                        }
+                                        if link_below {
+                                            paint_dotted_lane(
+                                                w,
+                                                x(0),
+                                                y,
+                                                bounds.bottom(),
+                                                link_color,
+                                                px(travelled) + (y - bounds.top()),
+                                            );
                                         }
                                         // Paint longer runs first so each nearer branch keeps its color at the turn.
                                         corners.sort_by_key(|corner| std::cmp::Reverse(corner.0));
