@@ -180,7 +180,6 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
             })]
         })
         .unwrap_or_default();
-    // Lane zero waits for HEAD without drawing a lane; see [`head_link_at`].
     let mut head_reserved = !lanes.is_empty();
     let mut next_color = lanes.len();
     let mut graph = Graph::default();
@@ -633,8 +632,6 @@ mod tests {
         assert_eq!((graph.rows[0].lane, graph.rows[0].color), (1, 1));
         assert_eq!((graph.rows[1].lane, graph.rows[1].color), (0, 0));
         assert_eq!((graph.rows[2].lane, graph.rows[2].color), (0, 0));
-        // Lane zero stays free above HEAD without a lane drawn in it; only a
-        // Working changes row links down to HEAD through it.
         assert!(graph.edges_at(0).iter().all(|edge| edge.from_lane != 0));
         assert!(!graph.rows[1].is_junction(&graph.edges_at(0)));
         assert_eq!(head_link_at(Some(1), 0), (true, true));
@@ -655,9 +652,7 @@ mod tests {
                 .map(|edge| edge.merge)
                 .collect::<Vec<_>>()
         };
-        // The merge's first parent keeps its lane; its second leaves as a merge.
         assert_eq!(merges(0), [false, true]);
-        // The feature's line into main, and main passing by, are not.
         assert!(merges(1).iter().all(|merge| !merge));
     }
     #[test]

@@ -1173,8 +1173,6 @@ impl GitCrab {
             .checked_sub(1)
             .map(|p| self.state.graph.edges_at(p))
             .unwrap_or_default();
-        // The dotted link from the Working changes row down to HEAD, through
-        // the lane kept free for it. Without that row nothing is drawn there.
         let (link_above, link_below) = if wip_rows == 1 && !snap.head_id.is_empty() {
             let head_row = snap.commits.iter().position(|c| c.id == snap.head_id);
             gitcrab_core::graph::head_link_at(head_row, i)
@@ -1404,9 +1402,6 @@ impl GitCrab {
                                             let from = x(edge.from_lane);
                                             let to = x(edge.to_lane);
                                             let edge_color = lanes()[edge.color % lanes().len()];
-                                            // A merge's line turns beside the merge, then runs down
-                                            // the parent's lane. Any other line keeps its lane down
-                                            // to the commit it meets and turns beside that one.
                                             let turns_below =
                                                 !edge.merge && lower_lane == Some(edge.to_lane);
                                             let (top, bottom) = if above {
