@@ -341,7 +341,7 @@ impl Git {
             .is_ok_and(|s| s.trim().eq_ignore_ascii_case("true"))
         {
             return Err(
-                "Discard with automatic CRLF conversion is not qualified. Use Git for this file."
+                "Discard doesn't support automatic CRLF conversion yet. Use Git for this file."
                     .into(),
             );
         }
@@ -359,7 +359,7 @@ impl Git {
                 && fields[2] != "unset"
                 && !(fields[1] == "eol" && fields[2] == "lf")
             {
-                return Err("Discard with content filters or non-LF encoding is not qualified. Use Git for this file.".into());
+                return Err("Discard doesn't support content filters or non-LF line endings yet. Use Git for this file.".into());
             }
         }
         let file = self.path.join(path);

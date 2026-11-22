@@ -323,10 +323,10 @@ impl OperationRecord {
         let target = self
             .target
             .as_ref()
-            .map(|target| format!(" · {target}"))
+            .map(|target| format!(" {target}"))
             .unwrap_or_default();
         format!(
-            "{}{target} · {} · {}",
+            "{}{target}: {}. {}",
             self.action,
             self.status(),
             self.details
@@ -939,7 +939,7 @@ impl GitCrab {
                 ) => (message.clone(), None),
                 Err(failure) => (failure.message.clone(), Some(failure.kind)),
                 _ => (
-                    "Operation result requires inspection".into(),
+                    "Check the repository".into(),
                     Some(gitcrab_core::git::FailureKind::Inspect),
                 ),
             };
@@ -1491,7 +1491,7 @@ impl GitCrab {
             .filter(|pending| pending.token == token)
     }
 
-    /// Progress text for the write in flight, such as `Stage hunk · a.txt…`.
+    /// Progress text for the write in flight, such as `Stage hunk a.txt…`.
     fn running_label(&self) -> String {
         match &self.running {
             Some(RunningWrite {
@@ -1503,7 +1503,7 @@ impl GitCrab {
                 action,
                 target: Some(target),
                 ..
-            }) => format!("{action} · {target}…"),
+            }) => format!("{action} {target}…"),
             Some(running) => format!("{}…", running.action),
             None => "Running Git operation…".into(),
         }

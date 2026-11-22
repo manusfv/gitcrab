@@ -362,8 +362,8 @@ impl Decoration {
     pub fn label(&self) -> String {
         use crate::git::ReferenceKind;
         match (self.kind, self.target.as_ref().map(|t| t.0)) {
-            (DecorationKind::HeadBranch, _) => format!("{} · HEAD, checked out", self.name),
-            (DecorationKind::Head, _) => "HEAD · detached".into(),
+            (DecorationKind::HeadBranch, _) => format!("{} (checked out)", self.name),
+            (DecorationKind::Head, _) => "Detached HEAD".into(),
             (DecorationKind::Tag, _) => format!("Tag {}", self.name),
             (_, Some(ReferenceKind::Remote)) => format!("Remote {}", self.name),
             _ => format!("Branch {}", self.name),
@@ -612,7 +612,7 @@ mod tests {
             resolved[0].target,
             Some((ReferenceKind::LocalBranch, "main".into()))
         );
-        assert_eq!(resolved[0].label(), "main · HEAD, checked out");
+        assert_eq!(resolved[0].label(), "main (checked out)");
 
         // A branch disambiguated from a same-named tag is still merged.
         let refs = ["HEAD", "heads/main", "tag: main"].map(String::from);
@@ -636,7 +636,7 @@ mod tests {
         snapshot.reviewed.as_mut().unwrap().symbolic_head.clear();
         let detached = resolve_decorations(&snapshot, &refs[..1]);
         assert_eq!(detached[0].kind, DecorationKind::Head);
-        assert_eq!(detached[0].label(), "HEAD · detached");
+        assert_eq!(detached[0].label(), "Detached HEAD");
     }
 
     #[test]
@@ -662,7 +662,7 @@ mod tests {
             resolved[0].target,
             Some((ReferenceKind::LocalBranch, "main".into()))
         );
-        assert_eq!(resolved[0].label(), "main · HEAD, checked out");
+        assert_eq!(resolved[0].label(), "main (checked out)");
         assert_eq!(resolved[1].label(), "Remote origin/main");
         assert_eq!(
             resolved[2].target,

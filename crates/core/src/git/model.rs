@@ -99,7 +99,7 @@ impl FileChange {
     /// Returns the reason file actions are unavailable for a non-UTF-8 path.
     pub fn path_issue(&self) -> Option<&'static str> {
         self.unsupported_path
-            .then_some("This Git path contains bytes the file controls cannot address.")
+            .then_some("GitCrab can't act on this path because it isn't valid UTF-8.")
     }
     /// Reports whether the porcelain status describes unresolved index entries.
     pub fn is_unmerged(&self) -> bool {
@@ -153,7 +153,7 @@ impl FileChange {
     pub fn describe(&self, staged: bool) -> String {
         let name = self.status_name(staged);
         if let Some(issue) = self.path_issue() {
-            return format!("{name}: {} · {issue}", self.display_path());
+            return format!("{name}: {}. {issue}", self.display_path());
         }
         match &self.original_path {
             Some(old) if matches!(self.index, 'R' | 'C') => {
@@ -540,9 +540,9 @@ impl RepoSnapshot {
     /// Formats HEAD for display, with a label for unborn or detached HEAD.
     pub fn head_label(&self) -> String {
         if self.head_id.is_empty() {
-            format!("{} · no commits", self.head)
+            format!("{} (no commits)", self.head)
         } else if self.checked_out_branch().is_none() {
-            format!("Detached HEAD · {}", self.head)
+            format!("Detached HEAD at {}", self.head)
         } else {
             self.head.clone()
         }

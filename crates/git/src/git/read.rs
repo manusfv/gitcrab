@@ -327,48 +327,6 @@ impl Git {
             history_stamp: stamp.finish(),
         })
     }
-    /// Describes the reviewed branch's upstream using local refs only.
-    ///
-    /// An unavailable upstream comparison produces a display message.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if Git cannot read the upstream ref or returns malformed counts.
-    pub fn upstream_context(&self, identity: &WriteIdentity) -> GitResult<String> {
-        if identity.symbolic_head.is_empty() {
-            return Ok("Detached HEAD · no upstream".into());
-        }
-        let upstream = self.run(&[
-            "for-each-ref",
-            "--format=%(upstream:short)",
-            &identity.symbolic_head,
-        ])?;
-        let upstream = upstream.trim();
-        if upstream.is_empty() {
-            return Ok("No upstream configured".into());
-        }
-        match self.run(&[
-            "rev-list",
-            "--left-right",
-            "--count",
-            "HEAD...@{upstream}",
-            "--",
-        ]) {
-            Ok(counts) => {
-                let counts = counts.split_whitespace().collect::<Vec<_>>();
-                if counts.len() != 2 {
-                    return Err("Invalid upstream comparison".into());
-                }
-                Ok(format!(
-                    "{} ahead · {} behind · {upstream} · network freshness unknown",
-                    counts[0], counts[1]
-                ))
-            }
-            Err(_) => Ok(format!(
-                "Upstream {upstream} unavailable · network freshness unknown"
-            )),
-        }
-    }
     /// Lists paths changed by `commit` relative to its first parent.
     /// A root commit is compared with the empty tree.
     ///

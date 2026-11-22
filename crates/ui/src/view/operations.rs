@@ -326,12 +326,12 @@ impl GitCrab {
                     .commits
                     .iter()
                     .find(|c| &c.id == start)
-                    .map(|c| format!(" · {}", c.subject))
+                    .map(|c| format!(" ({})", c.subject))
                     .unwrap_or_default();
-                format!("New branch at {}{subject}", short(start))
+                format!("Creates a branch at {}{subject}", short(start))
             }
             None => format!(
-                "New branch at {} ({}) · switches to it",
+                "Creates a branch at {} ({}) and switches to it",
                 snapshot.head_label(),
                 short(&snapshot.head_id)
             ),

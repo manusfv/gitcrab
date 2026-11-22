@@ -224,7 +224,7 @@ impl GitCrab {
                 v.watch_pending = false;
                 match result {
                     Ok((watcher, receiver)) => { v.watcher = Some(watcher); Some(receiver) }
-                    Err(e) => { v.watch_warning = Some(format!("Live refresh unavailable: {e}. Use F5; focus refresh remains available.")); cx.notify(); None }
+                    Err(e) => { v.watch_warning = Some(format!("Live refresh unavailable: {e}. Press F5 to refresh. GitCrab still refreshes when its window gets focus.")); cx.notify(); None }
                 }
             }).ok().flatten();
             let Some(receiver) = receiver else { return; };
@@ -254,7 +254,7 @@ impl GitCrab {
                     let interrupted = error.is_some();
                     if let Some(error) = error {
                         v.watcher = None;
-                        v.watch_warning = Some(format!("Live refresh interrupted: {error}. Retrying after refresh."));
+                        v.watch_warning = Some(format!("Live refresh stopped: {error}. It restarts with the next refresh."));
                     }
                     // A full refresh sent after the change, or the one every
                     // write ends with, reads it already. Skipping it avoids a

@@ -501,7 +501,7 @@ impl GitCrab {
                 .into_any_element(),
                 modal::setting_row(
                     "File actions",
-                    Some("Always visible uses larger targets.".into()),
+                    Some("Show stage and unstage buttons on every row, or only on hover.".into()),
                     self.settings_choice(
                         "file-actions-visibility",
                         [("On hover", !always), ("Always", always)],
@@ -562,7 +562,7 @@ impl GitCrab {
             ],
         )
         .child(modal::fine_print(
-            "Panel widths can also be dragged. These controls are keyboard alternatives.",
+            "You can also drag panel edges to resize them.",
         ));
         let updates = self.update_settings(cx);
         div()

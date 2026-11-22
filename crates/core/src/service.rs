@@ -359,7 +359,7 @@ impl ReviewedOperation {
                     )
                 } else {
                     format!(
-                        "Push {here} to {} · {commits} ahead as last fetched. If {} has commits that {} does not, the push is rejected; GitCrab never force-pushes.",
+                        "Push {here} to {}, {commits} ahead as last fetched. If {} has commits that {} does not, the push is rejected. GitCrab never force-pushes.",
                         network.remote_branch(),
                         network.remote_branch(),
                         network.branch,
@@ -515,15 +515,15 @@ impl Operation {
                 "Applies the reviewed stash and removes it from the stash list. If the changes conflict, the stash is kept and the conflicts remain visible in Working changes."
             }
             Self::Pull { .. } => {
-                "Git contacts the remote using your credential helper or SSH agent; it never prompts in a hidden terminal. You can cancel while it runs. Conflicts remain visible in Working changes."
+                "Git signs in through your credential helper or SSH agent. You can cancel while it runs. Conflicts appear in Working changes."
             }
             Self::Push => {
-                "Git contacts the remote using your credential helper or SSH agent; it never prompts in a hidden terminal. You can cancel while it runs. GitCrab never force-pushes."
+                "Git signs in through your credential helper or SSH agent. You can cancel while it runs. GitCrab never force-pushes."
             }
             Self::Undo | Self::Redo => {
                 "Undo history covers GitCrab's own commits, checkouts, new branches, stashes, merges, cherry-picks and reverts in this tab for this session. GitCrab checks that nothing has changed since, again just before running."
             }
-            _ => "Git checks the target and local changes. Failures remain here for correction.",
+            _ => "Git checks the target and your local changes first. If it fails, the error appears here.",
         }
     }
 }

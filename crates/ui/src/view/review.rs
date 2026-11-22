@@ -212,7 +212,7 @@ impl GitCrab {
         let before_path = p
             .original_path
             .as_ref()
-            .map(|old| format!(" · {}", gitcrab_core::git::display_path(old)))
+            .map(|old| format!(" ({})", gitcrab_core::git::display_path(old)))
             .unwrap_or_default();
         let (before, after) = match &p.id {
             Some(id) => (
@@ -229,8 +229,8 @@ impl GitCrab {
             None => ("Index".into(), "Working tree".into()),
         };
         (
-            format!("Before · {before}{before_path}"),
-            format!("After · {after}"),
+            format!("Before: {before}{before_path}"),
+            format!("After: {after}"),
         )
     }
 
@@ -248,11 +248,11 @@ impl GitCrab {
     fn comparison_label(&self, p: &gitcrab_core::controller::Patch, conflict: bool) -> String {
         if let Some(id) = &p.id {
             return match self.commit_parents(id).as_deref() {
-                Some([]) => "Initial commit · compared to an empty tree".into(),
+                Some([]) => "Initial commit, compared to an empty tree".into(),
                 Some([parent]) => format!("Compared to parent {}", short_id(parent)),
                 Some([first, ..]) => {
                     format!(
-                        "Merge commit · compared to first parent {}",
+                        "Merge commit, compared to its first parent {}",
                         short_id(first)
                     )
                 }
@@ -260,11 +260,11 @@ impl GitCrab {
             };
         }
         if conflict {
-            "Combined diff of both sides · edit the file, then mark it resolved".into()
+            "Both sides of the conflict. Edit the file, then mark it resolved.".into()
         } else if p.staged {
-            "Staged · HEAD → index".into()
+            "Staged changes (HEAD → index)".into()
         } else {
-            "Unstaged · index → working tree".into()
+            "Unstaged changes (index → working tree)".into()
         }
     }
 
@@ -287,12 +287,9 @@ impl GitCrab {
                     "Binary content has no text preview.".into()
                 },
             ),
-            Preview::Renamed => (
-                "Renamed · contents unchanged",
-                "Only the path changed.".into(),
-            ),
+            Preview::Renamed => ("Renamed without changes", "Only the path changed.".into()),
             Preview::ModeChange => (
-                "File mode changed · contents unchanged",
+                "File mode changed",
                 "Only the file's permissions or type bits changed.".into(),
             ),
             Preview::EmptyAdded => (
@@ -407,11 +404,8 @@ impl GitCrab {
             None => (String::new(), display.clone()),
         };
         let path_tooltip = match &p.original_path {
-            Some(old) => format!(
-                "{} → {display} · repository-relative paths",
-                gitcrab_core::git::display_path(old)
-            ),
-            None => format!("{display} · repository-relative path"),
+            Some(old) => format!("{} → {display}", gitcrab_core::git::display_path(old)),
+            None => display.clone(),
         };
         let back_label = match &p.id {
             Some(id) => format!("Commit {}", short_id(id)),
@@ -455,7 +449,7 @@ impl GitCrab {
                             .text_role(Role::TextMuted)
                             .child(match &p.original_path {
                                 Some(old) => format!(
-                                    "{directory} · renamed from {}",
+                                    "{directory} (renamed from {})",
                                     gitcrab_core::git::display_path(old)
                                 ),
                                 None => directory,
@@ -470,7 +464,7 @@ impl GitCrab {
                         .child(Badge::role("Updated on disk", Role::StatusInfoFg))
                         .tooltip(|w, cx| {
                             Tooltip::new(
-                                "The file changed outside GitCrab. The diff was reloaded; a selection stays only where its lines are unchanged.",
+                                "The file changed outside GitCrab and the diff was reloaded. Selected lines stay selected where they did not change.",
                             )
                             .build(w, cx)
                         }),

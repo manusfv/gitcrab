@@ -370,14 +370,14 @@ impl Git {
         let updated = after.difference(&before).count();
         let remotes = count_label(remotes, "remote", "remotes");
         Ok(if updated == 0 && pruned == 0 {
-            format!("Fetched {remotes} · already up to date")
+            format!("Fetched {remotes}, already up to date")
         } else {
             let mut message = format!(
-                "Fetched {remotes} · {} updated",
+                "Fetched {remotes}, {} updated",
                 count_label(updated, "reference", "references")
             );
             if pruned > 0 {
-                message.push_str(&format!(" · {pruned} pruned"));
+                message.push_str(&format!(", {pruned} pruned"));
             }
             message
         })
@@ -489,7 +489,7 @@ impl Git {
                 .and_then(|count| count.trim().parse().ok())
                 .unwrap_or(0);
             format!(
-                "Pulled {from} into {} ({}) · {} → {} · {}",
+                "Pulled {from} into {} ({}), {} → {}, {}",
                 target.branch,
                 match mode {
                     PullMode::Rebase => "rebased",
@@ -546,13 +546,13 @@ impl Git {
             format!("{to} already has every commit on {}.", target.branch)
         } else {
             format!(
-                "Pushed {} to {to} · {}",
+                "Pushed {} to {to}, {}",
                 target.branch,
                 count_label(target.ahead, "commit", "commits")
             )
         };
         if target.set_upstream {
-            message.push_str(&format!(" · {to} is now the upstream of {}", target.branch));
+            message.push_str(&format!(". {to} is now the upstream of {}", target.branch));
         }
         Ok(message)
     }
@@ -760,7 +760,7 @@ pub(crate) mod network_tests {
         assert_eq!(target.ahead, 1);
         assert_eq!(target.remote_branch(), "origin/main");
         let message = local.git.push(&target, &scope()).unwrap();
-        assert_eq!(message, "Pushed main to origin/main · 1 commit");
+        assert_eq!(message, "Pushed main to origin/main, 1 commit");
         assert_eq!(
             local
                 .git

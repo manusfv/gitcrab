@@ -63,7 +63,7 @@ fn status_badge(file: &FileChange, staged: bool) -> impl IntoElement {
     let name = if file.is_unmerged() {
         format!("Conflict: {}", file.status_name(staged))
     } else if status == '?' {
-        "Untracked: new file Git isn't tracking yet".to_string()
+        "Untracked: Git isn't tracking this file yet".to_string()
     } else {
         format!(
             "{} ({})",

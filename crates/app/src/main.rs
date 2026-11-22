@@ -9,7 +9,7 @@ use gpui::{prelude::*, *};
 fn main() {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
         println!(
-            "GitCrab {} · {}",
+            "GitCrab {} ({})",
             env!("CARGO_PKG_VERSION"),
             gitcrab_ui::BUILD
         );

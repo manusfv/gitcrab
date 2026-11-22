@@ -460,7 +460,7 @@ impl Workspace {
     ) {
         self.confirm_close(
             message,
-            "Commit drafts are kept in memory for the lifetime of their tab.",
+            "Commit drafts aren't saved to disk.",
             "Discard drafts",
             window,
             cx,
@@ -613,7 +613,7 @@ impl Workspace {
         if self.tabs.iter().any(|tab| tab.read(cx).has_drafts()) {
             self.confirm_close(
                 "Restart GitCrab to install the update and discard all drafts?",
-                "Commit drafts are kept in memory for the lifetime of their tab.",
+                "Commit drafts aren't saved to disk.",
                 "Discard drafts and restart",
                 window,
                 cx,
