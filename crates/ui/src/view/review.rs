@@ -908,7 +908,7 @@ impl GitCrab {
             self.button("selection-help", "Shortcuts")
                 .on_click(|_, w, cx| {
                     let scroll = ScrollHandle::new();
-                    w.open_alert_dialog(cx, move |d, _, cx| diff_help(d, &scroll, cx))
+                    w.open_modal(cx, move |d, _, cx| diff_help(d, &scroll, cx))
                 }),
         )
         .into_any_element()
@@ -1180,7 +1180,7 @@ impl GitCrab {
                 )
             }
         };
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert(cx, move |dialog, _, cx| {
             let weak = weak.clone();
             let target = target.clone();
             let discard = components::style(
@@ -1216,7 +1216,6 @@ impl GitCrab {
                     ModalWidth::Small,
                     cx,
                 )
-                .confirm()
                 .body(
                     &scroll,
                     modal_body()
@@ -1626,10 +1625,10 @@ enum DiscardTarget {
 
 /// The diff's selection, copy and navigation shortcuts.
 fn diff_help(
-    dialog: gpui::component::dialog::AlertDialog,
+    dialog: gpui::component::dialog::Dialog,
     scroll: &ScrollHandle,
     cx: &mut App,
-) -> gpui::component::dialog::AlertDialog {
+) -> gpui::component::dialog::Dialog {
     use modal::{shortcut_row as row, COMMAND_KEY as CMD};
     dialog
         .frame(

@@ -1045,7 +1045,7 @@ impl GitCrab {
         let scroll = ScrollHandle::new();
         let initial_focus = cancel_focus.clone();
         let display = gitcrab_core::git::display_path(&path);
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert(cx, move |dialog, _, cx| {
             let weak = weak.clone();
             let path = path.clone();
             let confirm = components::style(
@@ -1099,7 +1099,6 @@ impl GitCrab {
             };
             dialog
                 .frame(header, ModalWidth::Small, cx)
-                .confirm()
                 .body(
                     &scroll,
                     modal_body()

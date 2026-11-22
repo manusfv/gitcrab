@@ -82,7 +82,7 @@ impl GitCrab {
         }
         let view = cx.weak_entity();
         let scroll = ScrollHandle::new();
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert(cx, move |dialog, _, cx| {
             let accepted = view.clone();
             let closed = view.clone();
             let location = location.clone();
@@ -110,10 +110,6 @@ impl GitCrab {
                         .tone_glyph(Tone::Warning, "shield-alert"),
                     ModalWidth::Medium,
                     cx,
-                )
-                .confirm()
-                .button_props(
-                    gpui::component::dialog::DialogButtonProps::default().ok_text("Trust and open"),
                 )
                 .footer(
                     ModalFooter::new()
