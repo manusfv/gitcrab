@@ -2403,6 +2403,7 @@ impl GitCrab {
         self.button(id, "")
             .icon(icon(glyph).size(scaled(GLYPH_SIZE)))
             .size(scaled(CONTROL_HEIGHT))
+            .px_0()
             .flex_none()
             .tooltip(name)
     }
