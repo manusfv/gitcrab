@@ -19,3 +19,7 @@ serde_json.workspace = true
 gpui.workspace = true
 notify.workspace = true
 async-channel.workspace = true
+
+[dev-dependencies]
+# Must match the gpui-pre version gpui-kit pins.
+gpui-test-support = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }

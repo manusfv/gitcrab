@@ -78,72 +78,50 @@ impl GitCrab {
             ));
         }
         let view = cx.weak_entity();
+        let scroll = ScrollHandle::new();
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let accepted = view.clone();
             let closed = view.clone();
             let location = location.clone();
-            let small = scaled(12.);
-            let content = div()
-                .flex()
-                .flex_col()
-                .gap_2()
+            let content = modal_body()
+                .child(modal::subject(name.clone(), Some(shown.clone().into())))
+                .child(modal::paragraph(
+                    "Only continue if you trust its local Git configuration and metadata.",
+                ))
                 .child(
-                    div()
-                        .text_size(scaled(16.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(name.clone()),
+                    modal::section("Details").children(
+                        metadata
+                            .iter()
+                            .map(|(label, path)| modal::detail_row(*label, path.clone())),
+                    ),
                 )
-                .child(
-                    div()
-                        .text_role(Role::TextSecondary)
-                        .child(shown.clone()),
-                )
-                .child(
-                    "Git can run programs configured by this repository, including hooks and filters. Only continue if you trust its local Git configuration and metadata.",
-                )
-                .child(
-                    div()
-                        .mt_1()
-                        .text_size(small)
-                        .text_role(Role::TextMuted)
-                        .font_weight(FontWeight::MEDIUM)
-                        .child("Details"),
-                )
-                .children(metadata.iter().map(|(label, path)| {
-                    div()
-                        .text_size(small)
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_role(Role::TextMuted)
-                                .child(*label),
-                        )
-                        .child(
-                            div()
-                                .font_family(CODE_FONT)
-                                .text_role(Role::TextSecondary)
-                                .child(path.clone()),
-                        )
-                }))
-                .child(
-                    div()
-                        .mt_2()
-                        .text_size(small)
-                        .text_role(Role::TextSecondary)
-                        .child("Trust and open remembers this approval for these paths, including after restart. Cancel opens nothing."),
-                );
+                .child(modal::fine_print(
+                    "Trust and open remembers this approval for these paths, including after restart. Cancel opens nothing.",
+                ));
             dialog
-                .title("Trust this local repository?")
+                .frame(
+                    ModalHeader::new("Trust this local repository?")
+                        .description(
+                            "Git can run programs this repository configures, including hooks and filters.",
+                        )
+                        .tone_glyph(Tone::Warning, "shield-alert"),
+                    ModalWidth::Medium,
+                    cx,
+                )
                 .confirm()
                 .button_props(
                     gpui::component::dialog::DialogButtonProps::default().ok_text("Trust and open"),
                 )
-                .footer(components::dialog_footer([
-                    components::dialog_cancel(cx).into_any_element(),
-                    components::dialog_ok("Trust and open", components::ButtonKind::Primary, cx),
-                ]))
-                .child(content)
+                .footer(
+                    ModalFooter::new()
+                        .action(components::dialog_cancel(cx))
+                        .action(components::dialog_ok(
+                            "Trust and open",
+                            components::ButtonKind::Primary,
+                            cx,
+                        )),
+                )
+                .body(&scroll, content)
                 .on_ok(move |_, w, cx| {
                     let _ = accepted.update(cx, |v, cx| {
                         v.open_trusted(location.clone(), w, cx);

@@ -907,20 +907,8 @@ impl GitCrab {
             self.button("selection-help", "Help")
                 .tooltip("Selection, copy and navigation shortcuts")
                 .on_click(|_, w, cx| {
-                    w.open_alert_dialog(cx, |d, _, cx| {
-                        d.title("Diff help")
-                            .footer(components::dialog_footer([components::dialog_ok("OK", components::ButtonKind::Primary, cx)]))
-                            .child(
-                            "Click or Shift-click to select rows; Ctrl/Cmd+A selects all. \
-                             With rows selected in working changes, Stage, Unstage or Discard acts on just those added and removed lines; \
-                             in Split a selected row includes both sides. \
-                             Ctrl/Cmd+C copies source text: in Split it copies the side you clicked. \
-                             Ctrl/Cmd+Shift+C copies the selection as a patch with +/- markers. \
-                             Copy leaves the clipboard unchanged when nothing is selected. \
-                             Alt+Up and Alt+Down move between hunks; Ctrl/Cmd+F finds text, Enter or F3 moves to the next match. \
-                             Alt+Left and Alt+Right scroll a wide Unified diff. Changing layouts clears the selection.",
-                        )
-                    });
+                    let scroll = ScrollHandle::new();
+                    w.open_alert_dialog(cx, move |d, _, cx| diff_help(d, &scroll, cx))
                 }),
         )
         .into_any_element()
@@ -1183,6 +1171,7 @@ impl GitCrab {
         let repo = self.state.path.clone();
         let weak = cx.weak_entity();
         let cancel_focus = cx.focus_handle();
+        let scroll = ScrollHandle::new();
         let initial_focus = cancel_focus.clone();
         let (title, what, confirm) = match &target {
             DiscardTarget::Hunk(_) => (
@@ -1200,12 +1189,6 @@ impl GitCrab {
             }
         };
         window.open_alert_dialog(cx, move |dialog, _, cx| {
-            let cancel = div()
-                .track_focus(&cancel_focus)
-                .rounded(px(4.))
-                .focus(|s| s.border_2().border_role(Role::InteractionFocus))
-                .child(components::dialog_cancel(cx))
-                .into_any_element();
             let weak = weak.clone();
             let target = target.clone();
             let discard = components::style(
@@ -1230,24 +1213,32 @@ impl GitCrab {
                     }
                 });
                 w.close_dialog(cx);
-            })
-            .into_any_element();
+            });
             dialog
-                .title(title.clone())
+                .frame(
+                    ModalHeader::new(title.clone())
+                        .description(format!(
+                            "This permanently removes {what} from the working copy."
+                        ))
+                        .tone(Tone::Danger),
+                    ModalWidth::Small,
+                    cx,
+                )
                 .confirm()
-                .p_4()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(repo.clone())
-                        .child(path.clone())
-                        .child(format!("Permanently remove only {what} from the working copy. Staged content stays in the index. Unsupported encodings or change types will be rejected."))
-                        .child(format!("Enter cancels. Choose {confirm} explicitly to remove these changes.")),
+                .body(
+                    &scroll,
+                    modal_body()
+                        .child(modal::subject(path.clone(), Some(repo.clone().into())))
+                        .child(modal::paragraph(
+                            "Only these changes are removed. Staged content stays in the index, and changes with unsupported encodings or change types are refused.",
+                        )),
                 )
                 .on_ok(|_, _, _| true)
-                .footer(components::dialog_footer([cancel, discard]))
+                .footer(
+                    ModalFooter::new()
+                        .action(components::dialog_cancel_focused(&cancel_focus, cx))
+                        .action(discard),
+                )
         });
         window.on_next_frame(move |w, cx| initial_focus.focus(w, cx));
     }
@@ -1640,6 +1631,68 @@ enum DiscardTarget {
 
 fn short_id(id: &str) -> &str {
     &id[..id.len().min(8)]
+}
+
+/// The diff's selection, copy and navigation shortcuts.
+fn diff_help(
+    dialog: gpui::component::dialog::AlertDialog,
+    scroll: &ScrollHandle,
+    cx: &mut App,
+) -> gpui::component::dialog::AlertDialog {
+    use modal::{shortcut_row as row, COMMAND_KEY as CMD};
+    dialog
+        .frame(
+            ModalHeader::new("Diff shortcuts")
+                .description("Select, copy and move through the diff from the keyboard.")
+                .closable(),
+            ModalWidth::Medium,
+            cx,
+        )
+        .body(
+            scroll,
+            modal_body()
+                .gap(scaled(18.))
+                .child(
+                    modal::section("Selection")
+                        .child(row(
+                            &["Click", "/", "Shift", "+", "Click"],
+                            "Select a row, or extend the selection",
+                        ))
+                        .child(row(&[CMD, "+", "A"], "Select every row"))
+                        .child(modal::fine_print(
+                            "With rows selected in working changes, Stage, Unstage and Discard act on just those added and removed lines. In Split, a selected row includes both sides. Changing layouts clears the selection.",
+                        )),
+                )
+                .child(
+                    modal::section("Copy")
+                        .child(row(
+                            &[CMD, "+", "C"],
+                            "Copy source text; in Split, from the side you clicked",
+                        ))
+                        .child(row(
+                            &[CMD, "+", "Shift", "+", "C"],
+                            "Copy the selection as a patch with +/- markers",
+                        ))
+                        .child(modal::fine_print(
+                            "Copying with nothing selected leaves the clipboard unchanged.",
+                        )),
+                )
+                .child(
+                    modal::section("Navigation")
+                        .child(row(&["Alt", "+", "↑", "/", "↓"], "Previous or next hunk"))
+                        .child(row(&[CMD, "+", "F"], "Find text in the diff"))
+                        .child(row(&["Enter", "/", "F3"], "Next match"))
+                        .child(row(
+                            &["Alt", "+", "←", "/", "→"],
+                            "Scroll a wide Unified diff",
+                        )),
+                ),
+        )
+        .footer(ModalFooter::new().action(components::dialog_ok(
+            "Close",
+            components::ButtonKind::Primary,
+            cx,
+        )))
 }
 
 #[cfg(test)]

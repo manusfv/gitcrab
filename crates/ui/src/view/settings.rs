@@ -1,4 +1,5 @@
 use super::*;
+use gpui::component::switch::Switch;
 
 impl GitCrab {
     /// Opens appearance settings when no other dialog is active.
@@ -19,54 +20,54 @@ impl GitCrab {
         }
         let weak = cx.weak_entity();
         let close = weak.clone();
-        window.open_dialog(cx, move |dialog, w, cx| {
-            let height = (f32::from(w.viewport_size().height) - 220.).clamp(200., 560.);
-            let content = weak.update(cx, |v, cx| v.settings_dialog(height, cx)).ok();
+        let scroll = self.settings_scroll.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let content = weak.update(cx, |v, cx| v.settings_dialog(cx)).ok();
             let status = weak
                 .read_with(cx, |v, _| v.appearance_status.clone())
                 .unwrap_or_default();
             let close = close.clone();
             let footer_close = close.clone();
             let (text, role) = match &status {
-                AppearanceStatus::Idle => (
-                    "Changes apply immediately and save automatically.".to_owned(),
-                    Role::TextMuted,
-                ),
+                AppearanceStatus::Idle => (String::new(), Role::TextMuted),
                 AppearanceStatus::Saving(_) => ("Saving…".to_owned(), Role::TextMuted),
                 AppearanceStatus::Saved => ("Saved".to_owned(), Role::StatusSuccessFg),
                 AppearanceStatus::Failed(error) => {
                     (format!("Could not save: {error}"), Role::StatusErrorFg)
                 }
             };
-            let footer = components::dialog_footer([
-                div()
-                    .id("appearance-save-status")
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(scaled(12.))
-                    .text_role(role)
-                    .child(text)
-                    .into_any_element(),
-                Button::new("settings-close")
-                    .label("Close")
-                    .cursor_pointer()
-                    .primary()
-                    .small()
-                    .h(scaled(CONTROL_HEIGHT))
-                    .tab_stop(true)
+            let footer = ModalFooter::new()
+                .leading(
+                    div()
+                        .id("appearance-save-status")
+                        .min_w_0()
+                        .truncate()
+                        .text_size(scaled(12.))
+                        .text_role(role)
+                        .child(text),
+                )
+                .action(
+                    components::style(
+                        Button::new("settings-close").label("Done").tab_stop(true),
+                        components::ButtonKind::Primary,
+                        ControlSize::Regular,
+                        cx,
+                    )
                     .on_click(move |_, w, cx| {
                         // The same persistence path as Escape and dismissal.
                         let _ = footer_close.update(cx, |v, cx| v.finish_settings(w, cx));
                         w.close_dialog(cx);
-                    })
-                    .into_any_element(),
-            ])
-            .items_center();
+                    }),
+                );
             dialog
-                .title("Appearance")
-                .w(px(480.))
-                .p_4()
-                .child(div().children(content))
+                .frame(
+                    ModalHeader::new("Appearance")
+                        .description("Changes apply immediately and save automatically.")
+                        .closable(),
+                    ModalWidth::Medium,
+                    cx,
+                )
+                .body(&scroll, modal_body().children(content))
                 .footer(footer)
                 .on_close(move |_, w, cx| {
                     let _ = close.update(cx, |v, cx| v.finish_settings(w, cx));
@@ -90,17 +91,35 @@ impl GitCrab {
         cx.notify();
     }
 
-    fn settings_group(&self, title: &'static str) -> Div {
-        div().flex().flex_col().gap_2().child(
-            div()
-                .text_size(scaled(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_role(Role::TextSecondary)
-                .child(title),
-        )
+    /// A two-way choice drawn as a segmented control. `select` applies the
+    /// chosen option's index and reports whether anything changed, which
+    /// saves the preferences.
+    fn settings_choice(
+        &self,
+        id: &'static str,
+        options: [(&'static str, bool); 2],
+        select: impl Fn(&mut Self, usize, &mut Window, &mut Context<Self>) -> bool + Clone + 'static,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mut group = segmented_group();
+        for (index, (label, selected)) in options.into_iter().enumerate() {
+            let select = select.clone();
+            group = group.child(
+                self.segment_button((id, index), label, selected)
+                    .tab_stop(true)
+                    .on_click(cx.listener(move |v, _, w, cx| {
+                        if select(v, index, w, cx) {
+                            v.persist_preferences(w, cx);
+                            cx.notify();
+                        }
+                    })),
+            );
+        }
+        group
     }
 
-    /// A labelled value with keyboard-reachable decrease and increase buttons.
+    /// A value with keyboard-reachable decrease and increase buttons.
+    /// `label` names the value in the buttons' tooltips.
     fn settings_stepper(
         &self,
         index: usize,
@@ -108,13 +127,23 @@ impl GitCrab {
         value: f32,
         cx: &mut Context<Self>,
     ) -> Div {
-        let mut row = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(div().flex_1().min_w_0().child(label))
-            .child(div().w(px(36.)).flex_none().child(format!("{value:.0}")));
+        let mut row = segmented_group();
         for direction in [-1., 1.] {
+            if direction > 0. {
+                row = row.child(
+                    div()
+                        .min_w(scaled(40.))
+                        .h(scaled(CONTROL_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border_x_1()
+                        .border_role(Role::BorderDivider)
+                        .text_size(scaled(12.))
+                        .text_role(Role::TextDefault)
+                        .child(format!("{value:.0}")),
+                );
+            }
             row = row.child(
                 self.icon_button(
                     ("appearance", index * 2 + usize::from(direction > 0.)),
@@ -176,33 +205,33 @@ impl GitCrab {
         let automatic = self.preferences.check_for_updates;
         let channel = UpdateChannel::effective(self.preferences.update_channel, CURRENT_VERSION);
         let status = crate::updates::status(cx);
-        let mut channels = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(div().flex_1().min_w_0().child("Update channel"));
-        for (index, option) in [UpdateChannel::Stable, UpdateChannel::Prerelease]
-            .into_iter()
-            .enumerate()
-        {
-            channels = channels.child(
-                self.segment_button(("update-channel", index), option.label(), option == channel)
-                    .tab_stop(true)
-                    .on_click(cx.listener(move |v, _, w, cx| {
-                        if v.preferences.update_channel == Some(option) {
-                            return;
-                        }
-                        let previous =
-                            UpdateChannel::effective(v.preferences.update_channel, CURRENT_VERSION);
-                        v.preferences.update_channel = Some(option);
-                        if previous != option {
-                            crate::updates::channel_changed(cx);
-                        }
-                        v.persist_preferences(w, cx);
-                        cx.notify();
-                    })),
-            );
-        }
+        let channels = self.settings_choice(
+            "update-channel",
+            [
+                (
+                    UpdateChannel::Stable.label(),
+                    channel == UpdateChannel::Stable,
+                ),
+                (
+                    UpdateChannel::Prerelease.label(),
+                    channel == UpdateChannel::Prerelease,
+                ),
+            ],
+            |v, index, _, cx| {
+                let option = [UpdateChannel::Stable, UpdateChannel::Prerelease][index];
+                if v.preferences.update_channel == Some(option) {
+                    return false;
+                }
+                let previous =
+                    UpdateChannel::effective(v.preferences.update_channel, CURRENT_VERSION);
+                v.preferences.update_channel = Some(option);
+                if previous != option {
+                    crate::updates::channel_changed(cx);
+                }
+                true
+            },
+            cx,
+        );
         let installing = crate::updates::install_state(cx).in_progress();
         let mut install = None;
         let (text, role) = match &status {
@@ -229,65 +258,68 @@ impl GitCrab {
             ),
         };
         let checking = status == Status::Checking || installing;
-        let check = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                self.action_button("check-updates-now", "Check now")
-                    .tab_stop(!checking)
-                    .disabled_when(checking)
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        crate::updates::check_now(channel, cx);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("update-check-status")
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(scaled(12.))
-                    .text_role(role)
-                    .child(text),
-            );
-        self.settings_group("Updates")
-            .child(
-                self.action_button(
-                    "automatic-update-checks",
-                    if automatic {
-                        "Check for updates automatically: On"
-                    } else {
-                        "Check for updates automatically: Off"
-                    },
-                )
-                .selected(automatic)
-                .tab_stop(true)
-                .on_click(cx.listener(|v, _, w, cx| {
-                    v.preferences.check_for_updates = !v.preferences.check_for_updates;
-                    v.persist_preferences(w, cx);
-                    cx.notify();
-                })),
-            )
-            .child(channels)
-            .child(
-                div()
-                    .text_size(scaled(12.))
-                    .text_role(Role::TextMuted)
-                    .child(if self.preferences.update_channel.is_some() {
+        let check = self
+            .action_button("check-updates-now", "Check now")
+            .tab_stop(!checking)
+            .disabled_when(checking)
+            .on_click(cx.listener(move |_, _, _, cx| {
+                crate::updates::check_now(channel, cx);
+                cx.notify();
+            }));
+        let automatic_switch = Switch::new("automatic-update-checks")
+            .checked(automatic)
+            .tab_stop(true)
+            .accessibility_label("Check for updates automatically")
+            .on_click(cx.listener(|v, checked: &bool, w, cx| {
+                v.preferences.check_for_updates = *checked;
+                v.persist_preferences(w, cx);
+                cx.notify();
+            }));
+        let mut rows = vec![
+            modal::setting_row("Check for updates automatically", None, automatic_switch)
+                .into_any_element(),
+            modal::setting_row(
+                "Update channel",
+                Some(
+                    if self.preferences.update_channel.is_some() {
                         "Prerelease includes stable releases."
                     } else {
                         "Following this build's channel. Prerelease includes stable releases."
-                    }),
+                    }
+                    .into(),
+                ),
+                channels,
             )
-            .child(check)
-            .children(install)
-            .child(
+            .into_any_element(),
+            modal::setting_row(
+                format!("GitCrab {CURRENT_VERSION}"),
+                Some(crate::BUILD.into()),
+                check,
+            )
+            .into_any_element(),
+        ];
+        if !text.is_empty() || install.is_some() {
+            rows.push(
                 div()
-                    .text_size(scaled(12.))
-                    .text_role(Role::TextMuted)
-                    .child(format!("GitCrab {CURRENT_VERSION} · {}", crate::BUILD)),
-            )
+                    .py(scaled(4.))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .when(!text.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .id("update-check-status")
+                                .text_size(scaled(12.))
+                                .line_height(relative(1.45))
+                                .text_role(role)
+                                .child(text),
+                        )
+                    })
+                    .children(install)
+                    .into_any_element(),
+            );
+        }
+        modal::settings_card("Updates", rows)
     }
 
     /// Installing the available release from here: the install button, its
@@ -394,146 +426,155 @@ impl GitCrab {
         }
     }
 
-    pub(super) fn settings_dialog(&self, height: f32, cx: &mut Context<Self>) -> AnyElement {
-        let small = scaled(12.);
-        let muted = |text: &'static str| {
-            div()
-                .text_size(small)
-                .text_role(Role::TextMuted)
-                .child(text)
-        };
+    pub(super) fn settings_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         // Every preference resolves to the dark palette, so state it plainly
         // instead of offering a choice with no effect.
-        let theme = self
-            .settings_group("Theme")
-            .child("Dark")
-            .child(muted("GitCrab currently has one theme."));
+        let theme = modal::setting_row(
+            "Theme",
+            Some("GitCrab currently has one theme.".into()),
+            div().text_role(Role::TextSecondary).child("Dark"),
+        );
         #[cfg(feature = "native-evidence")]
         let theme = theme.child(
-            self.action_button(
-                "validation-palette",
-                "Validation: swap dark / proposed light",
-            )
-            .on_click(|_, _, cx| super::super::theme::toggle_validation_palette(cx)),
+            self.action_button("validation-palette", "Validation: swap palette")
+                .on_click(|_, _, cx| super::super::theme::toggle_validation_palette(cx)),
         );
-        let text = self.settings_group("Text").child(self.settings_stepper(
-            0,
-            "Text size",
-            self.preferences.font_size,
-            cx,
-        ));
-        let code = self
-            .settings_group("Code")
-            .child(self.settings_stepper(3, "Code text size", self.preferences.code_size, cx))
-            .child(
-                self.action_button(
-                    "diff-density",
-                    if self.preferences.compact_diff {
-                        "Code spacing: Compact"
-                    } else {
-                        "Code spacing: Comfortable"
-                    },
+        let appearance = modal::settings_card(
+            "Theme and text",
+            vec![
+                theme.into_any_element(),
+                modal::setting_row(
+                    "Text size",
+                    None,
+                    self.settings_stepper(0, "Text size", self.preferences.font_size, cx),
                 )
-                .selected(self.preferences.compact_diff)
-                .tab_stop(true)
-                .on_click(cx.listener(|v, _, w, cx| {
-                    v.preferences.compact_diff = !v.preferences.compact_diff;
-                    v.persist_preferences(w, cx);
-                    cx.notify();
-                })),
-            );
-        let layout = self
-            .settings_group("Panel layout")
-            .child(
-                self.action_button(
-                    "settings-density",
-                    if self.compact {
-                        "Density: Compact"
-                    } else {
-                        "Density: Comfortable"
-                    },
+                .into_any_element(),
+            ],
+        );
+        let compact_diff = self.preferences.compact_diff;
+        let code = modal::settings_card(
+            "Code",
+            vec![
+                modal::setting_row(
+                    "Code text size",
+                    None,
+                    self.settings_stepper(3, "Code text size", self.preferences.code_size, cx),
                 )
-                .selected(self.compact)
-                .tab_stop(true)
-                .on_click(cx.listener(|v, _, w, cx| {
-                    v.compact = !v.compact;
-                    v.persist_preferences(w, cx);
-                    cx.notify();
-                })),
-            )
-            .child(
-                self.action_button(
-                    "file-actions-visibility",
-                    if self.preferences.always_show_file_actions {
-                        "File actions: Always visible · larger targets"
-                    } else {
-                        "File actions: Reveal on hover or focus"
-                    },
+                .into_any_element(),
+                modal::setting_row(
+                    "Code spacing",
+                    None,
+                    self.settings_choice(
+                        "diff-density",
+                        [("Comfortable", !compact_diff), ("Compact", compact_diff)],
+                        |v, index, _, _| {
+                            let compact = index == 1;
+                            let changed = v.preferences.compact_diff != compact;
+                            v.preferences.compact_diff = compact;
+                            changed
+                        },
+                        cx,
+                    ),
                 )
-                .tab_stop(true)
-                .on_click(cx.listener(|v, _, w, cx| {
-                    v.preferences.always_show_file_actions =
-                        !v.preferences.always_show_file_actions;
-                    v.persist_preferences(w, cx);
-                    cx.notify();
-                })),
-            )
-            .child(self.settings_stepper(1, "Navigation width", self.preferences.nav_width, cx))
-            .child(self.settings_stepper(
-                2,
-                "Inspector width",
-                self.preferences.inspector_width,
-                cx,
-            ))
-            .child(muted(
-                "Panel widths can also be dragged. These controls provide keyboard alternatives.",
-            ))
-            .child(
-                self.action_button("reset-appearance", "Reset appearance and layout")
-                    .tab_stop(true)
-                    .on_click(cx.listener(|v, _, w, cx| {
-                        let kept = v.preferences.clone();
-                        v.preferences = Preferences {
-                            recent: kept.recent,
-                            check_for_updates: kept.check_for_updates,
-                            update_channel: kept.update_channel,
-                            ..Preferences::default()
-                        };
-                        v.compact = false;
-                        v.split = false;
-                        v.layout_revision += 1;
-                        v.reset_panels(cx);
-                        crate::preferences::set_app_appearance(
-                            v.preferences.font_size,
-                            v.preferences.theme,
-                            cx,
-                        );
-                        v.persist_preferences(w, cx);
-                        cx.notify();
-                    })),
-            );
-        let updates = self.update_settings(cx);
-        scroll_area(
-            "appearance-settings",
-            &self.settings_scroll,
-            div()
-                .id("appearance-settings")
-                .max_h(px(height))
-                .w(px(430.))
-                .rounded(px(10.))
-                .bg_role(Role::SurfaceOverlay)
-                .border_1()
-                .border_role(Role::BorderDivider)
-                .p_4()
-                .flex()
-                .flex_col()
-                .gap_4()
-                .child(theme)
-                .child(text)
-                .child(code)
-                .child(layout)
-                .child(updates),
+                .into_any_element(),
+            ],
+        );
+        let always = self.preferences.always_show_file_actions;
+        let layout = modal::settings_card(
+            "Layout",
+            vec![
+                modal::setting_row(
+                    "Density",
+                    None,
+                    self.settings_choice(
+                        "settings-density",
+                        [("Comfortable", !self.compact), ("Compact", self.compact)],
+                        |v, index, _, _| {
+                            let compact = index == 1;
+                            let changed = v.compact != compact;
+                            v.compact = compact;
+                            changed
+                        },
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+                modal::setting_row(
+                    "File actions",
+                    Some("Always visible uses larger targets.".into()),
+                    self.settings_choice(
+                        "file-actions-visibility",
+                        [("On hover", !always), ("Always", always)],
+                        |v, index, _, _| {
+                            let always = index == 1;
+                            let changed = v.preferences.always_show_file_actions != always;
+                            v.preferences.always_show_file_actions = always;
+                            changed
+                        },
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+                modal::setting_row(
+                    "Navigation width",
+                    None,
+                    self.settings_stepper(1, "Navigation width", self.preferences.nav_width, cx),
+                )
+                .into_any_element(),
+                modal::setting_row(
+                    "Inspector width",
+                    None,
+                    self.settings_stepper(
+                        2,
+                        "Inspector width",
+                        self.preferences.inspector_width,
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+                modal::setting_row(
+                    "Reset appearance and layout",
+                    Some("Restores text sizes, density and panel widths.".into()),
+                    self.action_button("reset-appearance", "Reset")
+                        .tab_stop(true)
+                        .on_click(cx.listener(|v, _, w, cx| {
+                            let kept = v.preferences.clone();
+                            v.preferences = Preferences {
+                                recent: kept.recent,
+                                check_for_updates: kept.check_for_updates,
+                                update_channel: kept.update_channel,
+                                ..Preferences::default()
+                            };
+                            v.compact = false;
+                            v.split = false;
+                            v.layout_revision += 1;
+                            v.reset_panels(cx);
+                            crate::preferences::set_app_appearance(
+                                v.preferences.font_size,
+                                v.preferences.theme,
+                                cx,
+                            );
+                            v.persist_preferences(w, cx);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            ],
         )
-        .into_any_element()
+        .child(modal::fine_print(
+            "Panel widths can also be dragged. These controls are keyboard alternatives.",
+        ));
+        let updates = self.update_settings(cx);
+        div()
+            .id("appearance-settings")
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(scaled(20.))
+            .child(appearance)
+            .child(code)
+            .child(layout)
+            .child(updates)
+            .into_any_element()
     }
 }
