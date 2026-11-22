@@ -155,6 +155,12 @@ fn close_pass(ranges: &mut [Vec<PassRange>], lane: usize, active: Lane<'_>, end:
     }
 }
 
+/// A lane's color is its column's, as in GitKraken: every branch drawn in
+/// the same column shares a color, so the palette stays small and steady.
+fn column_color(lane: usize) -> usize {
+    lane
+}
+
 /// Lays out commits in child-before-parent order, finding HEAD by its `HEAD` label.
 ///
 /// Use [`layout_with_head`] when the HEAD commit may be outside the loaded history.
@@ -181,7 +187,6 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
         })
         .unwrap_or_default();
     let mut head_reserved = !lanes.is_empty();
-    let mut next_color = lanes.len();
     let mut graph = Graph::default();
     let mut previous_targets = Vec::new();
     for (row_index, commit) in commits.iter().enumerate() {
@@ -200,10 +205,9 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
             }
             lanes[i] = Some(Lane {
                 target: &commit.id,
-                color: next_color,
+                color: column_color(i),
                 pass_start: row_index + 1,
             });
-            next_color += 1;
             i
         };
         let color = lanes[lane].unwrap().color;
@@ -252,16 +256,9 @@ pub fn layout_with_head(commits: &[Commit], head: Option<&str>) -> Graph {
                 if i == lanes.len() {
                     lanes.push(None);
                 }
-                let parent_color = if index == 0 {
-                    color
-                } else {
-                    let c = next_color;
-                    next_color += 1;
-                    c
-                };
                 lanes[i] = Some(Lane {
                     target: parent,
-                    color: parent_color,
+                    color: column_color(i),
                     pass_start: row_index + 1,
                 });
                 i
@@ -546,7 +543,11 @@ mod tests {
         assert_eq!(graph.rows[3].lane, 2);
         assert_eq!(graph.rows[4].lane, 0);
         assert!(graph.edges_at(5).is_empty());
-        assert_ne!(graph.rows[4].color, graph.rows[5].color);
+        assert!(graph.rows.iter().all(|row| row.color == row.lane));
+        assert!(graph
+            .edges_at(0)
+            .iter()
+            .all(|edge| edge.color == edge.to_lane));
     }
 
     #[test]
