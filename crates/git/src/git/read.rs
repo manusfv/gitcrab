@@ -68,13 +68,21 @@ impl Git {
         // Each Git call costs a process start, so independent reads run side
         // by side. The identity and references are read again at the end to
         // detect a change during the refresh.
-        let (reviewed, metadata, refs) = std::thread::scope(|scope| {
+        let (reviewed, metadata, refs, stashes) = std::thread::scope(|scope| {
             let metadata = scope.spawn(|| self.read_metadata());
             let refs = scope.spawn(|| self.read_refs());
+            let stashes = scope.spawn(|| {
+                self.run(&[
+                    "stash",
+                    "list",
+                    "--format=%H%x00%P%x00%an%x00%aI%x00%ci%x00%gs",
+                ])
+            });
             let reviewed = self.write_identity();
             let metadata = metadata.join().map_err(|_| "Git metadata read failed")?;
             let refs = refs.join().map_err(|_| "Git reference read failed")?;
-            Ok::<_, String>((reviewed?, metadata?, refs?))
+            let stashes = stashes.join().map_err(|_| "Git stash read failed")?;
+            Ok::<_, String>((reviewed?, metadata?, refs?, stashes?))
         })?;
         let head = if let Some(branch) = reviewed.symbolic_head.strip_prefix("refs/heads/") {
             branch.to_string()
@@ -97,6 +105,9 @@ impl Git {
             .collect();
         let short = self.short_ref_names(&listed.iter().map(|f| f[2]).collect::<Vec<_>>());
         for (&[object, peeled, full], short) in listed.iter().zip(short) {
+            if full == "refs/stash" {
+                continue;
+            }
             let target = if peeled.is_empty() { object } else { peeled };
             if let Some(name) = full.strip_prefix("refs/heads/") {
                 branches.push(LocalBranch {
@@ -133,6 +144,7 @@ impl Git {
             cached.refs == refs
                 && cached.head == reviewed.head
                 && cached.metadata == metadata.history_stamp
+                && cached.stashes == stashes
         });
         let reuse = previous.is_some_and(|cached| match mode {
             HistoryRead::Full => false,
@@ -152,6 +164,7 @@ impl Git {
         // active branches by commit date instead of grouping each lane.
         let mut log_args = vec![
             "log",
+            "--exclude=refs/stash",
             "--all",
             "--date-order",
             "--no-decorate",
@@ -166,12 +179,15 @@ impl Git {
         if head_exists.is_ok() {
             log_args.push("HEAD");
         }
-        let (log, status, stashes, remote) = std::thread::scope(|scope| {
+        // A stash's base can be reachable from no ref, as when its branch was
+        // deleted, so the base commits are walked too.
+        let stash_list = parse_stashes(&stashes);
+        log_args.extend(stash_list.iter().map(|(row, _)| row.parents[0].as_str()));
+        let (log, status, remote) = std::thread::scope(|scope| {
             let status = scope.spawn(|| {
                 self.bytes(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])
                     .map(|bytes| parse_status(&bytes))
             });
-            let stashes = scope.spawn(|| self.run(&["stash", "list", "--format=%gs%x00%ci"]));
             let remote = scope.spawn(|| self.remote_state(&reviewed));
             let log = if reuse {
                 Ok(String::new())
@@ -179,9 +195,8 @@ impl Git {
                 self.run(&log_args)
             };
             let status = status.join().map_err(|_| "Git status read failed")?;
-            let stashes = stashes.join().map_err(|_| "Git stash read failed")?;
             let remote = remote.join().map_err(|_| "Git remote read failed")?;
-            Ok::<_, String>((log?, status?, stashes?, remote?))
+            Ok::<_, String>((log?, status?, remote?))
         })?;
         let fields: Vec<_> = log.split('\0').collect();
         let mut commits: Vec<_> = fields
@@ -198,6 +213,7 @@ impl Git {
                 date: f[4].into(),
                 refs: labels.remove(f[0]).unwrap_or_default(),
                 search_key: String::new(),
+                stash: false,
             })
             .map(Commit::index_search)
             .collect();
@@ -224,25 +240,24 @@ impl Git {
         if refs_now != refs {
             return Err("References changed during refresh. Refresh again.".into());
         }
-        let stash_count = stashes.lines().count();
-        let latest_stash = stashes.lines().next().map(|line| {
-            let (message, date) = line.split_once('\0').unwrap_or((line, ""));
-            StashEntry {
-                message: message.to_owned(),
-                date: date.to_owned(),
-            }
-        });
+        let stash_count = stash_list.len();
+        let latest_stash = stash_list.first().map(|(_, entry)| entry.clone());
         let upstream_context = remote.context(&reviewed);
-        let next = (!reuse).then(|| HistoryCache {
-            refs,
-            head: reviewed.head.clone(),
-            limit,
-            graph: crate::graph::layout_with_head(
-                &commits,
-                (!head_id.is_empty()).then_some(head_id.as_str()),
-            ),
-            commits: commits.clone(),
-            metadata: metadata.history_stamp,
+        let next = (!reuse).then(|| {
+            let rows = with_stashes(&commits, stash_list.into_iter().map(|(row, _)| row));
+            HistoryCache {
+                refs,
+                head: reviewed.head.clone(),
+                limit,
+                graph: crate::graph::layout_with_head(
+                    &rows,
+                    (!head_id.is_empty()).then_some(head_id.as_str()),
+                ),
+                commits,
+                stashes,
+                rows,
+                metadata: metadata.history_stamp,
+            }
         });
         if let Some(scope) = &self.read_scope {
             scope.check().map_err(|error| error.to_string())?;
@@ -255,7 +270,7 @@ impl Git {
         Ok((
             RepoSnapshot {
                 worktree_id: self.path.clone(),
-                commits,
+                commits: history.rows.clone(),
                 branches,
                 stash_count,
                 latest_stash,

@@ -345,6 +345,61 @@ fn paint_dashed_circle(w: &mut Window, center: Point<Pixels>, radius: Pixels, co
     }
 }
 
+/// A stash entry's node: a dashed square, filled so the lanes stop at its
+/// edge, holding the stash icon.
+fn paint_stash_node(w: &mut Window, center: Point<Pixels>, half: Pixels, color: u32, cx: &App) {
+    const DASHES: usize = 3;
+    let stroke = graph_stroke(w.scale_factor());
+    let box_bounds = Bounds::new(
+        point(center.x - half, center.y - half),
+        size(half * 2., half * 2.),
+    );
+    w.paint_quad(fill(box_bounds, rgb(semantic(Role::SurfaceCanvas))).corner_radii(px(3.)));
+    let edge = half - stroke / 2.;
+    let corners = [
+        point(center.x - edge, center.y - edge),
+        point(center.x + edge, center.y - edge),
+        point(center.x + edge, center.y + edge),
+        point(center.x - edge, center.y + edge),
+    ];
+    // Dashes are centred on both corners and evenly between them; the corner
+    // halves of adjacent sides meet as an L, so the corners read as closed.
+    let side = f32::from(edge * 2.);
+    let slot = side / (DASHES - 1) as f32;
+    let dash = slot * 0.55;
+    for (i, start) in corners.iter().enumerate() {
+        let end = corners[(i + 1) % corners.len()];
+        let along = |t: f32| {
+            let t = (t / side).clamp(0., 1.);
+            point(
+                start.x + (end.x - start.x) * t,
+                start.y + (end.y - start.y) * t,
+            )
+        };
+        for d in 0..DASHES {
+            let from = d as f32 * slot - dash / 2.;
+            let mut path = PathBuilder::stroke(stroke);
+            path.move_to(along(from));
+            path.line_to(along(from + dash));
+            if let Ok(path) = path.build() {
+                w.paint_path(path, rgb(color));
+            }
+        }
+    }
+    let icon = half * 1.1;
+    let _ = w.paint_svg(
+        Bounds::new(
+            point(center.x - icon / 2., center.y - icon / 2.),
+            size(icon, icon),
+        ),
+        "icons/stash.svg".into(),
+        None,
+        TransformationMatrix::unit(),
+        rgb(color).into(),
+        cx,
+    );
+}
+
 /// The branch band behind the working-changes marker: it runs from the
 /// circle's centre to `right`, with a cut-out so its left edge follows the
 /// circle's right half and the circle itself stays unfilled.
@@ -1251,6 +1306,7 @@ impl GitCrab {
                 })
         };
         let color = row.color;
+        let stash = c.stash;
         let junction = if link_above && row.lane == 0 {
             let mut joined = incoming.clone();
             joined.push(gitcrab_core::graph::Edge {
@@ -1364,7 +1420,7 @@ impl GitCrab {
                             .child(
                                 canvas(
                                     move |_, _, _| (),
-                                    move |bounds, _, w, _| {
+                                    move |bounds, _, w, cx| {
                                         let origin = bounds.origin;
                                         let scale = w.scale_factor();
                                         let x = graph_lane_positions(bounds, scale, graph_scrolled);
@@ -1500,7 +1556,15 @@ impl GitCrab {
                                             branch_tint(color, band_tint),
                                             branch_tint(color, 0x70),
                                         );
-                                        if junction {
+                                        if stash {
+                                            paint_stash_node(
+                                                w,
+                                                point(center_x, y),
+                                                px(WIP_RADIUS),
+                                                lanes()[color % lanes().len()],
+                                                cx,
+                                            );
+                                        } else if junction {
                                             let radius = px(6.);
                                             let mut diamond = PathBuilder::fill();
                                             diamond.move_to(point(center_x, y - radius));
@@ -1656,14 +1720,17 @@ impl GitCrab {
         }
         let view = cx.entity();
         let parents = c.parents.len();
+        let stash = c.stash;
         el.context_menu(move |mut menu, w, cx| {
-            let commands = view.update(cx, |v, cx| v.command_context(w, cx));
             let sha = target.clone();
-            menu =
-                menu.item(components::menu_item("Copy commit SHA", true).on_click(
-                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sha.clone())),
-                ))
-                .separator();
+            menu = menu.item(components::menu_item("Copy commit SHA", true).on_click(
+                move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sha.clone())),
+            ));
+            if stash {
+                return menu;
+            }
+            let commands = view.update(cx, |v, cx| v.command_context(w, cx));
+            menu = menu.separator();
             let create_view = view.clone();
             let start = target.clone();
             menu = menu

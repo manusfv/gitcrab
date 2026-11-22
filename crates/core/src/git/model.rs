@@ -22,6 +22,10 @@ pub struct Commit {
     /// Lowercase search text built from the subject, author, object ID and refs.
     #[serde(default)]
     pub search_key: String,
+    /// A stash entry. It lists only its base commit as a parent; the commits
+    /// Git keeps for the index and untracked files are not part of history.
+    #[serde(default)]
+    pub stash: bool,
 }
 
 impl Commit {
@@ -324,6 +328,89 @@ pub struct StashEntry {
     pub message: String,
     /// Creation date in Git's ISO-like format.
     pub date: String,
+}
+
+/// Parses `git stash list --format=%H%x00%P%x00%an%x00%aI%x00%ci%x00%gs`,
+/// newest first, into history rows and list entries.
+///
+/// Each row keeps only the stash's base commit as its parent, so the commits
+/// Git creates for the index and untracked files never reach the graph.
+pub fn parse_stashes(output: &str) -> Vec<(Commit, StashEntry)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(6, '\0');
+            let [id, parents, author, date, created, message] =
+                std::array::from_fn(|_| fields.next().unwrap_or_default());
+            let base = parents.split_whitespace().next()?;
+            let row = Commit {
+                id: id.to_owned(),
+                parents: vec![base.to_owned()],
+                subject: message.to_owned(),
+                author: author.to_owned(),
+                date: date.to_owned(),
+                stash: true,
+                ..Default::default()
+            }
+            .index_search();
+            let entry = StashEntry {
+                message: message.to_owned(),
+                date: created.to_owned(),
+            };
+            Some((row, entry))
+        })
+        .collect()
+}
+
+/// Places stash rows among `commits`, each above its base commit and among
+/// the rows of its own date, the way `git log --date-order` would.
+///
+/// A stash whose base commit is not loaded is left out until a later page
+/// brings the base in.
+pub fn with_stashes(commits: &[Commit], stashes: impl IntoIterator<Item = Commit>) -> Vec<Commit> {
+    let mut rows = commits.to_vec();
+    for stash in stashes {
+        let Some(base) = rows.iter().position(|row| row.id == stash.parents[0]) else {
+            continue;
+        };
+        let created = iso_seconds(&stash.date);
+        let at = rows[..base]
+            .iter()
+            .position(|row| {
+                created.is_some_and(|created| iso_seconds(&row.date).is_some_and(|d| d < created))
+            })
+            .unwrap_or(base);
+        rows.insert(at, stash);
+    }
+    rows
+}
+
+/// Seconds since the Unix epoch of a strict ISO 8601 date with an offset,
+/// such as `2026-11-22T10:11:12+01:00`.
+fn iso_seconds(date: &str) -> Option<i64> {
+    let number = |range: std::ops::Range<usize>| date.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    let offset = match date.get(19..)? {
+        "Z" => 0,
+        zone => {
+            let sign = match zone.get(..1)? {
+                "+" => 1,
+                "-" => -1,
+                _ => return None,
+            };
+            sign * (number(20..22)? * 3600 + number(23..25)? * 60)
+        }
+    };
+    // Days from civil date (Howard Hinnant's algorithm), with March as the
+    // first month so the leap day falls at the end of the year.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset)
 }
 
 /// Repository state read together for a tab refresh.
