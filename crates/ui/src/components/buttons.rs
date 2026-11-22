@@ -7,6 +7,9 @@ use gpui::component::{
 };
 use gpui::{prelude::*, *};
 
+const COMMAND_ICON_SIZE: f32 = geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_ICON;
+const SELECTOR_PADDING_X: f32 = 8.;
+
 #[derive(Clone, Copy)]
 pub enum ControlSize {
     Regular,
@@ -19,8 +22,8 @@ pub enum ControlSize {
 pub fn sized(button: Button, size: ControlSize) -> Button {
     use ControlSize::*;
     let (h, padding, font) = match size {
-        Regular => (32., 12., 13.),
-        Compact => (28., 8., 12.),
+        Regular => (geometry::SIZE_TARGET_REGULAR, 12., TEXT_SIZE_BODY),
+        Compact => (geometry::SIZE_TARGET_COMPACT, 8., TEXT_SIZE_SMALL),
         DenseBulk => (
             geometry::SIZE_BULK_STAGE_HEIGHT,
             geometry::SIZE_BULK_STAGE_PADDING_X,
@@ -31,7 +34,7 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
             geometry::SIZE_HUNK_ACTION_PADDING_X,
             geometry::SIZE_HUNK_ACTION_FONT_SIZE,
         ),
-        FileAction => (geometry::SIZE_FILE_ACTION_TARGET, 0., 11.),
+        FileAction => (geometry::SIZE_FILE_ACTION_TARGET, 0., TEXT_SIZE_CAPTION),
     };
     button
         .small()
@@ -242,8 +245,12 @@ pub fn toolbar_command(
         .line_height(phi())
         .set_disabled(disabled)
         .when(disabled && !loading, |button| button.opacity(0.7))
-        .h(scaled(42.))
-        .min_w(scaled(if labelled { 46. } else { 32. }))
+        .h(scaled(geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_HEIGHT))
+        .min_w(scaled(if labelled {
+            geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_WIDTH
+        } else {
+            geometry::SIZE_TARGET_REGULAR
+        }))
         .px_1()
         .child(
             div()
@@ -258,15 +265,19 @@ pub fn toolbar_command(
                         .gap(px(2.))
                         .map(|row| {
                             if loading {
-                                row.child(spinner(px(16.)))
+                                row.child(spinner(px(COMMAND_ICON_SIZE)))
                             } else {
-                                row.child(icon(glyph).size(px(16.)))
+                                row.child(icon(glyph).size(px(COMMAND_ICON_SIZE)))
                             }
                         })
-                        .when(caret, |row| row.child(icon("down").size(px(10.)))),
+                        .when(caret, |row| row.child(icon("down").size(px(CARET_SIZE)))),
                 )
                 .when(labelled, |column| {
-                    column.child(div().text_size(scaled(11.)).child(label))
+                    column.child(
+                        div()
+                            .text_size(scaled(geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_LABEL))
+                            .child(label),
+                    )
                 }),
         )
 }
@@ -297,18 +308,18 @@ pub fn selector(
         .w(width)
         .min_w_0()
         .flex_none()
-        .px(px(8.))
+        .px(px(SELECTOR_PADDING_X))
         .child(
             div()
                 // Button wraps children in an intrinsic-width label. Give this
                 // row a definite width so the text and caret can spread out.
-                .w(width - px(16.))
+                .w(width - px(2. * SELECTOR_PADDING_X))
                 .min_w_0()
                 .flex()
                 .items_center()
                 .justify_between()
                 .gap_2()
-                .child(icon(glyph).size(px(16.)).flex_none())
+                .child(icon(glyph).size(px(GLYPH_SIZE)).flex_none())
                 .child(
                     div()
                         .flex_1()
@@ -319,7 +330,9 @@ pub fn selector(
                         .when_some(kicker, |label, kicker| {
                             label.child(
                                 div()
-                                    .text_size(scaled(11.))
+                                    .text_size(scaled(
+                                        geometry::SIZE_REPOSITORY_TOOLBAR_SELECTOR_KICKER,
+                                    ))
                                     .text_role(Role::TextMuted)
                                     .child(kicker.to_owned()),
                             )
@@ -332,7 +345,7 @@ pub fn selector(
                                 .child(value.into()),
                         ),
                 )
-                .child(icon("down").size(px(12.)).flex_none()),
+                .child(icon("down").size(px(geometry::SIZE_ICON_SM)).flex_none()),
         )
 }
 

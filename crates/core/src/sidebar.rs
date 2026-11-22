@@ -156,16 +156,6 @@ pub fn tree_rows<'a>(
     rows
 }
 
-/// Tooltip hint for a local branch row.
-pub fn branch_hint(current: bool, previewed: bool) -> &'static str {
-    match (current, previewed) {
-        (true, true) => "Checked out · Previewing",
-        (true, false) => "Checked out · Click to preview",
-        (false, true) => "Previewing · Double-click to checkout",
-        (false, false) => "Click to preview · Double-click to checkout",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

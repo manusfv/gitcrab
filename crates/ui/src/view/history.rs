@@ -5,6 +5,22 @@ mod graph_scroll;
 pub(super) use graph_scroll::GraphScroll;
 
 const HISTORY_CELL_INSET: Rems = Rems(0.5);
+const HISTORY_HEADER_HEIGHT: f32 = 28.;
+/// Commit row heights by density. Larger fonts grow rows past these to fit a
+/// line of [`COMMIT_ROW_LINE_HEIGHT`] plus [`COMMIT_ROW_PADDING`].
+const COMMIT_ROW_HEIGHT_COMPACT: f32 = 26.;
+const COMMIT_ROW_HEIGHT: f32 = geometry::SIZE_ROW_REGULAR;
+/// Line height of commit-row text at [`BASE_FONT_SIZE`].
+const COMMIT_ROW_LINE_HEIGHT: f32 = 20.;
+const COMMIT_ROW_PADDING: f32 = 8.;
+/// Vertical inset of the branch band from a row's top and bottom edges.
+const BAND_INSET_Y: f32 = 3.;
+/// Expanded reference labels per row in element ids, so ids stay unique per row.
+const REF_IDS_PER_ROW: usize = 64;
+const ANIMATION_FRAME: Duration = Duration::from_millis(16);
+/// Rows left below the viewport when the next history page is requested,
+/// so it usually arrives before the user reaches the end.
+const NEXT_PAGE_PREFETCH_ROWS: usize = 100;
 
 /// Narrowest the WIP summary editor gets when the history pane is cramped.
 const WIP_EDITOR_MIN_WIDTH: f32 = 48.;
@@ -18,6 +34,9 @@ const WIP_EDITOR_PAD_LEFT: f32 = 12.;
 const WIP_EDITOR_CARET_MARGIN: f32 = 10.;
 /// Left and right border of the input.
 const WIP_EDITOR_BORDER: f32 = 2.;
+/// The editor is this much shorter than its row, down to [`WIP_EDITOR_MIN_HEIGHT`].
+const WIP_EDITOR_ROW_INSET: f32 = 10.;
+const WIP_EDITOR_MIN_HEIGHT: f32 = 18.;
 
 /// Width the WIP editor needs to show `text_width` of text without the input
 /// scrolling it: padding, border and caret margin, plus 1px against rounding.
@@ -512,9 +531,7 @@ impl GitCrab {
                         if updated.is_err() || t >= 1. {
                             break;
                         }
-                        cx.background_executor()
-                            .timer(Duration::from_millis(16))
-                            .await;
+                        cx.background_executor().timer(ANIMATION_FRAME).await;
                     }
                 }));
             }
@@ -624,7 +641,10 @@ impl GitCrab {
                     .child({
                         let view = cx.weak_entity();
                         self.ref_pill(
-                            ("ref-expanded", row * 64 + index.min(63)),
+                            (
+                                "ref-expanded",
+                                row * REF_IDS_PER_ROW + index.min(REF_IDS_PER_ROW - 1),
+                            ),
                             decorations[index].clone(),
                             commit.to_owned(),
                             color,
@@ -652,7 +672,7 @@ impl GitCrab {
                     })
             })
             .collect::<Vec<_>>();
-        let lift = window.rem_size() * (REF_BADGE_HEIGHT / 13. / 2.);
+        let lift = window.rem_size() * (REF_BADGE_HEIGHT / BASE_FONT_SIZE / 2.);
         div()
             .size_0()
             .flex_none()
@@ -696,7 +716,7 @@ impl GitCrab {
         }
         self.history_layout = self.history_columns.adapted(
             self.history_available - self.history_gutter() - f32::from(SCROLLBAR_GUTTER),
-            self.preferences.font_size / 13.,
+            self.preferences.font_size / BASE_FONT_SIZE,
         );
         // Lanes keep their pitch; the graph column scrolls when they don't fit.
         let graph_width = self
@@ -717,8 +737,7 @@ impl GitCrab {
             .as_ref()
             .filter(|s| s.commits.is_empty() && s.head_id.is_empty())
             .map(|s| s.head.clone());
-        let row_height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
-            .max(self.preferences.font_size * 20. / 13. + 8.);
+        let row_height = self.commit_row_height();
         panel()
             .bg_role(Role::SurfaceCanvas)
             .child(
@@ -752,6 +771,17 @@ impl GitCrab {
                                     .child(
                                         uniform_list("history", count + wip_rows, move |range, w, cx| {
                                             weak.update(cx, |v, cx| {
+                                                if range.end + NEXT_PAGE_PREFETCH_ROWS
+                                                    >= count + wip_rows
+                                                    && v.state.wants_next_page()
+                                                {
+                                                    cx.defer_in(w, |v, w, cx| {
+                                                        if v.state.wants_next_page() {
+                                                            let plan = v.state.load_more();
+                                                            v.apply_refresh(plan, w, cx);
+                                                        }
+                                                    });
+                                                }
                                                 range
                                                     .map(|i| v.history_row(i, w, cx))
                                                     .collect::<Vec<_>>()
@@ -786,7 +816,7 @@ impl GitCrab {
                                                 .p_4()
                                                 .child(
                                                     div()
-                                                        .text_size(scaled(16.))
+                                                        .text_size(scaled(TEXT_SIZE_HEADING))
                                                         .child("No commits yet"),
                                                 )
                                                 .child(
@@ -803,7 +833,7 @@ impl GitCrab {
                                         table.child(self.graph_scrollbar())
                                     }),
                     )
-                    .child(pinned_scrollbar_overlay("history", &self.history_scroll, scaled(28.)))
+                    .child(pinned_scrollbar_overlay("history", &self.history_scroll, scaled(HISTORY_HEADER_HEIGHT)))
                     .child(
                         // Continues the header band across the scrollbar strip.
                         div()
@@ -811,7 +841,7 @@ impl GitCrab {
                             .top_0()
                             .right_0()
                             .w(SCROLLBAR_GUTTER)
-                            .h(scaled(28.))
+                            .h(scaled(HISTORY_HEADER_HEIGHT))
                             .bg_role(Role::SurfaceChrome),
                     )
                     .child({
@@ -821,7 +851,7 @@ impl GitCrab {
                             .absolute()
                             .top_0()
                             .right(SCROLLBAR_GUTTER + px(4.))
-                            .h(scaled(28.))
+                            .h(scaled(HISTORY_HEADER_HEIGHT))
                             .flex()
                             .items_center()
                             .bg_role(Role::SurfaceChrome)
@@ -829,42 +859,37 @@ impl GitCrab {
                                 self.icon_button(
                                     "history-columns",
                                     "columns",
-                                    "Columns: show, order and size history columns",
+                                    "Columns",
                                 )
                                 .icon(icon("columns").size(scaled(14.)))
-                                .size(scaled(24.))
+                                .size(scaled(geometry::SIZE_TARGET_INLINE))
                                 .dropdown_menu(move |menu, w, cx| {
                                     Self::columns_menu(weak.clone(), menu, w, cx)
                                 }),
                             )
                     }),
             )
-            .when(self.state.limit == 100_000 && count == 100_000, |e| {
+            .when(self.state.limit == HISTORY_MAX && count == HISTORY_MAX, |e| {
                 e.child(
                     div()
-                        .h(px(30.))
+                        .h(px(geometry::SIZE_ROW_REGULAR))
                         .px_3()
                         .text_role(Role::TextMuted)
-                        .child(format!("{count} commits shown · history limit reached")),
+                        .child(format!("Showing the newest {count} commits")),
                 )
             })
-            .when(
-                count >= self.state.limit && self.state.limit < 100_000,
-                |e| {
-                    e.child(
-                        self.action_button(
-                            "more",
-                            format!("Load 500 more commits · {count} shown"),
-                        )
-                        .disabled_when(self.state.loading())
-                        .on_click(cx.listener(|v, _, w, cx| {
-                            let plan = v.state.load_more();
-                            v.apply_refresh(plan, w, cx);
-                        })),
-                    )
-                },
-            )
             .into_any_element()
+    }
+    fn commit_row_height(&self) -> f32 {
+        (if self.compact {
+            COMMIT_ROW_HEIGHT_COMPACT
+        } else {
+            COMMIT_ROW_HEIGHT
+        })
+        .max(
+            self.preferences.font_size * COMMIT_ROW_LINE_HEIGHT / BASE_FONT_SIZE
+                + COMMIT_ROW_PADDING,
+        )
     }
     /// The Working changes row only exists while there is something in it.
     pub(crate) fn has_wip_row(&self) -> bool {
@@ -875,8 +900,7 @@ impl GitCrab {
     }
     fn history_row(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let wip_rows = usize::from(self.has_wip_row());
-        let height = (if self.compact { 26.0_f32 } else { 30.0_f32 })
-            .max(self.preferences.font_size * 20. / 13. + 8.);
+        let height = self.commit_row_height();
         let graph_scrolled = self.graph_scroll.scrolled();
         let graph_max = self.graph_scroll.max();
         if wip_rows == 1 && index == 0 {
@@ -897,7 +921,7 @@ impl GitCrab {
                     value if value.is_empty() => SharedString::from("// WIP"),
                     value => value,
                 };
-                let font_size = type_size(cx, 12.);
+                let font_size = type_size(cx, TEXT_SIZE_SMALL);
                 let run = TextRun {
                     len: text.len(),
                     // The input renders in the theme font, not the window default.
@@ -979,8 +1003,9 @@ impl GitCrab {
                                         // Same branch band as the commit rows, in the
                                         // colour of the branch being worked on. Its left
                                         // edge hugs the circle, which stays hollow.
-                                        let band_y = bounds.origin.y + px(3.);
-                                        let band_height = bounds.size.height - px(6.);
+                                        let band_y = bounds.origin.y + px(BAND_INSET_Y);
+                                        let band_height =
+                                            bounds.size.height - px(2. * BAND_INSET_Y);
                                         let band_right = bounds.right();
                                         paint_hugging_band(
                                             w,
@@ -1077,13 +1102,10 @@ impl GitCrab {
                                             // The input's 10px caret margin supplies
                                             // the rest, matching the 12px left inset.
                                             .pr(px(WIP_EDITOR_PAD_RIGHT))
-                                            .h(px((height - 10.).max(18.)))
-                                            .text_size(scaled(12.)),
-                                    )
-                                    .tooltip(|w, cx| {
-                                        Tooltip::new("Working changes · commit summary")
-                                            .build(w, cx)
-                                    }),
+                                            .h(px((height - WIP_EDITOR_ROW_INSET)
+                                                .max(WIP_EDITOR_MIN_HEIGHT)))
+                                            .text_size(scaled(TEXT_SIZE_SMALL)),
+                                    ),
                             )
                             .when(
                                 self.state
@@ -1093,7 +1115,7 @@ impl GitCrab {
                                 |row| {
                                     row.child(
                                         div()
-                                            .text_size(scaled(12.))
+                                            .text_size(scaled(TEXT_SIZE_SMALL))
                                             .text_role(Role::TextMuted)
                                             .child("No changes"),
                                     )
@@ -1130,7 +1152,7 @@ impl GitCrab {
                                             .fixed_width(44.)
                                             .tooltip(
                                                 SharedString::from(format!("wip-{name}")),
-                                                format!("{count} {name} paths"),
+                                                format!("{count} {}", name.to_lowercase()),
                                             )
                                     })
                             }))
@@ -1268,7 +1290,7 @@ impl GitCrab {
                         .flex()
                         .items_center()
                         .overflow_hidden()
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_role(Role::TextDefault)
                         .on_hover(cx.listener(move |v, hovered: &bool, _, cx| {
                             v.hover_refs(i, RefsPart::Cell, *hovered, cx)
@@ -1360,8 +1382,9 @@ impl GitCrab {
                                         } else {
                                             rgb(lanes()[color % lanes().len()])
                                         };
-                                        let band_y = origin.y + px(3.);
-                                        let band_height = bounds.size.height - px(6.);
+                                        let band_y = origin.y + px(BAND_INSET_Y);
+                                        let band_height =
+                                            bounds.size.height - px(2. * BAND_INSET_Y);
                                         let band_right = bounds.right();
                                         let band_left = center_x;
                                         w.paint_quad(fill(
@@ -1549,7 +1572,7 @@ impl GitCrab {
                         .flex_none()
                         .whitespace_nowrap()
                         .truncate()
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .font_family(CODE_FONT)
                         .text_color(ink.meta)
                         .child(c.id[..8.min(c.id.len())].to_string()))
@@ -1561,7 +1584,7 @@ impl GitCrab {
                         .into_any_element(),
                     HistoryColumn::Date => div()
                         .truncate()
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_color(ink.meta)
                         .child(display_date(&c.date))
                         .into_any_element(),
@@ -1660,7 +1683,7 @@ impl GitCrab {
                 let view = view.clone();
                 let target = target.clone();
                 let availability = command.availability_for_commit(&commands, parents);
-                let short = target.chars().take(8).collect::<String>();
+                let short = short_id(&target);
                 let label = match availability.reason() {
                     Some(reason) => format!("{} {short} — {reason}", command.label()),
                     None => format!("{} {short}", command.label()),

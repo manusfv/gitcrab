@@ -1,5 +1,5 @@
 use super::*;
-use gitcrab_core::sidebar::{branch_hint, section, section_key, tree_rows, RefFilter, TreeRow};
+use gitcrab_core::sidebar::{section, section_key, tree_rows, RefFilter, TreeRow};
 use std::rc::Rc;
 
 /// Horizontal inset shared by every sidebar row, header and the filter box.
@@ -8,6 +8,11 @@ const INSET: f32 = 8.;
 const INDENT: f32 = 14.;
 const HEADER_HEIGHT: f32 = 28.;
 const ROW_HEIGHT: f32 = 26.;
+const WORKING_ROW_HEIGHT: f32 = geometry::SIZE_TARGET_REGULAR;
+const ICON_SIZE: f32 = 14.;
+/// Indent of folder rows and of entries, which clear the folders' disclosure arrows.
+const FOLDER_INDENT: f32 = 4.;
+const ENTRY_INDENT: f32 = 18.;
 
 type EntryClick = Rc<dyn Fn(&mut GitCrab, &ClickEvent, &mut Window, &mut Context<GitCrab>)>;
 
@@ -48,7 +53,7 @@ impl GitCrab {
             .foreground(Role::TextSecondary)
             .font_weight(FontWeight::SEMIBOLD)
             .leading(disclosure(collapsed))
-            .leading(icon(glyph).size(px(14.)))
+            .leading(icon(glyph).size(px(ICON_SIZE)))
             .label(label.to_uppercase())
             .trailing(
                 div()
@@ -57,11 +62,41 @@ impl GitCrab {
                     .text_role(Role::TextMuted)
                     .child(count),
             )
-            .tooltip(format!(
-                "{} {}",
-                if collapsed { "Expand" } else { "Collapse" },
-                label.to_lowercase()
-            ))
+    }
+
+    /// One reference section. Open sections share the sidebar's height evenly
+    /// and scroll on their own, so every section header stays in view.
+    fn sidebar_section(
+        &self,
+        id: &'static str,
+        header: ListRow,
+        collapsed: bool,
+        body: impl IntoElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .map(|section| {
+                if collapsed {
+                    section.flex_none()
+                } else {
+                    section.flex_1().min_h_0()
+                }
+            })
+            .child(divider())
+            .child(header)
+            .when(!collapsed, |section| {
+                section.child(
+                    scroll_area(
+                        id,
+                        &scroll_handle(window, cx, id),
+                        div().id(id).flex_1().child(body),
+                    )
+                    .flex_1(),
+                )
+            })
     }
 
     /// Folder rows and leaf rows for one reference kind, indented per depth.
@@ -87,23 +122,23 @@ impl GitCrab {
                     key,
                     depth,
                     name,
-                    path,
+                    path: _,
                     collapsed,
                 } => {
                     tree = tree.child(
                         ListRow::new(SharedString::from(format!("folder-{key}")))
                             .height(ROW_HEIGHT)
                             .inset(INSET)
-                            .indent(4. + (depth - 1) as f32 * INDENT)
+                            .indent(FOLDER_INDENT + (depth - 1) as f32 * INDENT)
                             .tab_stop(!self.settings_open)
                             .foreground(Role::TextSecondary)
                             .leading(disclosure(collapsed))
-                            .leading(icon("folder").size(px(14.)).text_role(Role::TextMuted))
+                            .leading(
+                                icon("folder")
+                                    .size(px(ICON_SIZE))
+                                    .text_role(Role::TextMuted),
+                            )
                             .label(format!("{name}/"))
-                            .tooltip(format!(
-                                "{} {path}/",
-                                if collapsed { "Expand" } else { "Collapse" }
-                            ))
                             .on_click(cx.listener(move |v, _, w, cx| {
                                 Self::toggle_collapsed(v, &key, w, cx)
                             })),
@@ -129,22 +164,26 @@ impl GitCrab {
                 ListRow::new(SharedString::from(id))
                     .height(ROW_HEIGHT)
                     .inset(INSET)
-                    .indent(18. + depth as f32 * INDENT)
+                    .indent(ENTRY_INDENT + depth as f32 * INDENT)
                     .tab_stop(!self.settings_open)
                     .foreground(if current || previewed {
                         Role::TextDefault
                     } else {
                         Role::TextMuted
                     })
-                    .leading(icon(lead).size(px(14.)).text_role(if previewed {
+                    .leading(icon(lead).size(px(ICON_SIZE)).text_role(if previewed {
                         Role::ActionPrimary
                     } else {
                         Role::TextMuted
                     }))
                     .label(leaf)
                     .when(current, |row| {
-                        row.trailing(icon("check").size(px(14.)).text_role(Role::StatusSuccessFg))
-                            .font_weight(FontWeight::SEMIBOLD)
+                        row.trailing(
+                            icon("check")
+                                .size(px(ICON_SIZE))
+                                .text_role(Role::StatusSuccessFg),
+                        )
+                        .font_weight(FontWeight::SEMIBOLD)
                     })
                     .when(current && !previewed, |row| {
                         row.background(Role::StatusSuccessBg)
@@ -190,11 +229,12 @@ impl GitCrab {
         let mut nav = nav
             .id("navigation")
             .flex_1()
+            .min_h_0()
             .w_full()
             .flex()
             .flex_col()
             .child(
-                div().px(scaled(INSET)).py(scaled(INSET)).child(
+                div().flex_none().px(scaled(INSET)).py(scaled(INSET)).child(
                     Input::new(&self.reference_search)
                         .h(scaled(CONTROL_HEIGHT))
                         .disabled(self.settings_open),
@@ -202,10 +242,10 @@ impl GitCrab {
             )
             .child(
                 ListRow::new("working")
-                    .height(32.)
+                    .height(WORKING_ROW_HEIGHT)
                     .inset(INSET)
                     .tab_stop(!self.settings_open)
-                    .leading(icon("changes").size(px(14.)))
+                    .leading(icon("changes").size(px(ICON_SIZE)))
                     .label("Working changes")
                     .trailing(Badge::role(
                         changes.to_string(),
@@ -245,7 +285,7 @@ impl GitCrab {
                         glyph: "branch",
                         current,
                         previewed,
-                        tooltip: format!("{name} · {}", branch_hint(current, previewed)),
+                        tooltip: name.clone(),
                         on_click: Rc::new(move |v, e, w, cx| {
                             if e.click_count() == 2 {
                                 v.run_operation(Operation::Checkout, name.clone(), w, cx);
@@ -257,30 +297,37 @@ impl GitCrab {
                 })
                 .collect();
             let local_key = local.key;
-            nav = nav.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(divider())
-                    .child(
-                        self.sidebar_header(
-                            "local-branches",
-                            "local",
-                            "Local",
-                            local.count,
-                            local.collapsed,
-                        )
-                        .on_click(cx.listener(move |v, _, w, cx| {
-                            Self::toggle_collapsed(v, &local_key, w, cx)
-                        })),
-                    )
-                    .child(self.sidebar_tree("", entries, filtering, cx)),
-            );
+            let header = self
+                .sidebar_header(
+                    "local-branches",
+                    "local",
+                    "Local",
+                    local.count,
+                    local.collapsed,
+                )
+                .on_click(
+                    cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &local_key, w, cx)),
+                );
+            let tree = self.sidebar_tree("", entries, filtering, cx);
+            nav = nav.child(self.sidebar_section(
+                "sidebar-local",
+                header,
+                local.collapsed,
+                tree,
+                window,
+                cx,
+            ));
 
             // Remotes and tags.
-            for (kind, glyph, ref_kind, refs) in [
-                ("Remotes", "remote", ReferenceKind::Remote, &s.remote_refs),
-                ("Tags", "tag", ReferenceKind::Tag, &s.tags),
+            for (kind, scroll_id, glyph, ref_kind, refs) in [
+                (
+                    "Remotes",
+                    "sidebar-remotes",
+                    "remote",
+                    ReferenceKind::Remote,
+                    &s.remote_refs,
+                ),
+                ("Tags", "sidebar-tags", "tag", ReferenceKind::Tag, &s.tags),
             ] {
                 let shown = section(
                     &self.state.path,
@@ -309,73 +356,66 @@ impl GitCrab {
                     })
                     .collect();
                 let key = shown.key;
-                nav = nav.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(divider())
-                        .child(
-                            self.sidebar_header(
-                                SharedString::from(format!("ref-heading-{kind}")),
-                                glyph,
-                                kind,
-                                shown.count,
-                                shown.collapsed,
-                            )
-                            .on_click(cx.listener(
-                                move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx),
-                            )),
-                        )
-                        .child(self.sidebar_tree(kind, entries, filtering, cx)),
-                );
+                let header = self
+                    .sidebar_header(
+                        SharedString::from(format!("ref-heading-{kind}")),
+                        glyph,
+                        kind,
+                        shown.count,
+                        shown.collapsed,
+                    )
+                    .on_click(
+                        cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)),
+                    );
+                let tree = self.sidebar_tree(kind, entries, filtering, cx);
+                nav = nav.child(self.sidebar_section(
+                    scroll_id,
+                    header,
+                    shown.collapsed,
+                    tree,
+                    window,
+                    cx,
+                ));
             }
 
             // Stashes.
             let key = section_key(&self.state.path, "Stashes");
             let collapsed = self.preferences.collapsed.contains(&key);
-            nav = nav.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(divider())
-                    .child(
-                        self.sidebar_header(
-                            "ref-heading-Stashes",
-                            "stash",
-                            "Stashes",
-                            s.stash_count.to_string(),
-                            collapsed,
-                        )
-                        .on_click(
-                            cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)),
+            let header = self
+                .sidebar_header(
+                    "ref-heading-Stashes",
+                    "stash",
+                    "Stashes",
+                    s.stash_count.to_string(),
+                    collapsed,
+                )
+                .on_click(cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)));
+            let latest = div().when_some(s.latest_stash.as_ref(), |section, stash| {
+                // Pop stash acts on this entry, so name it where the button is.
+                section.child(
+                    div()
+                        .pl(scaled(INSET + ENTRY_INDENT))
+                        .pr(scaled(INSET))
+                        .pb_2()
+                        .flex()
+                        .flex_col()
+                        .text_size(scaled(TEXT_SIZE_SMALL))
+                        .child(div().truncate().child(format!("Latest: {}", stash.message)))
+                        .child(
+                            div()
+                                .text_role(Role::TextMuted)
+                                .child(display_date(&stash.date)),
                         ),
-                    )
-                    .when_some(
-                        s.latest_stash.as_ref().filter(|_| !collapsed),
-                        |section, stash| {
-                            // Pop stash acts on this entry, so name it where the button is.
-                            section.child(
-                                div()
-                                    .pl(scaled(INSET + 18.))
-                                    .pr(scaled(INSET))
-                                    .pb_2()
-                                    .flex()
-                                    .flex_col()
-                                    .text_size(scaled(12.))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .child(format!("Latest · {}", stash.message)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_role(Role::TextMuted)
-                                            .child(display_date(&stash.date)),
-                                    ),
-                            )
-                        },
-                    ),
-            );
+                )
+            });
+            nav = nav.child(self.sidebar_section(
+                "sidebar-stashes",
+                header,
+                collapsed,
+                latest,
+                window,
+                cx,
+            ));
         }
         div()
             .size_full()
@@ -384,14 +424,7 @@ impl GitCrab {
             .flex_col()
             .bg_role(Role::SurfaceNav)
             .overflow_hidden()
-            .child(
-                scroll_area(
-                    "navigation",
-                    &scroll_handle(window, cx, "navigation-scroll"),
-                    nav,
-                )
-                .flex_1(),
-            )
+            .child(nav)
             .into_any_element()
     }
 }

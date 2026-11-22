@@ -6,7 +6,8 @@ const RESIZE_HALF_WIDTH: f32 = 5.;
 /// Room at the default font size kept clear at the right of the history table
 /// for the floating Columns button, so it never covers a column header.
 const COLUMNS_BUTTON_ROOM: f32 = 32.;
-const GRAPH_LEGEND: &str = "Graph · Each colored lane is a line of history. A dot is a commit, a diamond is a merge or branch point, and the dashed circle is Working changes. Commit details list each parent.";
+/// How much the Widen and Narrow menu items change a column's width.
+const COLUMN_WIDTH_STEP: f32 = 32.;
 
 #[derive(Clone)]
 struct DraggedColumn {
@@ -109,7 +110,8 @@ impl GitCrab {
         let widths = weak.clone();
         menu = menu.submenu("Column width", window, cx, move |mut menu, _, _| {
             for column in visible.iter().copied() {
-                for (delta, verb) in [(32., "Widen"), (-32., "Narrow")] {
+                for (delta, verb) in [(COLUMN_WIDTH_STEP, "Widen"), (-COLUMN_WIDTH_STEP, "Narrow")]
+                {
                     let weak = widths.clone();
                     menu = menu.item(
                         components::menu_item(format!("{verb} {}", column.label()), true).on_click(
@@ -127,16 +129,15 @@ impl GitCrab {
             menu
         });
         let weak = weak.clone();
-        menu.separator().item(
-            components::menu_item("Reset columns · fit to window", true).on_click(
-                move |_, w, cx| {
+        menu.separator()
+            .item(
+                components::menu_item("Reset columns", true).on_click(move |_, w, cx| {
                     let _ = weak.update(cx, |v, cx| {
                         v.history_columns = HistoryColumns::default();
                         v.columns_changed(w, cx);
                     });
-                },
-            ),
-        )
+                }),
+            )
     }
 
     /// The graph column's own horizontal scrollbar, along the bottom of the
@@ -195,7 +196,7 @@ impl GitCrab {
 
     /// The trailing padding of the header and every row, under the Columns button.
     pub(super) fn history_gutter(&self) -> f32 {
-        COLUMNS_BUTTON_ROOM * self.preferences.font_size / 13.
+        COLUMNS_BUTTON_ROOM * self.preferences.font_size / BASE_FONT_SIZE
     }
     /// The table's minimum width: its visible columns plus the trailing gutter.
     pub(super) fn history_table_width(&self) -> f32 {
@@ -331,13 +332,13 @@ impl GitCrab {
         ));
         div()
             .id("history-header")
-            .h(scaled(28.))
+            .h(scaled(HISTORY_HEADER_HEIGHT))
             .pr(px(self.history_gutter()))
             .flex_none()
             .flex()
             .items_center()
             .bg_role(Role::SurfaceChrome)
-            .text_size(scaled(12.))
+            .text_size(scaled(TEXT_SIZE_SMALL))
             .text_role(Role::TextSecondary)
             .font_weight(FontWeight::MEDIUM)
             .on_drag_move(
@@ -452,11 +453,6 @@ impl GitCrab {
                                         })
                                         .when(!minimized_graph, |el| {
                                             el.child(div().truncate().child(column.label()))
-                                        })
-                                        .when(column == HistoryColumn::Graph, |el| {
-                                            el.tooltip(|w, cx| {
-                                                Tooltip::new(GRAPH_LEGEND).build(w, cx)
-                                            })
                                         }),
                                 )
                                 .child(

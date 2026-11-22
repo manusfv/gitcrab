@@ -20,6 +20,13 @@ use gpui::{prelude::*, *};
 const INSET: f32 = 20.;
 /// Matches the library surface's 10px corner inside its 1px border.
 const INNER_RADIUS: f32 = 9.;
+/// The tinted boxes of [`subject`] and [`callout`]: padding, corners and text
+/// sizes, which sit between the small and body sizes.
+const NOTE_PADDING_X: f32 = 10.;
+const NOTE_PADDING_Y: f32 = 8.;
+const NOTE_RADIUS: f32 = 6.;
+const NOTE_TEXT_SIZE: f32 = 12.5;
+const NOTE_DETAIL_SIZE: f32 = 11.5;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ModalWidth {
@@ -141,7 +148,7 @@ impl RenderOnce for ModalHeader {
                     .gap(scaled(4.))
                     .child(
                         div()
-                            .text_size(scaled(15.))
+                            .text_size(scaled(TEXT_SIZE_TITLE))
                             .font_weight(FontWeight::SEMIBOLD)
                             .line_height(relative(1.3))
                             .text_role(Role::TextDefault)
@@ -150,9 +157,9 @@ impl RenderOnce for ModalHeader {
                     .when_some(self.description, |column, description| {
                         column.child(
                             div()
-                                .text_size(scaled(13.))
+                                .text_size(scaled(TEXT_SIZE_BODY))
                                 .font_weight(FontWeight::NORMAL)
-                                .line_height(relative(1.45))
+                                .line_height(relative(PROSE_LINE_HEIGHT))
                                 .text_role(Role::TextSecondary)
                                 .child(description),
                         )
@@ -161,11 +168,11 @@ impl RenderOnce for ModalHeader {
             .when(self.closable, |row| {
                 row.child(
                     basic(
-                        Button::new("modal-close").icon(icon("x").size(scaled(16.))),
+                        Button::new("modal-close").icon(icon("x").size(scaled(GLYPH_SIZE))),
                         ButtonKind::Ghost,
                         ControlSize::Compact,
                     )
-                    .w(scaled(28.))
+                    .w(scaled(geometry::SIZE_TARGET_COMPACT))
                     .px_0()
                     .flex_none()
                     // Optically aligns the glyph with the title's first line.
@@ -356,23 +363,23 @@ pub fn subject(title: impl Into<SharedString>, detail: Option<SharedString>) -> 
         .flex()
         .flex_col()
         .gap(scaled(2.))
-        .px(scaled(10.))
-        .py(scaled(8.))
-        .rounded(px(6.))
+        .px(scaled(NOTE_PADDING_X))
+        .py(scaled(NOTE_PADDING_Y))
+        .rounded(px(NOTE_RADIUS))
         .bg_role(Role::SurfaceChrome)
         .border_1()
         .border_role(Role::BorderDivider)
         .font_family(CODE_FONT)
         .child(
             div()
-                .text_size(scaled(12.5))
+                .text_size(scaled(NOTE_TEXT_SIZE))
                 .text_role(Role::TextDefault)
                 .child(title.into()),
         )
         .when_some(detail, |el, detail| {
             el.child(
                 div()
-                    .text_size(scaled(11.5))
+                    .text_size(scaled(NOTE_DETAIL_SIZE))
                     .text_role(Role::TextMuted)
                     .child(detail),
             )
@@ -382,7 +389,7 @@ pub fn subject(title: impl Into<SharedString>, detail: Option<SharedString>) -> 
 /// Explanatory body text.
 pub fn paragraph(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(scaled(13.))
+        .text_size(scaled(TEXT_SIZE_BODY))
         .line_height(relative(1.5))
         .text_role(Role::TextSecondary)
         .child(text.into())
@@ -391,8 +398,8 @@ pub fn paragraph(text: impl Into<SharedString>) -> Div {
 /// Small print, such as what a choice remembers.
 pub fn fine_print(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(scaled(12.))
-        .line_height(relative(1.45))
+        .text_size(scaled(TEXT_SIZE_SMALL))
+        .line_height(relative(PROSE_LINE_HEIGHT))
         .text_role(Role::TextMuted)
         .child(text.into())
 }
@@ -406,9 +413,9 @@ pub fn callout(tone: Tone, text: impl Into<SharedString>) -> Div {
         .flex()
         .items_start()
         .gap(scaled(8.))
-        .px(scaled(10.))
-        .py(scaled(8.))
-        .rounded(px(6.))
+        .px(scaled(NOTE_PADDING_X))
+        .py(scaled(NOTE_PADDING_Y))
+        .rounded(px(NOTE_RADIUS))
         .bg_role(bg)
         .child(
             div()
@@ -421,8 +428,8 @@ pub fn callout(tone: Tone, text: impl Into<SharedString>) -> Div {
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(scaled(12.5))
-                .line_height(relative(1.45))
+                .text_size(scaled(NOTE_TEXT_SIZE))
+                .line_height(relative(PROSE_LINE_HEIGHT))
                 .text_role(Role::TextDefault)
                 .child(text.into()),
         )
@@ -432,7 +439,7 @@ pub fn callout(tone: Tone, text: impl Into<SharedString>) -> Div {
 pub fn section(title: impl Into<SharedString>) -> Div {
     div().w_full().flex().flex_col().gap(scaled(6.)).child(
         div()
-            .text_size(scaled(12.))
+            .text_size(scaled(TEXT_SIZE_SMALL))
             .font_weight(FontWeight::SEMIBOLD)
             .text_role(Role::TextMuted)
             .child(title.into()),
@@ -446,7 +453,7 @@ pub fn detail_row(label: impl Into<SharedString>, value: impl Into<SharedString>
         .flex()
         .flex_col()
         .gap(scaled(2.))
-        .text_size(scaled(12.))
+        .text_size(scaled(TEXT_SIZE_SMALL))
         .child(div().text_role(Role::TextMuted).child(label.into()))
         .child(
             div()
@@ -478,14 +485,14 @@ pub fn setting_row(
                 .gap(scaled(2.))
                 .child(
                     div()
-                        .text_size(scaled(13.))
+                        .text_size(scaled(TEXT_SIZE_BODY))
                         .text_role(Role::TextDefault)
                         .child(label.into()),
                 )
                 .when_some(description, |column, description| {
                     column.child(
                         div()
-                            .text_size(scaled(12.))
+                            .text_size(scaled(TEXT_SIZE_SMALL))
                             .line_height(relative(1.4))
                             .text_role(Role::TextMuted)
                             .child(description),
@@ -541,7 +548,7 @@ pub fn shortcut_row(keys: &[&'static str], description: impl Into<SharedString>)
     for key in keys {
         caps = caps.child(if *key == "/" || *key == "+" {
             div()
-                .text_size(scaled(11.))
+                .text_size(scaled(TEXT_SIZE_CAPTION))
                 .text_role(Role::TextMuted)
                 .child(*key)
         } else {
@@ -557,7 +564,7 @@ pub fn shortcut_row(keys: &[&'static str], description: impl Into<SharedString>)
                 .border_b_2()
                 .border_role(Role::BorderDivider)
                 .bg_role(Role::SurfaceOverlay)
-                .text_size(scaled(11.))
+                .text_size(scaled(TEXT_SIZE_CAPTION))
                 .font_weight(FontWeight::MEDIUM)
                 .text_role(Role::TextDefault)
                 .child(*key)
@@ -573,7 +580,7 @@ pub fn shortcut_row(keys: &[&'static str], description: impl Into<SharedString>)
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(scaled(13.))
+                .text_size(scaled(TEXT_SIZE_BODY))
                 .line_height(relative(1.4))
                 .text_role(Role::TextSecondary)
                 .child(description.into()),

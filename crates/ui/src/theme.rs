@@ -1,4 +1,5 @@
 //! Shared geometry and semantic colors for the native workspace.
+use gitcrab_core::appearance::{PALETTE_DARK, PALETTE_LIGHT};
 pub use gitcrab_core::design_tokens::{geometry, Role};
 use gpui::component::Theme;
 use gpui::{prelude::*, *};
@@ -8,9 +9,9 @@ static VALIDATION_LIGHT: AtomicBool = AtomicBool::new(false);
 pub fn semantic(role: Role) -> u32 {
     gitcrab_core::appearance::resolve(
         if VALIDATION_LIGHT.load(Ordering::Relaxed) {
-            "light"
+            PALETTE_LIGHT
         } else {
-            "dark"
+            PALETTE_DARK
         },
         role,
     )
@@ -81,6 +82,8 @@ pub const FILE_ROW_HEIGHT: f32 = geometry::SIZE_FILE_ACTION_ROW;
 pub const INSPECTOR_INSET: f32 = geometry::SIZE_BULK_STAGE_INSPECTOR_INSET;
 pub const CONTROL_RADIUS: f32 = 4.;
 pub const GLYPH_SIZE: f32 = 16.;
+/// The chevron beside a button that opens a menu.
+pub const CARET_SIZE: f32 = 10.;
 pub const SECTION_INSET: f32 = 12.;
 pub const SEAM: f32 = 1.;
 /// The status bar is taller than its 28-pixel buttons, except at compact
@@ -91,6 +94,18 @@ pub const STATUS_BAR_COMPACT_HEIGHT: f32 = geometry::SIZE_SHELL_STATUS;
 pub const STATUS_BAR_GROUP_GAP: f32 = geometry::SIZE_REPOSITORY_TOOLBAR_GROUP_GAP;
 /// Between items within a status bar group, on each side of a rule.
 pub const STATUS_BAR_ITEM_GAP: f32 = geometry::SIZE_GUTTER_PADDING;
+/// The font size that [`scaled`] lengths are given at.
+pub const BASE_FONT_SIZE: f32 = gitcrab_core::preferences::Preferences::DEFAULT_FONT_SIZE;
+/// The code size that diff metrics are given at.
+pub const BASE_CODE_SIZE: f32 = 12.;
+/// Text sizes, for [`scaled`].
+pub const TEXT_SIZE_CAPTION: f32 = 11.;
+pub const TEXT_SIZE_SMALL: f32 = 12.;
+pub const TEXT_SIZE_BODY: f32 = BASE_FONT_SIZE;
+pub const TEXT_SIZE_TITLE: f32 = 15.;
+pub const TEXT_SIZE_HEADING: f32 = 16.;
+/// Line height of wrapped explanatory text, relative to its size.
+pub const PROSE_LINE_HEIGHT: f32 = 1.45;
 /// Scales a size given in pixels at the default 13-pixel font to the current
 /// font size.
 ///
@@ -98,11 +113,11 @@ pub const STATUS_BAR_ITEM_GAP: f32 = geometry::SIZE_GUTTER_PADDING;
 /// this grows and shrinks with the font-size preference. Use it for padding,
 /// heights and gaps; keep `px` for hairlines, radii and measured widths.
 pub fn scaled(base: f32) -> Rems {
-    rems(base / 13.)
+    rems(base / BASE_FONT_SIZE)
 }
 /// The pixel value of [`scaled`], for layout arithmetic.
 pub fn type_size(cx: &App, base: f32) -> Pixels {
-    px(f32::from(Theme::global(cx).font_size) * base / 13.)
+    px(f32::from(Theme::global(cx).font_size) * base / BASE_FONT_SIZE)
 }
 pub const REF_BADGE_HEIGHT: f32 = 24.;
 /// Text size of the reference labels in the history graph.
@@ -124,7 +139,7 @@ pub fn branch_tint(color: usize, opacity: u8) -> Rgba {
 pub fn initialize(cx: &mut App) {
     #[cfg(feature = "native-evidence")]
     VALIDATION_LIGHT.store(
-        std::env::var("GITCRAB_TEST_PALETTE").as_deref() == Ok("light"),
+        std::env::var("GITCRAB_TEST_PALETTE").as_deref() == Ok(PALETTE_LIGHT),
         Ordering::Relaxed,
     );
     install(cx);

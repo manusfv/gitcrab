@@ -33,7 +33,9 @@ pub fn reversed_worktree(hunk: &Hunk, current: &[u8]) -> Result<Vec<u8>, String>
     }
     let text = std::str::from_utf8(current).map_err(|_| "Discard requires UTF-8 text")?;
     if text.contains('\r') {
-        return Err("Discard for CRLF or filtered content is not yet qualified. Use Git.".into());
+        return Err(
+            "Discard doesn't support CRLF line endings or filtered files yet. Use Git.".into(),
+        );
     }
     // Each hunk's working-file text and its replacement, located by the
     // new-side range, which counts lines in the current file.

@@ -306,6 +306,6 @@ impl RenderOnce for ListRow {
 /// The chevron of a collapsible row.
 pub fn disclosure(collapsed: bool) -> gpui::component::Icon {
     icon(if collapsed { "right" } else { "down" })
-        .size(px(12.))
+        .size(px(geometry::SIZE_ICON_SM))
         .text_role(Role::TextMuted)
 }

@@ -319,21 +319,20 @@ impl GitCrab {
     pub(super) fn render_branch_prompt(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prompt = self.branch_prompt.as_ref()?;
         let snapshot = self.state.snapshot.as_ref()?;
-        let short = |id: &str| id.chars().take(8).collect::<String>();
         let place = match &prompt.start {
             Some(start) => {
                 let subject = snapshot
                     .commits
                     .iter()
                     .find(|c| &c.id == start)
-                    .map(|c| format!(" · {}", c.subject))
+                    .map(|c| format!(" ({})", c.subject))
                     .unwrap_or_default();
-                format!("New branch at {}{subject}", short(start))
+                format!("Creates a branch at {}{subject}", short_id(start))
             }
             None => format!(
-                "New branch at {} ({}) · switches to it",
+                "Creates a branch at {} ({}) and switches to it",
                 snapshot.head_label(),
-                short(&snapshot.head_id)
+                short_id(&snapshot.head_id)
             ),
         };
         let busy = self.state.busy || self.pending_run.is_some();
@@ -386,19 +385,17 @@ impl GitCrab {
                                 ControlSize::Compact,
                             )
                             .set_disabled(busy)
-                            .tooltip("Create the branch · Enter")
                             .on_click(cx.listener(|v, _, w, cx| v.submit_branch_prompt(w, cx))),
                         )
                         .child(
                             self.button("branch-prompt-cancel", "Cancel")
-                                .tooltip("Close without creating a branch · Esc")
                                 .on_click(cx.listener(|v, _, w, cx| v.close_branch_prompt(w, cx))),
                         ),
                 )
                 .when_some(prompt.error.clone(), |el, error| {
                     el.child(
                         div()
-                            .text_size(scaled(12.))
+                            .text_size(scaled(TEXT_SIZE_SMALL))
                             .text_role(Role::StatusErrorFg)
                             .child(error),
                     )

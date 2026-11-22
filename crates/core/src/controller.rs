@@ -137,6 +137,9 @@ pub struct Controller {
     /// Limit of the installed history snapshot.
     pub limit: usize,
     requested_limit: Option<usize>,
+    /// Set when a history page fails, so scrolling does not retry it until
+    /// the next successful snapshot.
+    history_page_failed: bool,
     /// Worker execution time for the last accepted response, in milliseconds.
     pub worker_ms: f64,
     /// Time that request waited in the worker queue, in milliseconds.
@@ -172,6 +175,10 @@ pub enum Seek {
     NotFound,
 }
 
+/// Commits read by the first history page and added by each later one.
+pub const HISTORY_PAGE: usize = 500;
+/// Most commits a history snapshot ever holds.
+pub const HISTORY_MAX: usize = 100_000;
 /// History depth at which automatic paging for a [`Reveal`] stops.
 pub const REVEAL_LIMIT: usize = 20_000;
 impl Default for Controller {
@@ -210,8 +217,9 @@ impl Default for Controller {
             notice: "Open a local repository to begin".into(),
             error: false,
             operation_notice: None,
-            limit: 500,
+            limit: HISTORY_PAGE,
             requested_limit: None,
+            history_page_failed: false,
             worker_ms: 0.,
             queue_ms: 0.,
             reopen: None,
@@ -302,15 +310,16 @@ impl Controller {
         self.pending_watcher_refresh = None;
         self.marker_refusals.clear();
         self.reveal = None;
-        self.limit = 500;
+        self.limit = HISTORY_PAGE;
         self.requested_limit = None;
+        self.history_page_failed = false;
         self.notice = "Opening repository…".into();
         self.error = false;
         self.operation_notice = None;
         self.read(
             Lane::Snapshot,
             Action::Open {
-                limit: 500,
+                limit: HISTORY_PAGE,
                 trust: RepositoryTrust::Confirmed(location),
             },
         )
@@ -346,7 +355,8 @@ impl Controller {
             .and_then(|s| s.loaded_ref_tip(kind, name))
         else {
             self.notice =
-                "Reference tip is outside loaded history. Load more commits to reveal it.".into();
+                "This reference points outside loaded history. Scroll down to load older commits."
+                    .into();
             return None;
         };
         let job = self.select(Some(id.to_owned()));
@@ -389,18 +399,32 @@ impl Controller {
     pub fn more_history(&self) -> bool {
         self.snapshot
             .as_ref()
-            .is_some_and(|s| s.commits.len() >= self.limit && self.limit < 100_000)
+            .is_some_and(|s| s.commits.len() >= self.limit && self.limit < HISTORY_MAX)
+    }
+
+    /// Reports whether the view should request the next history page once
+    /// the user scrolls near the end of loaded history.
+    pub fn wants_next_page(&self) -> bool {
+        self.more_history()
+            && !self.loading()
+            && self.requested_limit.is_none()
+            && !self.history_page_failed
+    }
+
+    /// Reports whether older history is being read, for a status indicator.
+    pub fn loading_history_page(&self) -> bool {
+        self.requested_limit.is_some() && self.loading()
     }
 
     fn start_reveal(&mut self, reveal: Reveal) -> Seek {
         let target = match &reveal {
-            Reveal::Commit(id) => format!("commit {}", id.chars().take(8).collect::<String>()),
+            Reveal::Commit(id) => format!("commit {}", crate::presentation::short_id(id)),
             Reveal::Reference(_, name) => name.clone(),
         };
         if !self.more_history() || self.limit >= REVEAL_LIMIT {
             let loaded = self.snapshot.as_ref().map_or(0, |s| s.commits.len());
             self.notice = if self.more_history() {
-                format!("{target} is not in the first {loaded} commits. Use Load more to keep searching.")
+                format!("{target} is not in the first {loaded} commits. Scroll to the end of history to load older commits.")
             } else {
                 format!("{target} is not reachable in this repository's history.")
             };
@@ -489,13 +513,13 @@ impl Controller {
             self.refresh_with(Action::RefreshWorktree { limit: self.limit })
         }
     }
-    /// Requests up to 500 more commits, with a ceiling of 100,000.
+    /// Requests [`HISTORY_PAGE`] more commits, up to [`HISTORY_MAX`].
     ///
     /// Requires a loaded snapshot. The installed limit advances after a
     /// successful snapshot response.
     pub fn load_more(&mut self) -> Option<RefreshPlan> {
         self.snapshot.as_ref()?;
-        let limit = (self.requested_limit.unwrap_or(self.limit) + 500).min(100_000);
+        let limit = (self.requested_limit.unwrap_or(self.limit) + HISTORY_PAGE).min(HISTORY_MAX);
         self.requested_limit = Some(limit);
         self.refresh_with(Action::LoadMore { limit })
     }
@@ -922,6 +946,7 @@ impl Controller {
                     if let Some(limit) = requested_limit {
                         self.limit = limit;
                     }
+                    self.history_page_failed = false;
                     if self.previewed_ref.as_ref().is_some_and(|(kind, name)| {
                         snapshot.loaded_ref_tip(*kind, name) != self.selected.as_deref()
                     }) {
@@ -1126,6 +1151,7 @@ impl Controller {
                     }
                     if lane == Lane::Snapshot {
                         self.reveal = None;
+                        self.history_page_failed |= requested_limit.is_some();
                         // Writes waiting for this refresh cannot be reviewed.
                         if !self.busy && !self.queued.is_empty() {
                             self.queued.clear();
@@ -1351,6 +1377,44 @@ mod tests {
         );
         assert_eq!(controller.limit, 1000);
         assert!(!controller.error);
+    }
+
+    #[test]
+    fn scroll_paging_waits_for_the_page_and_stops_after_a_failure() {
+        let full_page = |count: usize| RepoSnapshot {
+            commits: vec![Default::default(); count],
+            ..Default::default()
+        };
+        let mut controller = Controller {
+            snapshot: Some(full_page(HISTORY_PAGE)),
+            ..Default::default()
+        };
+        assert!(controller.wants_next_page());
+        let (_, page) = controller.load_more().unwrap().dispatch.unwrap();
+        assert!(!controller.wants_next_page());
+        assert!(controller.loading_history_page());
+        let failure = Failure {
+            message: "could not load page".into(),
+            kind: Default::default(),
+            refresh: false,
+        };
+        controller.complete(Lane::Snapshot, reply(&page, Err(failure)));
+        assert!(!controller.wants_next_page());
+        assert!(!controller.loading_history_page());
+
+        let (_, refresh) = controller.refresh().unwrap().dispatch.unwrap();
+        controller.complete(
+            Lane::Snapshot,
+            reply(
+                &refresh,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot: full_page(HISTORY_PAGE),
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        assert!(controller.wants_next_page());
     }
 
     #[test]

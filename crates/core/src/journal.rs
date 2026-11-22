@@ -277,7 +277,7 @@ impl Step {
                 if undo {
                     format!("Apply stash {}{message} back to the working tree and index on {}, then remove it from the stash list. Tracked files have no other changes, so nothing is overwritten.", short(stash), short(head))
                 } else {
-                    format!("Stash the tracked changes again{message}. They still match the stash this action created, so the same changes are saved; the new stash entry has a new object ID.")
+                    format!("Stash the tracked changes again{message}. They still match the stash this action created, so the same changes are saved under a new stash ID.")
                 }
             }
             Change::PopStash {

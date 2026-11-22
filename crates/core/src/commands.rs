@@ -137,17 +137,6 @@ impl Command {
         }
     }
 
-    pub fn shortcut(self) -> Option<&'static str> {
-        match self {
-            Self::Refresh => Some("F5"),
-            Self::Undo if cfg!(target_os = "macos") => Some("Cmd+Z"),
-            Self::Undo => Some("Ctrl+Z"),
-            Self::Redo if cfg!(target_os = "macos") => Some("Cmd+Shift+Z"),
-            Self::Redo => Some("Ctrl+Y"),
-            _ => None,
-        }
-    }
-
     /// Whether the command opens a write review.
     pub fn writes(self) -> bool {
         !matches!(self, Self::Refresh | Self::Fetch)
@@ -223,31 +212,29 @@ impl Command {
     /// move as last fetched, such as “Push 2 commits to origin/main”.
     pub fn describe_with_upstream(self, cx: &CommandContext, upstream: Option<&str>) -> String {
         let availability = self.availability(cx);
-        let text = self.describe_availability(availability);
         if !availability.enabled() {
-            return text;
+            return self.describe_availability(availability);
         }
         let commits = |count: usize| match count {
             1 => "1 commit".to_owned(),
             count => format!("{count} commits"),
         };
-        let detail = match (self, upstream) {
+        match (self, upstream) {
             (Self::Fetch, _) => {
                 "Download new commits from every remote and prune deleted branches".to_owned()
             }
             (Self::Pull, Some(name)) if cx.behind == 0 => {
-                format!("{name} had no new commits when last fetched; Pull fetches again")
+                format!("Fetch and pull from {name}, which had no new commits when last fetched")
             }
             (Self::Pull, Some(name)) => format!("Pull {} from {name}", commits(cx.behind)),
             (Self::Push, Some(name)) if cx.upstream => {
                 format!("Push {} to {name}", commits(cx.ahead))
             }
             (Self::Push, _) if !cx.upstream => {
-                "The branch has no upstream yet; Push sets one (git push -u)".to_owned()
+                "Push and set the branch's upstream (git push -u)".to_owned()
             }
-            _ => return text,
-        };
-        format!("{text} · {detail}")
+            _ => self.describe_availability(availability),
+        }
     }
 
     /// Decides availability for a command aimed at one commit.
@@ -265,13 +252,13 @@ impl Command {
         }
     }
 
-    /// Tooltip text: the label, shortcut and either a hint or the disabled reason.
+    /// Tooltip text: the label, followed by the reason when it is disabled.
     pub fn describe(self, cx: &CommandContext) -> String {
         self.describe_availability(self.availability(cx))
     }
 
     /// Tooltip text naming what the command acts on, such as
-    /// `Undo commit “Fix parser” · Ctrl+Z`.
+    /// `Undo commit “Fix parser”`.
     pub fn describe_with_summary(self, cx: &CommandContext, summary: Option<&str>) -> String {
         let text = self.describe(cx);
         match summary {
@@ -289,15 +276,11 @@ impl Command {
     }
 
     fn describe_availability(self, availability: Availability) -> String {
-        let mut text = self.menu_label().trim_end_matches('…').to_owned();
-        if let Some(key) = self.shortcut() {
-            text.push_str(&format!(" · {key}"));
-        }
+        let label = self.menu_label().trim_end_matches('…');
         match availability {
-            Availability::Enabled => {}
-            Availability::Disabled(reason) => text = format!("{text} unavailable. {reason}"),
+            Availability::Enabled => label.to_owned(),
+            Availability::Disabled(reason) => format!("{label} unavailable. {reason}"),
         }
-        text
     }
 }
 
@@ -418,7 +401,6 @@ mod tests {
     #[test]
     fn undo_and_redo_follow_their_journal_step() {
         use crate::journal::{Blocker, StepState};
-        let shortcut = Command::Undo.shortcut().unwrap();
         let mut cx = CommandContext {
             undo: StepState::Ready,
             redo: StepState::Blocked(Blocker::HeadMoved),
@@ -429,7 +411,7 @@ mod tests {
         assert!(Command::Undo.availability(&cx).enabled());
         assert_eq!(
             Command::Undo.describe_with_summary(&cx, Some("commit “Fix parser”")),
-            format!("Undo commit “Fix parser” · {shortcut}")
+            "Undo commit “Fix parser”"
         );
         assert_eq!(
             Command::Redo.availability(&cx).reason(),
@@ -437,7 +419,7 @@ mod tests {
         );
         assert!(Command::Redo
             .describe_with_summary(&cx, Some("checkout of main"))
-            .starts_with("Redo checkout of main · "));
+            .starts_with("Redo checkout of main unavailable."));
         assert!(Command::Redo
             .describe_with_summary(&cx, Some("checkout of main"))
             .contains(" unavailable. HEAD is no longer where this action left it"));
@@ -476,11 +458,11 @@ mod tests {
         assert!(Command::Pull.writes() && Command::Push.writes());
         assert_eq!(
             Command::Push.describe_with_upstream(&cx, Some("origin/main")),
-            "Push · Push 2 commits to origin/main"
+            "Push 2 commits to origin/main"
         );
         assert_eq!(
             Command::Pull.describe_with_upstream(&cx, Some("origin/main")),
-            "Pull · Pull 3 commits from origin/main"
+            "Pull 3 commits from origin/main"
         );
         let no_upstream = CommandContext {
             upstream: false,
@@ -488,7 +470,7 @@ mod tests {
         };
         assert!(Command::Push
             .describe_with_upstream(&no_upstream, None)
-            .ends_with("Push sets one (git push -u)"));
+            .ends_with("(git push -u)"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::{
     git::{FailureKind, RepoSnapshot},
     graph,
     platform::RepositoryLocation,
+    presentation::short_id,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -264,10 +265,6 @@ pub struct ReviewedOperation {
 pub const MERGE_COMMIT_UNSUPPORTED: &str =
     "This is a merge commit. Cherry-pick and Revert need a mainline parent, which GitCrab cannot choose yet. Use Git's -m option from a terminal.";
 
-fn short_id(id: &str) -> &str {
-    &id[..id.len().min(8)]
-}
-
 impl ReviewedOperation {
     /// Source and destination of a reviewed Pull or Push, such as
     /// `origin/main → main`.
@@ -359,7 +356,7 @@ impl ReviewedOperation {
                     )
                 } else {
                     format!(
-                        "Push {here} to {} · {commits} ahead as last fetched. If {} has commits that {} does not, the push is rejected; GitCrab never force-pushes.",
+                        "Push {here} to {}, {commits} ahead as last fetched. If {} has commits that {} does not, the push is rejected. GitCrab never force-pushes.",
                         network.remote_branch(),
                         network.remote_branch(),
                         network.branch,
@@ -515,15 +512,15 @@ impl Operation {
                 "Applies the reviewed stash and removes it from the stash list. If the changes conflict, the stash is kept and the conflicts remain visible in Working changes."
             }
             Self::Pull { .. } => {
-                "Git contacts the remote using your credential helper or SSH agent; it never prompts in a hidden terminal. You can cancel while it runs. Conflicts remain visible in Working changes."
+                "Git signs in through your credential helper or SSH agent. You can cancel while it runs. Conflicts appear in Working changes."
             }
             Self::Push => {
-                "Git contacts the remote using your credential helper or SSH agent; it never prompts in a hidden terminal. You can cancel while it runs. GitCrab never force-pushes."
+                "Git signs in through your credential helper or SSH agent. You can cancel while it runs. GitCrab never force-pushes."
             }
             Self::Undo | Self::Redo => {
                 "Undo history covers GitCrab's own commits, checkouts, new branches, stashes, merges, cherry-picks and reverts in this tab for this session. GitCrab checks that nothing has changed since, again just before running."
             }
-            _ => "Git checks the target and local changes. Failures remain here for correction.",
+            _ => "Git checks the target and your local changes first. If it fails, the error appears here.",
         }
     }
 }

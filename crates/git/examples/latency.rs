@@ -752,7 +752,7 @@ fn spawn_baseline(repo: &Path) -> Vec<(String, f64)> {
                 assert!(out.status.success());
                 v.push(t.elapsed().as_secs_f64() * 1000.);
             }
-            rows.push((format!("`{}` · {name}", exe.display()), median(v)));
+            rows.push((format!("`{}`, {name}", exe.display()), median(v)));
         }
     }
     rows
@@ -768,7 +768,7 @@ fn report(args: &Args, results: &Results, baseline: &[(String, f64)]) -> String 
     let _ = writeln!(s, "# GitCrab latency: {}\n", args.repo.display());
     let _ = writeln!(
         s,
-        "{tracked} tracked files · {commits} commits · {version} · {} iterations · median values\n",
+        "{tracked} tracked files, {commits} commits, {version}, {} iterations, median values\n",
         args.iterations
     );
     let git_used = std::env::var("GITCRAB_GIT").unwrap_or_else(|_| "first git.exe on PATH".into());
@@ -777,7 +777,7 @@ fn report(args: &Args, results: &Results, baseline: &[(String, f64)]) -> String 
         s,
         "Process baseline: `git rev-parse HEAD` with a plain `Command`, median of 20\n"
     );
-    let _ = writeln!(s, "| executable · creation flags | ms |\n|---|---:|");
+    let _ = writeln!(s, "| executable, creation flags | ms |\n|---|---:|");
     for (name, ms) in baseline {
         let _ = writeln!(s, "| {name} | {ms:.1} |");
     }

@@ -63,7 +63,7 @@ impl RenderOnce for Badge {
             .rounded(px(4.))
             .bg(tint(self.color, 0x18))
             .text_color(rgb(self.color))
-            .text_size(scaled(12.))
+            .text_size(scaled(TEXT_SIZE_SMALL))
             .font_weight(FontWeight::MEDIUM)
             .whitespace_nowrap()
             .when_some(self.width, |badge, width| {

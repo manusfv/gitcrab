@@ -50,3 +50,17 @@ pub(crate) fn apply_style<E: gpui::Styled>(mut el: E, style: &gpui::StyleRefinem
     el.text_style().refine(&text);
     el
 }
+
+/// Key context of the repository view, where most bindings apply.
+pub const KEY_CONTEXT: &str = "GitCrab";
+
+/// The platform's text for the key bound to `action`, such as `Ctrl+O`, for
+/// places that cannot show a key badge.
+pub fn shortcut_text(action: &dyn gpui::Action, window: &gpui::Window) -> Option<String> {
+    use gpui::AsKeystroke as _;
+    let context = gpui::KeyContext::parse(KEY_CONTEXT).ok()?;
+    let binding = window.highest_precedence_binding_for_action_in_context(action, context)?;
+    Some(gpui::component::kbd::Kbd::format(
+        binding.keystrokes().first()?.as_keystroke(),
+    ))
+}

@@ -59,12 +59,14 @@ pub struct WindowSize {
 impl WindowSize {
     pub const MIN_WIDTH: f32 = 960.;
     pub const MIN_HEIGHT: f32 = 600.;
+    /// Largest width or height kept, which drops sizes saved from corrupt state.
+    pub const MAX_DIMENSION: f32 = 16384.;
 
     /// Drops sizes that are not finite and keeps the rest within supported bounds.
     pub fn normalized(self) -> Option<Self> {
         (self.width.is_finite() && self.height.is_finite()).then(|| Self {
-            width: self.width.clamp(Self::MIN_WIDTH, 16384.),
-            height: self.height.clamp(Self::MIN_HEIGHT, 16384.),
+            width: self.width.clamp(Self::MIN_WIDTH, Self::MAX_DIMENSION),
+            height: self.height.clamp(Self::MIN_HEIGHT, Self::MAX_DIMENSION),
             maximized: self.maximized,
         })
     }
@@ -75,11 +77,11 @@ impl Default for Preferences {
         Self {
             compact: false,
             theme: Default::default(),
-            font_size: 13.,
-            nav_width: 210.,
-            inspector_width: 360.,
+            font_size: Self::DEFAULT_FONT_SIZE,
+            nav_width: Self::DEFAULT_NAV_WIDTH,
+            inspector_width: Self::DEFAULT_INSPECTOR_WIDTH,
             split: false,
-            code_size: 13.,
+            code_size: Self::DEFAULT_FONT_SIZE,
             compact_diff: false,
             always_show_file_actions: true,
             collapsed: Default::default(),
@@ -105,13 +107,46 @@ fn clamped(value: f32, min: f32, max: f32, default: f32) -> f32 {
 }
 
 impl Preferences {
+    /// Interface and code text size, in pixels.
+    pub const DEFAULT_FONT_SIZE: f32 = 13.;
+    pub const MIN_FONT_SIZE: f32 = 11.;
+    pub const MAX_FONT_SIZE: f32 = 26.;
+    /// Width of the navigation sidebar, in pixels.
+    pub const DEFAULT_NAV_WIDTH: f32 = 210.;
+    pub const MIN_NAV_WIDTH: f32 = 150.;
+    pub const MAX_NAV_WIDTH: f32 = 330.;
+    /// Width of the inspector, in pixels.
+    pub const DEFAULT_INSPECTOR_WIDTH: f32 = 360.;
+    pub const MIN_INSPECTOR_WIDTH: f32 = 260.;
+    pub const MAX_INSPECTOR_WIDTH: f32 = 560.;
+
     /// Keeps loaded values within supported bounds and tidies lists saved by
     /// older versions.
     pub fn normalize(&mut self) {
-        self.font_size = clamped(self.font_size, 11., 26., 13.);
-        self.nav_width = clamped(self.nav_width, 150., 330., 210.);
-        self.inspector_width = clamped(self.inspector_width, 260., 560., 360.);
-        self.code_size = clamped(self.code_size, 11., 26., 13.);
+        self.font_size = clamped(
+            self.font_size,
+            Self::MIN_FONT_SIZE,
+            Self::MAX_FONT_SIZE,
+            Self::DEFAULT_FONT_SIZE,
+        );
+        self.nav_width = clamped(
+            self.nav_width,
+            Self::MIN_NAV_WIDTH,
+            Self::MAX_NAV_WIDTH,
+            Self::DEFAULT_NAV_WIDTH,
+        );
+        self.inspector_width = clamped(
+            self.inspector_width,
+            Self::MIN_INSPECTOR_WIDTH,
+            Self::MAX_INSPECTOR_WIDTH,
+            Self::DEFAULT_INSPECTOR_WIDTH,
+        );
+        self.code_size = clamped(
+            self.code_size,
+            Self::MIN_FONT_SIZE,
+            Self::MAX_FONT_SIZE,
+            Self::DEFAULT_FONT_SIZE,
+        );
         // Lists saved by older versions may hold several spellings of one folder.
         self.recent = unique_paths(std::mem::take(&mut self.recent));
         self.recent.truncate(MAX_RECENT);

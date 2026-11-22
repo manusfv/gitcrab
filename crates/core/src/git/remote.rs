@@ -100,13 +100,13 @@ impl RemoteState {
     /// Status text for the upstream relationship.
     pub fn context(&self, identity: &WriteIdentity) -> String {
         if identity.symbolic_head.is_empty() {
-            return "Detached HEAD · no upstream".into();
+            return "Detached HEAD has no upstream".into();
         }
         match &self.upstream {
             None => "No upstream configured".into(),
             Some(upstream) if upstream.gone => format!("Upstream {} unavailable", upstream.name),
             Some(upstream) => format!(
-                "{} ahead · {} behind · {}",
+                "{} ahead, {} behind {}",
                 upstream.ahead, upstream.behind, upstream.name
             ),
         }

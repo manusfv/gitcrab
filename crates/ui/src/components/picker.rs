@@ -27,6 +27,7 @@ const DETAIL_ROW_HEIGHT: f32 = 44.;
 /// How far the scrollbar reaches into the popup's own padding, so it does not
 /// add a second gutter inside the list.
 const BAR_BLEED: f32 = 6.;
+const ICON_SIZE: f32 = 14.;
 
 /// One choosable row.
 #[derive(Clone)]
@@ -39,6 +40,8 @@ pub struct PickerItem {
     disabled: bool,
     tooltip: Option<SharedString>,
 }
+
+impl gpui::prelude::FluentBuilder for PickerItem {}
 
 impl PickerItem {
     pub fn new(label: impl Into<SharedString>) -> Self {
@@ -423,7 +426,7 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
                             .px_2()
                             .pt_2()
                             .pb_1()
-                            .text_size(scaled(11.))
+                            .text_size(scaled(TEXT_SIZE_CAPTION))
                             .text_role(Role::TextMuted)
                             .child(text.clone())
                             .into_any_element(),
@@ -451,15 +454,18 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
                             .disabled(it.disabled)
                             .leading(if it.checked {
                                 icon("check")
-                                    .size(px(14.))
+                                    .size(px(ICON_SIZE))
                                     .flex_none()
                                     .text_role(Role::StatusSuccessFg)
                                     .into_any_element()
                             } else if let Some(name) = it.icon {
-                                icon(name).size(px(14.)).flex_none().into_any_element()
+                                icon(name)
+                                    .size(px(ICON_SIZE))
+                                    .flex_none()
+                                    .into_any_element()
                             } else {
                                 // Keeps labels aligned with rows that have an icon.
-                                div().size(px(14.)).flex_none().into_any_element()
+                                div().size(px(ICON_SIZE)).flex_none().into_any_element()
                             })
                             .content(
                                 div()
@@ -477,7 +483,7 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
                                         col.child(
                                             div()
                                                 .truncate()
-                                                .text_size(scaled(11.))
+                                                .text_size(scaled(TEXT_SIZE_CAPTION))
                                                 .text_role(Role::TextMuted)
                                                 .child(detail),
                                         )
@@ -487,7 +493,7 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
                                 row.trailing(
                                     div()
                                         .flex_none()
-                                        .text_size(scaled(11.))
+                                        .text_size(scaled(TEXT_SIZE_CAPTION))
                                         .text_role(Role::TextMuted)
                                         .child(note),
                                 )
@@ -560,8 +566,12 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
                     .when_some(query.clone(), |el, query| {
                         el.child(
                             Input::new(&query)
-                                .h(scaled(32.))
-                                .prefix(icon("search").size(px(14.)).text_role(Role::TextMuted)),
+                                .h(scaled(geometry::SIZE_FIELD_REGULAR))
+                                .prefix(
+                                    icon("search")
+                                        .size(px(ICON_SIZE))
+                                        .text_role(Role::TextMuted),
+                                ),
                         )
                     })
                     .child(
@@ -595,7 +605,7 @@ impl<T: Selectable + IntoElement + 'static> Picker<T> {
 fn muted(text: SharedString) -> Div {
     div()
         .px_2()
-        .text_size(scaled(12.))
+        .text_size(scaled(TEXT_SIZE_SMALL))
         .text_role(Role::TextMuted)
         .child(text)
 }

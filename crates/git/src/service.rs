@@ -688,7 +688,11 @@ impl Session {
         // the snapshot rather than after it.
         let (snapshot, journal) = std::thread::scope(|scope| {
             let journal = scope.spawn(|| journal.lock().unwrap().status(g));
-            let snapshot = g.snapshot_cached(limit.clamp(1, 100_000), mode, history);
+            let snapshot = g.snapshot_cached(
+                limit.clamp(1, gitcrab_core::controller::HISTORY_MAX),
+                mode,
+                history,
+            );
             (snapshot, journal.join())
         });
         let (mut snapshot, graph, _changed) = snapshot?;
@@ -766,7 +770,7 @@ impl Session {
             Action::StageAll { unstage } => {
                 let outcome = g.stage_all(unstage)?;
                 let mut message = format!(
-                    "{} the whole worktree · {} {} changed",
+                    "{} the whole worktree, {} {} changed",
                     if unstage { "Unstaged" } else { "Staged" },
                     outcome.changed,
                     if outcome.changed == 1 {
@@ -777,7 +781,7 @@ impl Session {
                 );
                 if outcome.conflicts > 0 {
                     message.push_str(&format!(
-                        " · {} conflicted {} left for resolution",
+                        ". {} conflicted {} left for resolution",
                         outcome.conflicts,
                         if outcome.conflicts == 1 {
                             "path"
@@ -847,10 +851,7 @@ impl Session {
                     .ok_or("Hunk no longer exists")?
                     .materialize(&patch.source);
                 g.discard_hunk(&patch.path, &hunk)?;
-                let message = format!(
-                    "Discarded working-copy hunk in {}. Index and HEAD verified unchanged.",
-                    patch.path
-                );
+                let message = format!("Discarded a hunk in {}.", patch.path);
                 let path = patch.path.clone();
                 return Ok(self.index_done(message, Some((path, false)), sequence));
             }
@@ -903,7 +904,7 @@ impl Session {
                 )?;
                 g.discard_hunk(&patch.path, &partial)?;
                 let message = format!(
-                    "Discarded selected working-copy lines in {}. Index and HEAD verified unchanged.",
+                    "Discarded the selected lines in {}.",
                     crate::git::display_path(&patch.path)
                 );
                 let path = patch.path.clone();

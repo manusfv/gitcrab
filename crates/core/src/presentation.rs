@@ -2,6 +2,8 @@
 //!
 //! These functions are independent of the UI toolkit so their policy is unit tested.
 
+use crate::design_tokens::geometry;
+
 /// Formats a filesystem path for people to read.
 ///
 /// Windows verbatim prefixes (`\\?\C:\…` and `\\?\UNC\server\share\…`) are
@@ -14,6 +16,16 @@ pub fn display_path(path: &str) -> String {
     } else {
         path.to_owned()
     }
+}
+
+/// Characters of an object id shown where a commit is named in passing.
+pub const SHORT_ID_LEN: usize = 8;
+
+/// The abbreviated form of an object id, as in `git log --oneline`.
+pub fn short_id(id: &str) -> &str {
+    id.char_indices()
+        .nth(SHORT_ID_LEN)
+        .map_or(id, |(end, _)| &id[..end])
 }
 
 fn components(path: &str) -> Vec<&str> {
@@ -141,7 +153,7 @@ pub fn search_status(
     );
     if matches.is_empty() {
         return if more_available {
-            format!("No matches in {scope}. Load more to search further.")
+            format!("No matches in {scope}. Search older commits to keep looking.")
         } else {
             format!("No matches in {scope}")
         };
@@ -219,6 +231,15 @@ const TOOLBAR_GAP: f32 = 4.;
 const TOOLBAR_SEPARATOR: f32 = 17.;
 /// Clear space kept between the centred actions and the controls beside them.
 const TOOLBAR_CLEARANCE: f32 = 16.;
+/// Width of the menu caret beside the Pull action.
+pub const TOOLBAR_CARET: f32 = 12.;
+/// Search field width, and the least it gets as a share of a narrow toolbar.
+const SEARCH_WIDTH: f32 = 200.;
+const SEARCH_MIN_WIDTH: f32 = 140.;
+const SEARCH_MAX_SHARE: f32 = 0.25;
+/// Width of each selector when there is room, and the least it may shrink to.
+const SELECTOR_WIDTH: f32 = 176.;
+const SELECTOR_MIN_WIDTH: f32 = 112.;
 
 /// Width of a group of `commands` toolbar actions, one of which has a menu caret.
 pub fn toolbar_actions_width(scale: f32, commands: usize, labels: bool) -> f32 {
@@ -226,8 +247,12 @@ pub fn toolbar_actions_width(scale: f32, commands: usize, labels: bool) -> f32 {
         return 0.;
     }
     let scale = scale.max(0.5);
-    let command = if labels { 46. } else { 32. } * scale;
-    let caret = 12. * scale;
+    let command = if labels {
+        geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_WIDTH
+    } else {
+        geometry::SIZE_TARGET_REGULAR
+    } * scale;
+    let caret = TOOLBAR_CARET * scale;
     commands as f32 * command + (commands - 1) as f32 * TOOLBAR_GAP + caret
 }
 
@@ -241,10 +266,11 @@ pub fn toolbar_actions_width(scale: f32, commands: usize, labels: bool) -> f32 {
 /// action stays visible.
 pub fn toolbar_layout(width: f32, scale: f32, commands: usize, right_extra: f32) -> ToolbarLayout {
     let scale = scale.max(0.5);
-    let search_width = (200. * scale.min(1.5)).min((width * 0.25).max(140.));
+    let search_width =
+        (SEARCH_WIDTH * scale.min(1.5)).min((width * SEARCH_MAX_SHARE).max(SEARCH_MIN_WIDTH));
     let right = search_width + right_extra.max(0.);
-    let preferred = 176. * scale;
-    let minimum = (112. * scale.min(1.6)).min(preferred);
+    let preferred = SELECTOR_WIDTH * scale;
+    let minimum = (SELECTOR_MIN_WIDTH * scale.min(1.6)).min(preferred);
     // Two selectors, the gap between them and the separator after the
     // repository selector.
     let selectors_fixed = TOOLBAR_SEPARATOR + 2. * TOOLBAR_GAP;
@@ -338,13 +364,17 @@ pub fn failure_heading(action: &str, kind: crate::git::FailureKind) -> String {
     }
 }
 
+pub const SECS_PER_MINUTE: u64 = 60;
+pub const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
+pub const SECS_PER_DAY: u64 = 24 * SECS_PER_HOUR;
+
 /// Short relative time for activity records, from elapsed seconds.
 pub fn elapsed_label(seconds: u64) -> String {
     match seconds {
         0..=9 => "just now".into(),
-        10..=59 => format!("{seconds} s ago"),
-        60..=3599 => format!("{} min ago", seconds / 60),
-        _ => format!("{} h ago", seconds / 3600),
+        10..SECS_PER_MINUTE => format!("{seconds} s ago"),
+        SECS_PER_MINUTE..SECS_PER_HOUR => format!("{} min ago", seconds / SECS_PER_MINUTE),
+        _ => format!("{} h ago", seconds / SECS_PER_HOUR),
     }
 }
 
@@ -362,8 +392,8 @@ impl Decoration {
     pub fn label(&self) -> String {
         use crate::git::ReferenceKind;
         match (self.kind, self.target.as_ref().map(|t| t.0)) {
-            (DecorationKind::HeadBranch, _) => format!("{} · HEAD, checked out", self.name),
-            (DecorationKind::Head, _) => "HEAD · detached".into(),
+            (DecorationKind::HeadBranch, _) => format!("{} (checked out)", self.name),
+            (DecorationKind::Head, _) => "Detached HEAD".into(),
             (DecorationKind::Tag, _) => format!("Tag {}", self.name),
             (_, Some(ReferenceKind::Remote)) => format!("Remote {}", self.name),
             _ => format!("Branch {}", self.name),
@@ -443,6 +473,16 @@ fn resolve_decoration(snapshot: &crate::git::RepoSnapshot, label: &str) -> Decor
         name: name.to_owned(),
         target,
     }
+}
+
+/// Summary length Git tools display without truncating. Longer summaries are
+/// still valid.
+pub const SUMMARY_RECOMMENDED_CHARS: usize = 72;
+
+/// Characters left before `summary` passes [`SUMMARY_RECOMMENDED_CHARS`],
+/// negative once it does.
+pub fn summary_chars_left(summary: &str) -> isize {
+    SUMMARY_RECOMMENDED_CHARS as isize - summary.chars().count() as isize
 }
 
 /// Joins a commit summary and body the way Git stores the message.
@@ -612,7 +652,7 @@ mod tests {
             resolved[0].target,
             Some((ReferenceKind::LocalBranch, "main".into()))
         );
-        assert_eq!(resolved[0].label(), "main · HEAD, checked out");
+        assert_eq!(resolved[0].label(), "main (checked out)");
 
         // A branch disambiguated from a same-named tag is still merged.
         let refs = ["HEAD", "heads/main", "tag: main"].map(String::from);
@@ -636,7 +676,7 @@ mod tests {
         snapshot.reviewed.as_mut().unwrap().symbolic_head.clear();
         let detached = resolve_decorations(&snapshot, &refs[..1]);
         assert_eq!(detached[0].kind, DecorationKind::Head);
-        assert_eq!(detached[0].label(), "HEAD · detached");
+        assert_eq!(detached[0].label(), "Detached HEAD");
     }
 
     #[test]
@@ -662,7 +702,7 @@ mod tests {
             resolved[0].target,
             Some((ReferenceKind::LocalBranch, "main".into()))
         );
-        assert_eq!(resolved[0].label(), "main · HEAD, checked out");
+        assert_eq!(resolved[0].label(), "main (checked out)");
         assert_eq!(resolved[1].label(), "Remote origin/main");
         assert_eq!(
             resolved[2].target,
@@ -804,7 +844,7 @@ mod tests {
         );
         assert_eq!(
             search_status(&[], None, 1, true),
-            "No matches in 1 loaded commit. Load more to search further."
+            "No matches in 1 loaded commit. Search older commits to keep looking."
         );
         assert_eq!(
             search_status(&[], None, 7, false),

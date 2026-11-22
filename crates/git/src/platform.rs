@@ -108,6 +108,9 @@ fn skip_windows_launcher(launcher: &Path) -> Option<ReadGit> {
     })
 }
 
+/// Oldest Git release GitCrab runs, as (major, minor).
+const MIN_GIT_VERSION: (u32, u32) = (2, 43);
+
 fn supported_git_version(output: &str) -> bool {
     let mut version = output
         .strip_prefix("git version ")
@@ -118,7 +121,7 @@ fn supported_git_version(output: &str) -> bool {
         version.next().and_then(|n| n.parse::<u32>().ok()),
         version.next().and_then(|n| n.parse::<u32>().ok()),
     ) {
-        (Some(major), Some(minor)) => (major, minor) >= (2, 43),
+        (Some(major), Some(minor)) => (major, minor) >= MIN_GIT_VERSION,
         _ => false,
     }
 }

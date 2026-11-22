@@ -892,7 +892,7 @@ fn checked_out_branch_is_the_primary_decoration_among_shared_refs() {
     assert_eq!(
         labels,
         [
-            format!("{branch} · HEAD, checked out"),
+            format!("{branch} (checked out)"),
             "Branch feature/a".into(),
             "Branch feature/b".into(),
             "Tag v1".into(),
@@ -1108,7 +1108,7 @@ fn detached_and_unborn_snapshots_explain_commit_routes() {
     let git = &fixture.git;
     fixture.write("first.txt", "first\n");
     let unborn = git.snapshot(10).unwrap();
-    assert_eq!(unborn.head_label(), "main · no commits");
+    assert_eq!(unborn.head_label(), "main (no commits)");
     assert!(!unborn.is_detached());
     git.stage("first.txt").unwrap();
     assert_eq!(git.snapshot(10).unwrap().commit_blocker(), None);
