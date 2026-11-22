@@ -75,69 +75,131 @@ impl Render for DraggedTab {
     }
 }
 
-fn tab_chrome(selected: bool) -> Div {
+/// Repository tab metrics, after VS Code's editor tabs.
+const TAB_LABEL_MAX_WIDTH: f32 = 170.;
+const TAB_LABEL_PAD_LEFT: f32 = 12.;
+const TAB_LABEL_PAD_RIGHT: f32 = 4.;
+const TAB_TEXT_SIZE: f32 = 13.;
+const TAB_CLOSE_SIZE: f32 = 20.;
+const TAB_CLOSE_GLYPH: f32 = 16.;
+const TAB_CLOSE_MARGIN_RIGHT: f32 = 6.;
+const TAB_UNREAD_DOT: f32 = 8.;
+/// Height of the accent line along the active tab's top edge.
+const TAB_ACCENT: f32 = 1.;
+/// Room kept at the end of the strip so the last tab never touches the buttons.
+const TAB_STRIP_END_MIN: f32 = 8.;
+const TAB_STRIP_BUTTON: f32 = 28.;
+/// Tabs sit flush, so a drag places them with no gap between neighbours.
+const TAB_DRAG_GAP: f32 = 0.;
+const TAB_PICKER_WIDTH: f32 = 280.;
+
+/// A tab in the strip. The active tab takes the toolbar's surface and has no
+/// bottom edge, so it reads as part of the content below; the others sit on
+/// the strip and only light up on hover.
+fn tab_chrome(selected: bool, group: SharedString) -> Div {
     div()
         .relative()
         .flex_none()
         .flex()
         .items_center()
-        .rounded(px(4.))
-        .border_b_1()
-        .border_role(if selected {
-            Role::ActionPrimary
-        } else {
-            Role::SurfaceChrome
-        })
-        .bg_role(if selected {
-            Role::SurfaceOverlay
-        } else {
-            Role::SurfaceChrome
+        .h_full()
+        .group(group)
+        .border_r_1()
+        .border_role(Role::BorderDivider)
+        .map(|tab| {
+            if selected {
+                tab.bg_role(Role::SurfaceChrome)
+                    .text_role(Role::TextDefault)
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(TAB_ACCENT))
+                            .bg_role(Role::ActionPrimary),
+                    )
+            } else {
+                tab.bg_role(Role::SurfaceCanvas)
+                    .text_role(Role::TextMuted)
+                    .border_b_1()
+                    .hover(|s| {
+                        s.bg_role(Role::InteractionHover)
+                            .text_role(Role::TextSecondary)
+                    })
+            }
         })
 }
 
 /// The tab's name. It is part of the tab, which handles clicks, drags and focus.
 fn tab_label(label: String) -> Div {
     div()
-        .h(scaled(28.))
-        .pl(scaled(10.))
-        .pr(scaled(2.))
+        .pl(scaled(TAB_LABEL_PAD_LEFT))
+        .pr(scaled(TAB_LABEL_PAD_RIGHT))
         .flex()
         .items_center()
         .child(
             div()
-                .max_w(px(170.))
+                .max_w(px(TAB_LABEL_MAX_WIDTH))
                 .truncate()
-                .text_size(scaled(14.))
-                .line_height(scaled(20.))
+                .text_size(scaled(TAB_TEXT_SIZE))
                 .child(label),
         )
 }
 
-/// The tab's close mark. It is not a separate focus stop: the tab is one control.
-fn tab_close(id: impl Into<ElementId>, enabled: bool) -> Stateful<Div> {
+/// The tab's close button. It is not a separate focus stop: the tab is one
+/// control. The active tab always shows it; the others show it on hover. A
+/// tab with an unseen result shows a dot in its place until hovered.
+fn tab_close(
+    id: impl Into<ElementId>,
+    group: SharedString,
+    enabled: bool,
+    selected: bool,
+    unread: bool,
+) -> Stateful<Div> {
+    let on_hover_only = unread || !selected;
     div()
         .id(id)
+        .relative()
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .w(scaled(24.))
-        .h(scaled(24.))
-        .mr(scaled(4.))
-        .rounded(px(4.))
-        .text_size(scaled(16.))
-        .line_height(scaled(16.))
+        .size(scaled(TAB_CLOSE_SIZE))
+        .mr(scaled(TAB_CLOSE_MARGIN_RIGHT))
+        .rounded(px(CONTROL_RADIUS))
         .map(|el| {
             if enabled {
-                el.text_role(Role::TextSecondary).hover(|s| {
-                    s.bg_role(Role::InteractionHover)
+                el.hover(|s| {
+                    s.bg_role(Role::InteractionPressed)
                         .text_role(Role::TextDefault)
                 })
+                .tooltip(|w, cx| Tooltip::new("Close").action(&CloseTab, None).build(w, cx))
             } else {
                 el.text_role(Role::TextDisabled)
             }
         })
-        .child("×")
+        .child(
+            div()
+                .flex_none()
+                .size(scaled(TAB_CLOSE_GLYPH))
+                .when(on_hover_only, |glyph| {
+                    glyph
+                        .invisible()
+                        .group_hover(group.clone(), |s| s.visible())
+                })
+                .child(icon("x").size(scaled(TAB_CLOSE_GLYPH))),
+        )
+        .when(unread, |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .size(scaled(TAB_UNREAD_DOT))
+                    .rounded_full()
+                    .bg_role(Role::TextSecondary)
+                    .group_hover(group, |s| s.invisible()),
+            )
+        })
 }
 
 /// The window's repository tabs and their shared open and close actions.
@@ -903,9 +965,8 @@ impl Render for Workspace {
             .id("repository-tabs")
             .flex_1()
             .min_w_0()
+            .h_full()
             .flex()
-            .items_center()
-            .gap(px(4.))
             .overflow_x_scroll()
             .track_scroll(&self.scroll)
             .on_drag_move(
@@ -959,29 +1020,29 @@ impl Render for Workspace {
             let focus = self.tab_focus[&tab_id].clone();
 
             let tab = entity.read(cx);
-            let (mut label, tooltip) = tab_labels[index].clone();
-            if tab.unread_result() {
-                label = format!("● {label}");
-            }
+            let (label, tooltip) = tab_labels[index].clone();
+            let unread = tab.unread_result();
             let selected = index == self.active;
+            let group = SharedString::from(format!("repository-tab-{tab_id}"));
             let closable = !blocked && !tab.mutating();
             // The name, close mark and padding form one tab: it takes the
             // focus, drags and clicks as a whole, like a browser tab.
             strip = strip.child(components::rail::item(
-                tab_chrome(selected)
+                tab_chrome(selected, group.clone())
                     .id(("repository-tab", tab_id))
                     .track_focus(&focus)
-                    .when(focus.is_focused(window), |el| {
-                        // One ring around the whole tab.
-                        el.child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .rounded(px(4.))
-                                .border_2()
-                                .border_role(Role::InteractionFocus),
-                        )
-                    })
+                    .when(
+                        focus.is_focused(window) && window.last_input_was_keyboard(),
+                        |el| {
+                            el.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .border_1()
+                                    .border_role(Role::InteractionFocus),
+                            )
+                        },
+                    )
                     .tooltip({
                         let tooltip = tooltip.clone();
                         move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx)
@@ -1025,8 +1086,12 @@ impl Render for Workspace {
                                         .filter(|(id, _)| *id == tab_id)
                                         .map(|(_, x)| x)
                                         .unwrap_or(w.mouse_position().x);
-                                    v.tab_drag =
-                                        RailDrag::new(&bounds.borrow(), tab_id, pointer, 4.);
+                                    v.tab_drag = RailDrag::new(
+                                        &bounds.borrow(),
+                                        tab_id,
+                                        pointer,
+                                        TAB_DRAG_GAP,
+                                    );
                                     v.move_tab_drag(w.mouse_position().x, cx);
                                 });
                                 cx.stop_propagation();
@@ -1065,19 +1130,21 @@ impl Render for Workspace {
                             .when(blocked, |el| el.text_role(Role::TextDisabled)),
                     )
                     .child(
-                        tab_close(("close-repository-tab", tab_id), closable)
-                            .tooltip({
-                                let text = format!("Close {label} tab");
-                                move |w, cx| Tooltip::new(text.clone()).build(w, cx)
-                            })
-                            .on_click(cx.listener(move |v, _, w, cx| {
-                                // The close mark acts alone; the tab's own
-                                // click would select a tab that is closing.
-                                cx.stop_propagation();
-                                if !cx.has_active_drag() {
-                                    v.close(index, w, cx);
-                                }
-                            })),
+                        tab_close(
+                            ("close-repository-tab", tab_id),
+                            group,
+                            closable,
+                            selected,
+                            unread,
+                        )
+                        .on_click(cx.listener(move |v, _, w, cx| {
+                            // The close mark acts alone; the tab's own
+                            // click would select a tab that is closing.
+                            cx.stop_propagation();
+                            if !cx.has_active_drag() {
+                                v.close(index, w, cx);
+                            }
+                        })),
                     ),
                 self.tab_drag.as_ref(),
                 tab_id,
@@ -1088,8 +1155,9 @@ impl Render for Workspace {
             div()
                 .id("repository-tabs-end")
                 .flex_1()
-                .min_w(scaled(8.))
-                .h(scaled(28.)),
+                .min_w(scaled(TAB_STRIP_END_MIN))
+                .border_b_1()
+                .border_role(Role::BorderDivider),
         );
         // New tab and the tab list stay outside the scrolling strip so they
         // remain reachable however many tabs are open.
@@ -1097,8 +1165,7 @@ impl Render for Workspace {
             .ghost()
             .small()
             .tab_stop(true)
-            .w(scaled(28.))
-            .h(scaled(28.))
+            .size(scaled(TAB_STRIP_BUTTON))
             .px(scaled(4.))
             .child(
                 div()
@@ -1152,12 +1219,12 @@ impl Render for Workspace {
                     .ghost()
                     .small()
                     .tab_stop(true)
-                    .h(scaled(28.))
+                    .h(scaled(TAB_STRIP_BUTTON))
                     .icon(icon("down"))
                     .label(format!("{tab_count}"))
                     .set_disabled(blocked)
                     .tooltip("All tabs"),
-                px(280.),
+                px(TAB_PICKER_WIDTH),
                 &tab_focus,
                 move |index, w, cx| {
                     if index < tab_count {
@@ -1217,16 +1284,21 @@ impl Render for Workspace {
                 div()
                     .flex()
                     .flex_none()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
                     .h(px(geometry::SIZE_SHELL_TAB_STRIP))
-                    .bg_role(Role::SurfaceChrome)
-                    .border_b_1()
-                    .border_role(Role::BorderDivider)
+                    .bg_role(Role::SurfaceCanvas)
                     .child(strip)
-                    .child(new_tab)
-                    .child(tab_list),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .border_b_1()
+                            .border_role(Role::BorderDivider)
+                            .child(new_tab)
+                            .child(tab_list),
+                    ),
             )
             .when_some(update, |el, update| el.child(update_notice(update, cx)))
             .when_some(self.picker_error.clone(), |el, error| {
