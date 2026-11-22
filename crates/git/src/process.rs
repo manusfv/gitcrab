@@ -84,6 +84,8 @@ pub mod trace {
 const STDOUT_BYTES: usize = 32 * 1024 * 1024;
 const STDERR_BYTES: usize = 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a running Git process is checked for exit and cancellation.
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Cancellation flag and deadline shared by the subprocesses in one read request.
 ///
@@ -287,7 +289,7 @@ fn wait(
             let _ = child.wait();
             return Err(error);
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(EXIT_POLL_INTERVAL);
     }
 }
 

@@ -18,7 +18,8 @@ use gitcrab_core::{
     controller::{Controller, Lane, RefreshPlan, Seek, HISTORY_MAX},
     git::ReferenceKind,
     presentation::{
-        compose_message, display_date, display_path, path_labels, split_message, ToolbarActions,
+        compose_message, display_date, display_path, path_labels, short_id, split_message,
+        ToolbarActions,
     },
     service::{
         Action, Failure, GitBackend, GitWorker, Operation, ReadKind, Request, Response,
@@ -72,6 +73,39 @@ const GRAPH_STICKY_PAD: f32 = 8.;
 const GRAPH_PINNED_NODE_ALPHA: u8 = 0x8c;
 /// Width of the shade over a graph edge that hides scrolled-out lanes.
 const GRAPH_EDGE_SHADE: f32 = 18.;
+
+/// Estimated advance of a code character, as a share of the code size.
+const CODE_CHAR_WIDTH: f32 = 0.65;
+/// Diff gutter columns at [`BASE_CODE_SIZE`]: line numbers (one in Split, old
+/// and new in Unified) and the change marker.
+const DIFF_SPLIT_NUMBER_WIDTH: f32 = 45.;
+const DIFF_UNIFIED_NUMBER_WIDTH: f32 = 90.;
+const DIFF_MARKER_WIDTH: f32 = 9.;
+const DIFF_SPLIT_GUTTER: f32 = DIFF_SPLIT_NUMBER_WIDTH + DIFF_MARKER_WIDTH;
+/// Each Split side's padding on both edges, and the two gaps between its columns.
+const DIFF_SIDE_PADDING: f32 = 16.;
+const DIFF_SIDE_GAPS: f32 = 16.;
+
+/// Window widths, at the default font size, below which the layout folds:
+/// to a single pane (plus the rail), and the sidebar to an icon rail. The
+/// rail width keeps the full sidebar at typical half-screen windows while
+/// still leaving the history about 400 px next to the inspector.
+const SINGLE_PANE_BELOW: f32 = 648.;
+const RAIL_BELOW: f32 = 1000.;
+const INSPECTOR_EDITOR_MIN_WIDTH: f32 = 100.;
+/// Toolbar room estimates, at the default font size, for the search status
+/// text per character and for the Load more button.
+const SEARCH_STATUS_CHAR_WIDTH: f32 = 6.5;
+const LOAD_MORE_WIDTH: f32 = 150.;
+const TOOLBAR_ITEM_GAP: f32 = 4.;
+/// The repository picker is never narrower than this, however narrow its selector.
+const REPOSITORY_PICKER_MIN_WIDTH: f32 = 320.;
+/// Distance of the new-tab page's floating controls from the window corners.
+const PAGE_CORNER_INSET: f32 = 16.;
+/// Most activity records kept.
+const ACTIVITY_LIMIT: usize = 50;
+/// Quiet time after the last preference change before it is saved.
+const PREFERENCE_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 fn local_author_images() -> std::collections::HashMap<String, std::path::PathBuf> {
     let Some(directory) = std::env::var_os("GITCRAB_AVATAR_DIR") else {
@@ -959,7 +993,7 @@ impl GitCrab {
                 failure,
                 details: summary.clone(),
             });
-            self.activity.truncate(50);
+            self.activity.truncate(ACTIVITY_LIMIT);
             self.unread_result = !self.active;
             self.own_write = true;
             mutation_ok = Some(failure.is_none());
@@ -1111,9 +1145,7 @@ impl GitCrab {
         if self.settings_open {
             self.appearance_status = AppearanceStatus::Saving(0);
         }
-        let timer = cx
-            .background_executor()
-            .timer(std::time::Duration::from_millis(200));
+        let timer = cx.background_executor().timer(PREFERENCE_SAVE_DELAY);
         self.preference_save = Some(cx.spawn_in(window, async move |view, cx| {
             timer.await;
             let _ = view.update_in(cx, |v, _, cx| {
@@ -1253,8 +1285,8 @@ impl GitCrab {
     }
     fn inspector_editor_width(&self) -> f32 {
         (self.actual_inspector_width[usize::from(self.state.diff_context.is_some())]
-            - (2. * INSPECTOR_INSET * self.preferences.font_size / 13. + SEAM))
-            .max(100.)
+            - (2. * INSPECTOR_INSET * self.preferences.font_size / BASE_FONT_SIZE + SEAM))
+            .max(INSPECTOR_EDITOR_MIN_WIDTH)
     }
     fn search_step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_open || window.has_active_dialog(cx) {
@@ -1858,14 +1890,13 @@ impl GitCrab {
             .ghost()
             .tab_stop(true)
             .cursor_pointer()
-            .h(scaled(42.))
-            .w(px(12. * ui_scale.max(0.5)))
-            .px_0()
-            .child(icon("down").size(px(10.)))
-            .tooltip(format!(
-                "Fetch and pull options · {}",
-                self.command_tooltip(Command::Fetch, commands)
+            .h(scaled(geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_HEIGHT))
+            .w(px(
+                gitcrab_core::presentation::TOOLBAR_CARET * ui_scale.max(0.5)
             ))
+            .px_0()
+            .child(icon("down").size(px(CARET_SIZE)))
+            .tooltip("Fetch and pull options")
             .dropdown_menu(move |menu, _, _| {
                 let fetch_view = weak.clone();
                 let mut menu = menu.item(components::menu_item("Fetch", fetch).on_click(
@@ -1929,12 +1960,13 @@ impl GitCrab {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_secs();
+        use gitcrab_core::presentation::{SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MINUTE};
         let ago = now.saturating_sub(fetched);
         Some(match ago {
-            0..60 => "Fetched just now".into(),
-            60..3600 => format!("Fetched {} min ago", ago / 60),
-            3600..86400 => format!("Fetched {} h ago", ago / 3600),
-            _ => format!("Fetched {} d ago", ago / 86400),
+            0..SECS_PER_MINUTE => "Fetched just now".into(),
+            SECS_PER_MINUTE..SECS_PER_HOUR => format!("Fetched {} min ago", ago / SECS_PER_MINUTE),
+            SECS_PER_HOUR..SECS_PER_DAY => format!("Fetched {} h ago", ago / SECS_PER_HOUR),
+            _ => format!("Fetched {} d ago", ago / SECS_PER_DAY),
         })
     }
 
@@ -2021,7 +2053,7 @@ impl GitCrab {
                                             row.child(
                                                 div()
                                                     .font_family(CODE_FONT)
-                                                    .text_size(scaled(12.))
+                                                    .text_size(scaled(TEXT_SIZE_SMALL))
                                                     .text_role(Role::TextSecondary)
                                                     .child(target),
                                             )
@@ -2031,8 +2063,8 @@ impl GitCrab {
                                 .when(!r.details.is_empty(), |column| {
                                     column.child(
                                         div()
-                                            .text_size(scaled(12.))
-                                            .line_height(relative(1.45))
+                                            .text_size(scaled(TEXT_SIZE_SMALL))
+                                            .line_height(relative(PROSE_LINE_HEIGHT))
                                             .text_role(Role::TextSecondary)
                                             .child(r.details.clone()),
                                     )
@@ -2046,7 +2078,7 @@ impl GitCrab {
                                 .gap(scaled(4.))
                                 .child(
                                     div()
-                                        .text_size(scaled(12.))
+                                        .text_size(scaled(TEXT_SIZE_SMALL))
                                         .text_role(Role::TextMuted)
                                         .child(gitcrab_core::presentation::elapsed_label(
                                             r.at.elapsed().as_secs(),
@@ -2059,7 +2091,7 @@ impl GitCrab {
                                             .ghost(),
                                         ControlSize::Compact,
                                     )
-                                    .w(scaled(28.))
+                                    .w(scaled(geometry::SIZE_TARGET_COMPACT))
                                     .px_0()
                                     .mt(scaled(-4.))
                                     .tab_stop(true)
@@ -2550,7 +2582,9 @@ impl GitCrab {
                                                                     .overflow_hidden()
                                                                     .text_ellipsis()
                                                                     .line_clamp(1)
-                                                                    .text_size(scaled(11.))
+                                                                    .text_size(scaled(
+                                                                        TEXT_SIZE_CAPTION,
+                                                                    ))
                                                                     .text_role(Role::TextMuted)
                                                                     .child(label.location),
                                                             ),
@@ -2572,7 +2606,7 @@ impl GitCrab {
                             .child(
                                 div()
                                     .pt_1()
-                                    .text_size(scaled(11.))
+                                    .text_size(scaled(TEXT_SIZE_CAPTION))
                                     .text_role(Role::TextMuted)
                                     .child(SESSION_NOTE),
                             ),
@@ -2580,13 +2614,17 @@ impl GitCrab {
                 })
             })
             .child(
-                div().absolute().left(px(16.)).bottom(px(16.)).child(
-                    self.button("new-tab-appearance", "Appearance")
-                        .icon(icon("settings"))
-                        .on_click(cx.listener(|v, _, w, cx| {
-                            v.open_settings(w, cx);
-                        })),
-                ),
+                div()
+                    .absolute()
+                    .left(px(PAGE_CORNER_INSET))
+                    .bottom(px(PAGE_CORNER_INSET))
+                    .child(
+                        self.button("new-tab-appearance", "Appearance")
+                            .icon(icon("settings"))
+                            .on_click(cx.listener(|v, _, w, cx| {
+                                v.open_settings(w, cx);
+                            })),
+                    ),
             )
             .when_some(notice, |el, (path, details)| {
                 let name = std::path::Path::new(path)
@@ -2601,8 +2639,8 @@ impl GitCrab {
                 el.child(
                     div()
                         .absolute()
-                        .top(px(16.))
-                        .right(px(16.))
+                        .top(px(PAGE_CORNER_INSET))
+                        .right(px(PAGE_CORNER_INSET))
                         .w(px(380.))
                         .p_3()
                         .rounded(px(8.))
@@ -2662,7 +2700,7 @@ impl GitCrab {
                                 div()
                                     .overflow_hidden()
                                     .truncate()
-                                    .text_size(scaled(12.))
+                                    .text_size(scaled(TEXT_SIZE_SMALL))
                                     .child(name),
                             )
                         })
@@ -2673,7 +2711,7 @@ impl GitCrab {
                                 div()
                                     .id("open-failure-details")
                                     .max_h(px(80.))
-                                    .text_size(scaled(12.))
+                                    .text_size(scaled(TEXT_SIZE_SMALL))
                                     .text_role(Role::TextSecondary)
                                     .child(details.to_owned()),
                             )
@@ -2709,12 +2747,10 @@ impl Render for GitCrab {
             self.diff_matches.clear();
             self.diff_match = None;
         }
-        let ui_scale = self.preferences.font_size / 13.;
-        let single_pane = f32::from(window.viewport_size().width) < 648. * ui_scale + 44.;
-        // Below this width the sidebar folds into an icon rail. 1000 keeps the
-        // full sidebar at typical half-screen windows while
-        // still leaving the history about 400 px next to the inspector.
-        let rail = in_diff || f32::from(window.viewport_size().width) < 1000. * ui_scale;
+        let ui_scale = self.preferences.font_size / BASE_FONT_SIZE;
+        let single_pane = f32::from(window.viewport_size().width)
+            < SINGLE_PANE_BELOW * ui_scale + geometry::SIZE_SHELL_RAIL;
+        let rail = in_diff || f32::from(window.viewport_size().width) < RAIL_BELOW * ui_scale;
         let viewport_width = f32::from(window.viewport_size().width);
         self.single_pane = single_pane;
         // The inspector can be hidden while reviewing a diff to give it room.
@@ -2722,7 +2758,7 @@ impl Render for GitCrab {
         self.history_available = if single_pane {
             viewport_width
         } else if collapsed {
-            viewport_width - 44. - SEAM
+            viewport_width - geometry::SIZE_SHELL_RAIL - SEAM
         } else {
             let inspector = match self.actual_inspector_width[usize::from(rail)] {
                 width if width > 0. => width,
@@ -2730,7 +2766,7 @@ impl Render for GitCrab {
             };
             viewport_width
                 - if rail {
-                    44.
+                    geometry::SIZE_SHELL_RAIL
                 } else {
                     self.preferences.nav_width
                 }
@@ -2739,15 +2775,15 @@ impl Render for GitCrab {
         };
         // Split shows both sides only when each can show its lines; otherwise
         // the diff falls back to Unified and says so.
-        let code_scale = self.preferences.code_size / 12.;
+        let code_scale = self.preferences.code_size / BASE_CODE_SIZE;
         let split_active = self.split
             && self.state.patch.as_ref().is_some_and(|patch| {
                 patch.preview.has_layout()
                     && gitcrab_core::presentation::split_fits(
                         self.history_available,
                         patch.content.columns,
-                        self.preferences.code_size * 0.65,
-                        54. * code_scale + 32.,
+                        self.preferences.code_size * CODE_CHAR_WIDTH,
+                        DIFF_SPLIT_GUTTER * code_scale + (DIFF_SIDE_PADDING + DIFF_SIDE_GAPS),
                     )
             });
         if split_active != self.split_active {
@@ -2829,13 +2865,15 @@ impl Render for GitCrab {
         // Appearance button, match navigation while searching and, in the
         // single-pane layout, References. Single-pane widths never centre the
         // actions, so References can be counted on this side too.
-        let icon_slot = CONTROL_HEIGHT * ui_scale + 4.;
+        let icon_slot = CONTROL_HEIGHT * ui_scale + TOOLBAR_ITEM_GAP;
         let toolbar_extra = icon_slot
             + search_status.as_ref().map_or(0., |status| {
-                status.chars().count() as f32 * 6.5 * ui_scale + 4. + 2. * icon_slot
+                status.chars().count() as f32 * SEARCH_STATUS_CHAR_WIDTH * ui_scale
+                    + TOOLBAR_ITEM_GAP
+                    + 2. * icon_slot
             })
             + if load_more_offered {
-                150. * ui_scale
+                LOAD_MORE_WIDTH * ui_scale
             } else {
                 0.
             }
@@ -2847,7 +2885,7 @@ impl Render for GitCrab {
             toolbar_extra,
         );
         let selector_width = px(layout.selector_width);
-        let selector_height = type_size(cx, 42.);
+        let selector_height = type_size(cx, geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_HEIGHT);
         let labelled = layout.labels();
         // Undo, Redo, Pull, Push, Branch, Stash, Pop. Each stays visible and
         // is disabled with its reason when it cannot run.
@@ -2976,7 +3014,7 @@ impl Render for GitCrab {
                         display_path(&self.state.path)
                     ))
                     .set_disabled(self.state.blocking_write()),
-                    selector_width.max(px(320.)),
+                    selector_width.max(px(REPOSITORY_PICKER_MIN_WIDTH)),
                     &menu_focus,
                     // Dispatch from this view's own focus node, as the old menu's
                     // action context did, so it does not depend on where focus
@@ -3010,7 +3048,7 @@ impl Render for GitCrab {
                     .w(px(layout.search_width))
                     .child(self.editor(
                         &self.search,
-                        32.,
+                        geometry::SIZE_FIELD_REGULAR,
                         layout.search_width,
                         "Search history…",
                         cx,
@@ -3019,7 +3057,7 @@ impl Render for GitCrab {
             .when_some(search_status, |bar, status| {
                 bar.child(
                     div()
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_role(Role::TextMuted)
                         .child(status),
                 )
@@ -3083,10 +3121,15 @@ impl Render for GitCrab {
                             let sizes = state.read(cx).sizes();
                             if sizes.len() == 3 {
                                 if !rail {
-                                    v.preferences.nav_width = f32::from(sizes[0]).clamp(150., 330.);
+                                    v.preferences.nav_width = f32::from(sizes[0]).clamp(
+                                        Preferences::MIN_NAV_WIDTH,
+                                        Preferences::MAX_NAV_WIDTH,
+                                    );
                                 }
-                                v.preferences.inspector_width =
-                                    f32::from(sizes[2]).clamp(260., 560.);
+                                v.preferences.inspector_width = f32::from(sizes[2]).clamp(
+                                    Preferences::MIN_INSPECTOR_WIDTH,
+                                    Preferences::MAX_INSPECTOR_WIDTH,
+                                );
                             }
                             v.persist_preferences(w, cx);
                             cx.notify();
@@ -3095,14 +3138,14 @@ impl Render for GitCrab {
                     .child(
                         resizable_panel()
                             .size(px(if rail {
-                                44.
+                                geometry::SIZE_SHELL_RAIL
                             } else {
                                 self.preferences.nav_width
                             }))
                             .size_range(if rail {
-                                px(44.)..px(45.)
+                                px(geometry::SIZE_SHELL_RAIL)..px(geometry::SIZE_SHELL_RAIL + 1.)
                             } else {
-                                px(150.)..px(330.)
+                                px(Preferences::MIN_NAV_WIDTH)..px(Preferences::MAX_NAV_WIDTH)
                             })
                             .child(sidebar),
                     )
@@ -3111,7 +3154,10 @@ impl Render for GitCrab {
                         panels.child(
                             resizable_panel()
                                 .size(px(self.preferences.inspector_width))
-                                .size_range(px(260.)..px(560.))
+                                .size_range(
+                                    px(Preferences::MIN_INSPECTOR_WIDTH)
+                                        ..px(Preferences::MAX_INSPECTOR_WIDTH),
+                                )
                                 .child(div().size_full().pl(px(SEAM)).child(inspector)),
                         )
                     }),
@@ -3212,7 +3258,7 @@ impl Render for GitCrab {
                     "Working changes"
                 };
                 el.child(
-                    section_bar().h(scaled(36.)).child(
+                    section_bar().h(scaled(SECTION_HEIGHT)).child(
                         segmented_group()
                             .child(
                                 self.segment_button(
@@ -3295,7 +3341,7 @@ impl Render for GitCrab {
                                 div()
                                     .id("error-details")
                                     .max_h(px(240.))
-                                    .text_size(scaled(12.))
+                                    .text_size(scaled(TEXT_SIZE_SMALL))
                                     .text_role(Role::TextSecondary)
                                     .child(self.state.notice.clone()),
                             )
@@ -3434,7 +3480,7 @@ impl GitCrab {
             .items_center()
             .px(scaled(SECTION_INSET))
             .gap(scaled(STATUS_BAR_GROUP_GAP))
-            .text_size(scaled(12.))
+            .text_size(scaled(TEXT_SIZE_SMALL))
             .text_role(Role::TextMuted)
             .child(left)
             .child(right)

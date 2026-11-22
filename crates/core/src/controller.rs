@@ -418,7 +418,7 @@ impl Controller {
 
     fn start_reveal(&mut self, reveal: Reveal) -> Seek {
         let target = match &reveal {
-            Reveal::Commit(id) => format!("commit {}", id.chars().take(8).collect::<String>()),
+            Reveal::Commit(id) => format!("commit {}", crate::presentation::short_id(id)),
             Reveal::Reference(_, name) => name.clone(),
         };
         if !self.more_history() || self.limit >= REVEAL_LIMIT {

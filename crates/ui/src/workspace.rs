@@ -248,7 +248,7 @@ fn update_notice(
                     el.child(
                         div()
                             .id("update-install-status")
-                            .text_size(scaled(12.))
+                            .text_size(scaled(TEXT_SIZE_SMALL))
                             .text_role(detail_role)
                             .child(detail),
                     )
@@ -284,12 +284,11 @@ fn update_notice(
                     .ghost()
                     .small()
                     .tab_stop(true)
-                    .w(scaled(28.))
-                    .h(scaled(28.))
+                    .size(scaled(CONTROL_HEIGHT))
                     .child(
                         div()
-                            .text_size(scaled(16.))
-                            .line_height(scaled(16.))
+                            .text_size(scaled(GLYPH_SIZE))
+                            .line_height(scaled(GLYPH_SIZE))
                             .child("×"),
                     )
                     .tooltip("Close until GitCrab restarts")
@@ -1102,8 +1101,8 @@ impl Render for Workspace {
             .px(scaled(4.))
             .child(
                 div()
-                    .text_size(scaled(16.))
-                    .line_height(scaled(16.))
+                    .text_size(scaled(GLYPH_SIZE))
+                    .line_height(scaled(GLYPH_SIZE))
                     .child("+"),
             )
             .set_disabled(blocked)

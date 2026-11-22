@@ -9,6 +9,7 @@ use crate::{
     git::{FailureKind, RepoSnapshot},
     graph,
     platform::RepositoryLocation,
+    presentation::short_id,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -263,10 +264,6 @@ pub struct ReviewedOperation {
 /// Explains why Cherry-pick and Revert are unavailable for merge commits.
 pub const MERGE_COMMIT_UNSUPPORTED: &str =
     "This is a merge commit. Cherry-pick and Revert need a mainline parent, which GitCrab cannot choose yet. Use Git's -m option from a terminal.";
-
-fn short_id(id: &str) -> &str {
-    &id[..id.len().min(8)]
-}
 
 impl ReviewedOperation {
     /// Source and destination of a reviewed Pull or Push, such as

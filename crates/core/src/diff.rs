@@ -100,7 +100,7 @@ pub type SplitRow = (Option<usize>, Option<usize>);
 pub struct Content {
     pub lines: Vec<Line>,
     pub split: Vec<SplitRow>,
-    /// Longest patch line in bytes, capped at 8192 for width estimation.
+    /// Longest patch line in bytes, capped at [`MAX_SHOWN_BYTES`] for width estimation.
     pub columns: usize,
     /// Zero-based hunk header rows in the unified layout.
     pub hunk_rows: Vec<usize>,
@@ -113,7 +113,7 @@ pub fn prepare(lines: Vec<Line>) -> Content {
     let split = split(&lines);
     let columns = lines
         .iter()
-        .map(|line| line.text.len().min(8192))
+        .map(|line| line.text.len().min(MAX_SHOWN_BYTES))
         .max()
         .unwrap_or(0);
     let hunk_rows = lines

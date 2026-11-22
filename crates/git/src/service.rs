@@ -688,7 +688,11 @@ impl Session {
         // the snapshot rather than after it.
         let (snapshot, journal) = std::thread::scope(|scope| {
             let journal = scope.spawn(|| journal.lock().unwrap().status(g));
-            let snapshot = g.snapshot_cached(limit.clamp(1, 100_000), mode, history);
+            let snapshot = g.snapshot_cached(
+                limit.clamp(1, gitcrab_core::controller::HISTORY_MAX),
+                mode,
+                history,
+            );
             (snapshot, journal.join())
         });
         let (mut snapshot, graph, _changed) = snapshot?;

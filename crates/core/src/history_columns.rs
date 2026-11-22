@@ -1,6 +1,9 @@
 //! Persistent layout settings for the history table.
 use serde::{Deserialize, Serialize};
 
+/// Widest any column may be, in logical pixels.
+const MAX_COLUMN_WIDTH: f32 = 1600.;
+
 /// A configurable column in the commit history table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -115,7 +118,7 @@ impl HistoryColumns {
             };
             for entry in &mut layout.columns {
                 if entry.column != HistoryColumn::Graph {
-                    entry.width = (entry.width * scale).min(1600.);
+                    entry.width = (entry.width * scale).min(MAX_COLUMN_WIDTH);
                 }
             }
             let total = |l: &Self| l.visible().map(|e| e.width).sum::<f32>();
@@ -244,7 +247,9 @@ impl HistoryColumns {
         });
         for entry in &mut self.columns {
             entry.width = if entry.width.is_finite() {
-                entry.width.clamp(entry.column.minimum_width(), 1600.)
+                entry
+                    .width
+                    .clamp(entry.column.minimum_width(), MAX_COLUMN_WIDTH)
             } else {
                 entry.column.default_width()
             };
@@ -279,7 +284,7 @@ impl HistoryColumns {
     pub fn resize(&mut self, column: HistoryColumn, width: f32) {
         if width.is_finite() {
             if let Some(entry) = self.columns.iter_mut().find(|entry| entry.column == column) {
-                entry.width = width.clamp(column.minimum_width(), 1600.);
+                entry.width = width.clamp(column.minimum_width(), MAX_COLUMN_WIDTH);
             }
         }
     }

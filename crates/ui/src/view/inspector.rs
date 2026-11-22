@@ -4,8 +4,14 @@ use gitcrab_core::{
     presentation::{ordinal, reflow_body},
 };
 
+const INSPECTOR_BAR_HEIGHT: f32 = 32.;
+/// Vertical gap between the parts of the commit composer.
+const COMPOSER_GAP: f32 = 8.;
+
 fn inspector_bar() -> Div {
-    section_bar().h(scaled(32.)).px(scaled(INSPECTOR_INSET))
+    section_bar()
+        .h(scaled(INSPECTOR_BAR_HEIGHT))
+        .px(scaled(INSPECTOR_INSET))
 }
 
 /// Working-changes list that a file row belongs to.
@@ -73,7 +79,7 @@ fn status_badge(file: &FileChange, staged: bool) -> impl IntoElement {
     };
     Badge::new(letter.to_string(), color)
         .fixed_width(20.)
-        .text_size(scaled(11.))
+        .text_size(scaled(TEXT_SIZE_CAPTION))
         .px_0()
         .tooltip(SharedString::from(format!("status-{}", file.path)), name)
 }
@@ -172,12 +178,12 @@ impl GitCrab {
                 .child(
                     Badge::new(letter.to_string(), file_status_color(letter))
                         .fixed_width(18.)
-                        .text_size(scaled(11.))
+                        .text_size(scaled(TEXT_SIZE_CAPTION))
                         .px_0(),
                 )
                 .child(
                     div()
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_role(Role::TextSecondary)
                         .child(format!("{n} {word}")),
                 )
@@ -188,15 +194,15 @@ impl GitCrab {
                 inspector_bar()
                     .child(
                         div()
-                            .text_size(scaled(12.))
+                            .text_size(scaled(TEXT_SIZE_SMALL))
                             .text_role(Role::TextMuted)
                             .child("commit:"),
                     )
                     .child(
                         self.button("copy-id", short_id)
                             .font_family(CODE_FONT)
-                            .text_size(scaled(12.))
-                            .tooltip(format!("Copy full commit SHA {}", c.id))
+                            .text_size(scaled(TEXT_SIZE_SMALL))
+                            .tooltip(format!("Copy {}", c.id))
                             .on_click(move |_, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(copy_id.clone()))
                             }),
@@ -238,7 +244,7 @@ impl GitCrab {
                                 .bg_role(Role::SurfaceChrome)
                                 .child(
                                     div()
-                                        .text_size(scaled(15.))
+                                        .text_size(scaled(TEXT_SIZE_TITLE))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .whitespace_normal()
                                         .child(c.subject.clone()),
@@ -247,7 +253,7 @@ impl GitCrab {
                                     el.child(
                                         div()
                                             .id("commit-body")
-                                            .text_size(scaled(12.))
+                                            .text_size(scaled(TEXT_SIZE_SMALL))
                                             .text_role(Role::TextSecondary)
                                             .whitespace_normal()
                                             .children(
@@ -263,7 +269,7 @@ impl GitCrab {
                                 .when(loading && self.state.commit_body.is_empty(), |el| {
                                     el.child(
                                         div()
-                                            .text_size(scaled(12.))
+                                            .text_size(scaled(TEXT_SIZE_SMALL))
                                             .text_role(Role::TextMuted)
                                             .child("Loading description…"),
                                     )
@@ -343,7 +349,7 @@ impl GitCrab {
                                             el.child(
                                                 div()
                                                     .truncate()
-                                                    .text_size(scaled(12.))
+                                                    .text_size(scaled(TEXT_SIZE_SMALL))
                                                     .text_role(Role::TextMuted)
                                                     .child(email.clone()),
                                             )
@@ -353,7 +359,7 @@ impl GitCrab {
                                                 .id("commit-date")
                                                 .flex()
                                                 .gap_1()
-                                                .text_size(scaled(12.))
+                                                .text_size(scaled(TEXT_SIZE_SMALL))
                                                 .child(
                                                     div()
                                                         .text_role(Role::TextMuted)
@@ -379,7 +385,7 @@ impl GitCrab {
                                         .when(c.parents.is_empty(), |el| {
                                             el.child(
                                                 div()
-                                                    .text_size(scaled(12.))
+                                                    .text_size(scaled(TEXT_SIZE_SMALL))
                                                     .text_role(Role::TextMuted)
                                                     .child("root commit"),
                                             )
@@ -405,7 +411,7 @@ impl GitCrab {
                                                     .when(i == 0, |row| {
                                                         row.child(
                                                             div()
-                                                                .text_size(scaled(12.))
+                                                                .text_size(scaled(TEXT_SIZE_SMALL))
                                                                 .text_role(Role::TextMuted)
                                                                 .child(if c.parents.len() > 1 {
                                                                     "parents:"
@@ -417,7 +423,7 @@ impl GitCrab {
                                                     .child(
                                                         self.button(("parent", i), short)
                                                             .font_family(CODE_FONT)
-                                                            .text_size(scaled(12.))
+                                                            .text_size(scaled(TEXT_SIZE_SMALL))
                                                             .tooltip(if loaded {
                                                                 format!("Select {what} {parent}")
                                                             } else {
@@ -446,7 +452,7 @@ impl GitCrab {
                                         div()
                                             .px_1()
                                             .rounded(px(CONTROL_RADIUS))
-                                            .text_size(scaled(12.))
+                                            .text_size(scaled(TEXT_SIZE_SMALL))
                                             .text_role(Role::TextDefault)
                                             .when_some(lane_color, |badge, color| {
                                                 badge.bg(branch_tint(color, REF_TINT))
@@ -476,7 +482,7 @@ impl GitCrab {
                     .when(!loading && !self.state.details_failed, |bar| {
                         bar.children(summary).child(div().flex_1()).child(
                             div()
-                                .text_size(scaled(12.))
+                                .text_size(scaled(TEXT_SIZE_SMALL))
                                 .text_role(Role::TextMuted)
                                 .child(match self.state.files.len() {
                                     1 => "1 file".to_string(),
@@ -501,7 +507,7 @@ impl GitCrab {
                     .min_h_0()
                     .px(scaled(INSPECTOR_INSET))
                     .py_2()
-                    .text_size(scaled(12.))
+                    .text_size(scaled(TEXT_SIZE_SMALL))
                     .text_role(Role::TextSecondary)
                     .child(message),
             );
@@ -636,10 +642,14 @@ impl GitCrab {
                     .gap_2()
                     .p_4()
                     .child(icon("check").text_role(Role::StatusSuccessFg))
-                    .child(div().text_size(scaled(15.)).child("No working changes"))
                     .child(
                         div()
-                            .text_size(scaled(12.))
+                            .text_size(scaled(TEXT_SIZE_TITLE))
+                            .child("No working changes"),
+                    )
+                    .child(
+                        div()
+                            .text_size(scaled(TEXT_SIZE_SMALL))
                             .text_role(Role::TextSecondary)
                             .child(if snapshot.head_id.is_empty() {
                                 "Add files to this folder to prepare the first commit."
@@ -785,7 +795,7 @@ impl GitCrab {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(scaled(12.))
+                            .text_size(scaled(TEXT_SIZE_SMALL))
                             .text_role(Role::TextDefault)
                             .child(match conflicts {
                                 0 => "All conflicts are marked resolved.".to_string(),
@@ -803,7 +813,7 @@ impl GitCrab {
             )
             .child(
                 div()
-                    .text_size(scaled(12.))
+                    .text_size(scaled(TEXT_SIZE_SMALL))
                     .text_role(Role::TextSecondary)
                     .child(snapshot.operation_recovery()),
             )
@@ -915,7 +925,7 @@ impl GitCrab {
                     .items_center()
                     .px(scaled(INSPECTOR_INSET))
                     .text_role(Role::TextSecondary)
-                    .text_size(scaled(12.))
+                    .text_size(scaled(TEXT_SIZE_SMALL))
                     .child(if section.staged() {
                         "Nothing staged yet."
                     } else {
@@ -1011,7 +1021,7 @@ impl GitCrab {
             .when(markers, |row| {
                 row.leading(
                     Badge::role("Markers", Role::StatusWarningFg)
-                        .text_size(scaled(11.))
+                        .text_size(scaled(TEXT_SIZE_CAPTION))
                         .px_1(),
                 )
             })
@@ -1182,7 +1192,7 @@ impl GitCrab {
                 el.child(
                     div()
                         .mx(scaled(INSPECTOR_INSET))
-                        .mt(px(8.))
+                        .mt(px(COMPOSER_GAP))
                         .flex()
                         .flex_wrap()
                         .items_center()
@@ -1190,7 +1200,7 @@ impl GitCrab {
                         .child(
                             div()
                                 .w_full()
-                                .text_size(scaled(12.))
+                                .text_size(scaled(TEXT_SIZE_SMALL))
                                 .text_role(Role::StatusWarningFg)
                                 .child(format!("Detached HEAD at {short_head}")),
                         )
@@ -1219,7 +1229,7 @@ impl GitCrab {
                     .mx(scaled(INSPECTOR_INSET))
                     // Same gap as between the box and the commit button below, so the
                     // box doesn't butt up against the "Commit" header.
-                    .mt(px(8.))
+                    .mt(px(COMPOSER_GAP))
                     .flex_none()
                     .min_w_0()
                     .flex()
@@ -1307,7 +1317,8 @@ impl GitCrab {
                                     .appearance(false)
                                     .bordered(false)
                                     .w_full()
-                                    .h(scaled(geometry::SIZE_COMMIT_EDITOR_BODY_MIN)),
+                                    .h(scaled(geometry::SIZE_COMMIT_EDITOR_BODY_MIN))
+                                    .text_size(scaled(TEXT_SIZE_BODY)),
                             )
                             .into_any_element()
                     }),
@@ -1317,7 +1328,7 @@ impl GitCrab {
                     .when(can_commit, |b| b.icon(icon("check")))
                     .flex_none()
                     .mx(scaled(INSPECTOR_INSET))
-                    .mt(px(8.))
+                    .mt(px(COMPOSER_GAP))
                     .mb(scaled(if note.is_some() { 0. } else { INSPECTOR_INSET }))
                     .tooltip(match &blocker {
                         Some(reason) => format!("Commit unavailable. {reason}"),
@@ -1334,9 +1345,9 @@ impl GitCrab {
                         // at min-content width, which made the composer very tall.
                         .w_full()
                         .px(scaled(INSPECTOR_INSET))
-                        .pt(px(8.))
+                        .pt(px(COMPOSER_GAP))
                         .pb(scaled(INSPECTOR_INSET))
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_role(Role::StatusWarningFg)
                         .child(reason),
                 )

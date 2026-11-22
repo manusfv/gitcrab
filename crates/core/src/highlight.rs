@@ -1,5 +1,7 @@
 //! Lightweight syntax highlighting for individual lines of patch text.
 
+use crate::diff::MAX_SHOWN_BYTES;
+
 /// A syntax token with a half-open UTF-8 byte range into the input line.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Span {
@@ -11,19 +13,19 @@ pub struct Span {
 
 /// Finds spans for common syntax tokens without a language-specific parser.
 ///
-/// Only tokens starting before byte 8192 are considered.
+/// Only tokens starting before byte [`MAX_SHOWN_BYTES`] are considered.
 pub fn spans(text: &str) -> Vec<Span> {
     let mut out = Vec::new();
     let mut iter = text.char_indices().peekable();
     while let Some((start, c)) = iter.next() {
-        if start >= 8192 {
+        if start >= MAX_SHOWN_BYTES {
             break;
         }
         let mut end = start + c.len_utf8();
         let kind = if (c == '/' && iter.peek().is_some_and(|(_, n)| *n == '/'))
             || (c == '#' && text[..start].trim().is_empty())
         {
-            let mut end = text.len().min(8192);
+            let mut end = text.len().min(MAX_SHOWN_BYTES);
             while !text.is_char_boundary(end) {
                 end -= 1;
             }

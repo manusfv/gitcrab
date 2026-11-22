@@ -2,6 +2,20 @@ use super::*;
 use gitcrab_core::highlight::Span;
 use std::ops::Range;
 
+const DIFF_ROW_HEIGHT_COMPACT: f32 = 18.;
+const DIFF_ROW_HEIGHT: f32 = geometry::SIZE_ROW_DIFF;
+/// Space a diff row keeps above and below code at large code sizes.
+const DIFF_ROW_LEADING: f32 = 5.;
+/// Unified rows reserve this beside their text at [`BASE_CODE_SIZE`], and are
+/// never narrower than [`UNIFIED_ROW_MIN_WIDTH`].
+const UNIFIED_ROW_CHROME: f32 = 160.;
+const UNIFIED_ROW_MIN_WIDTH: f32 = 600.;
+/// How far one horizontal pan moves the diff.
+const PAN_STEP: f32 = 240.;
+/// How long a file's latest outcome stays beside its diff controls.
+const OUTCOME_SHOWN_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+const TOOLBAR_DIVIDER_HEIGHT: f32 = 14.;
+
 fn syntax_style(kind: char) -> HighlightStyle {
     HighlightStyle {
         color: Some(
@@ -73,11 +87,11 @@ impl GitCrab {
     /// Height of one diff row in logical pixels.
     fn diff_row_height(&self) -> f32 {
         (if self.preferences.compact_diff {
-            18_f32
+            DIFF_ROW_HEIGHT_COMPACT
         } else {
-            20.
+            DIFF_ROW_HEIGHT
         })
-        .max(self.preferences.code_size + 5.)
+        .max(self.preferences.code_size + DIFF_ROW_LEADING)
     }
 
     /// Rebuilds the Split wrap layout when the patch, layout or pane width
@@ -89,16 +103,20 @@ impl GitCrab {
             return;
         };
         let size = self.preferences.code_size;
-        let scale = size / 12.;
+        let scale = size / BASE_CODE_SIZE;
         let text = window.text_system();
         let advance = text
             .advance(text.resolve_font(&font(CODE_FONT)), px(size), 'm')
             .map(|advance| f32::from(advance.width))
-            .unwrap_or(size * 0.65)
+            .unwrap_or(size * CODE_CHAR_WIDTH)
             .max(1.);
         // Each side: 8 px padding on both edges, two 8 px gaps, the line
         // number and marker columns, and a little slack for rounding.
-        let side = self.history_available / 2. - 16. - 16. - 54. * scale - 6.;
+        let side = self.history_available / 2.
+            - DIFF_SIDE_PADDING
+            - DIFF_SIDE_GAPS
+            - DIFF_SPLIT_GUTTER * scale
+            - 6.;
         let columns = ((side / advance).floor() as usize).max(8);
         if self
             .split_wrap
@@ -342,7 +360,7 @@ impl GitCrab {
             .gap_3()
             .p_4()
             .child(icon("changes").text_role(Role::TextMuted))
-            .child(div().text_size(scaled(16.)).child(title))
+            .child(div().text_size(scaled(TEXT_SIZE_HEADING)).child(title))
             .when(p.preview == Preview::Renamed, |panel| {
                 panel.child(
                     div()
@@ -666,7 +684,7 @@ impl GitCrab {
                         .min_w_0()
                         .px_2()
                         .truncate()
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .font_weight(FontWeight::MEDIUM)
                         .text_role(Role::TextSecondary)
                         .child(text)
@@ -763,7 +781,7 @@ impl GitCrab {
             }
             bar = bar.child(
                 div()
-                    .text_size(scaled(12.))
+                    .text_size(scaled(TEXT_SIZE_SMALL))
                     .text_role(Role::TextMuted)
                     .child(if scrollable || total == 1 {
                         format!("Hunk {} of {total}", position.current + 1)
@@ -843,7 +861,7 @@ impl GitCrab {
             .front()
             .filter(|record| {
                 record.target.as_deref() == Some(path.as_str())
-                    && record.at.elapsed() < std::time::Duration::from_secs(60)
+                    && record.at.elapsed() < OUTCOME_SHOWN_FOR
             })
             .cloned();
         // Writes to other files leave this diff as it is and say nothing here.
@@ -852,7 +870,7 @@ impl GitCrab {
         bar.when(writing || refreshing, |bar| {
             bar.child(
                 div()
-                    .text_size(scaled(12.))
+                    .text_size(scaled(TEXT_SIZE_SMALL))
                     .text_role(Role::TextSecondary)
                     .child(if refreshing {
                         "Updating diff…".to_string()
@@ -864,7 +882,7 @@ impl GitCrab {
         .when_some(outcome.filter(|_| !writing), |bar, record| {
             bar.child(
                 div()
-                    .text_size(scaled(12.))
+                    .text_size(scaled(TEXT_SIZE_SMALL))
                     .text_role(if record.failure.is_some() {
                         Role::StatusErrorFg
                     } else {
@@ -874,7 +892,7 @@ impl GitCrab {
             )
         })
         .when_some(p.hunk_blocked.clone(), |bar, reason| {
-            bar.child(div().text_size(scaled(12.)).child(reason))
+            bar.child(div().text_size(scaled(TEXT_SIZE_SMALL)).child(reason))
         })
         .child(div().flex_1())
         .child(
@@ -921,7 +939,7 @@ impl GitCrab {
             .child(div().w(px(260.)).child(Input::new(&self.diff_search)))
             .child(
                 div()
-                    .text_size(scaled(12.))
+                    .text_size(scaled(TEXT_SIZE_SMALL))
                     .text_role(Role::TextMuted)
                     .child(status),
             )
@@ -1009,7 +1027,7 @@ impl GitCrab {
             .gap_3()
             .p_4()
             .child(icon(if loading { "refresh" } else { "check" }).text_role(Role::ActionPrimary))
-            .child(div().text_size(scaled(16.)).child(title))
+            .child(div().text_size(scaled(TEXT_SIZE_HEADING)).child(title))
             .child(div().text_role(Role::TextMuted).child(detail))
             .child(
                 div()
@@ -1255,7 +1273,7 @@ impl GitCrab {
     fn pan_diff(&self, right: bool) {
         let handle = self.diff_scroll.0.borrow().base_handle.clone();
         let mut offset = handle.offset();
-        let step = px(240.);
+        let step = px(PAN_STEP);
         offset.x = if right {
             (offset.x - step).max(-handle.max_offset().x)
         } else {
@@ -1279,15 +1297,15 @@ impl GitCrab {
         let actions =
             index.filter(|&index| self.hunk_actions_allowed(p, conflict) && index < p.hunks.len());
         let ready = self.diff_actions_ready();
-        let scale = self.preferences.code_size / 12.;
-        let advance = self.preferences.code_size * 0.65;
+        let scale = self.preferences.code_size / BASE_CODE_SIZE;
+        let advance = self.preferences.code_size * CODE_CHAR_WIDTH;
         let mut row = div()
             .id(("diff-line", i))
             .w_full()
             .when(!self.split_active, |row| {
-                row.min_w(px(
-                    (p.content.columns as f32 * advance + 160. * scale).max(600.)
-                ))
+                row.min_w(px((p.content.columns as f32 * advance
+                    + UNIFIED_ROW_CHROME * scale)
+                    .max(UNIFIED_ROW_MIN_WIDTH)))
             })
             .h(px(self.diff_row_height()))
             .flex()
@@ -1299,7 +1317,7 @@ impl GitCrab {
             .when(line > 0, |row| {
                 row.border_t_1().border_role(Role::BorderDivider)
             })
-            .text_size(scaled(12.))
+            .text_size(scaled(TEXT_SIZE_SMALL))
             .child(
                 div()
                     .flex_none()
@@ -1338,7 +1356,7 @@ impl GitCrab {
                     div()
                         .flex_none()
                         .w(px(1.))
-                        .h(px(14.))
+                        .h(px(TOOLBAR_DIVIDER_HEIGHT))
                         .mx_1()
                         .bg_role(Role::BorderDivider),
                 );
@@ -1379,7 +1397,7 @@ impl GitCrab {
                         div()
                             .flex_none()
                             .w(px(1.))
-                            .h(px(14.))
+                            .h(px(TOOLBAR_DIVIDER_HEIGHT))
                             .mx_1()
                             .bg_role(Role::BorderDivider),
                     )
@@ -1452,17 +1470,17 @@ impl GitCrab {
             .diff_match
             .and_then(|index| self.diff_matches.get(index))
             == Some(&i);
-        let advance = self.preferences.code_size * 0.65;
-        let scale = self.preferences.code_size / 12.;
+        let advance = self.preferences.code_size * CODE_CHAR_WIDTH;
+        let scale = self.preferences.code_size / BASE_CODE_SIZE;
         let split = self.split_active;
         let mut el = div()
             .id(("diff-line", visual))
             .cursor_text()
             .w_full()
             .when(!split, |row| {
-                row.min_w(px(
-                    (p.content.columns as f32 * advance + 160. * scale).max(600.)
-                ))
+                row.min_w(px((p.content.columns as f32 * advance
+                    + UNIFIED_ROW_CHROME * scale)
+                    .max(UNIFIED_ROW_MIN_WIDTH)))
             })
             .h(px(self.diff_row_height()))
             .flex()
@@ -1526,7 +1544,11 @@ impl GitCrab {
                     }))
                     .child(
                         div()
-                            .w(px(if split { 45. * scale } else { 90. * scale }))
+                            .w(px(if split {
+                                DIFF_SPLIT_NUMBER_WIDTH * scale
+                            } else {
+                                DIFF_UNIFIED_NUMBER_WIDTH * scale
+                            }))
                             .flex_none()
                             .whitespace_nowrap()
                             .text_role(Role::TextMuted)
@@ -1547,7 +1569,7 @@ impl GitCrab {
                     )
                     .child(
                         div()
-                            .w(px(9. * scale))
+                            .w(px(DIFF_MARKER_WIDTH * scale))
                             .flex_none()
                             .text_color(rgb(match l.kind {
                                 '+' => semantic(Role::StatusSuccessFg),
@@ -1621,10 +1643,6 @@ enum DiscardTarget {
     Hunk(usize),
     /// Changed lines, as indices into the reviewed patch lines.
     Lines(Vec<usize>),
-}
-
-fn short_id(id: &str) -> &str {
-    &id[..id.len().min(8)]
 }
 
 /// The diff's selection, copy and navigation shortcuts.

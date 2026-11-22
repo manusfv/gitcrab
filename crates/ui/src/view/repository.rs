@@ -1,6 +1,9 @@
 use super::*;
 use gitcrab_core::platform::RepositoryLocation;
 
+/// How long a burst of file changes may settle before it is read.
+const WATCH_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+
 impl GitCrab {
     /// Discovers a worktree off the UI thread before entering the trust flow.
     pub fn open_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -183,7 +186,7 @@ impl GitCrab {
             .unwrap_or_default()
             .parse::<usize>()
         {
-            self.state.limit = limit.clamp(1, 100_000);
+            self.state.limit = limit.clamp(1, HISTORY_MAX);
             if let Some((
                 _,
                 Request {
@@ -229,7 +232,7 @@ impl GitCrab {
             }).ok().flatten();
             let Some(receiver) = receiver else { return; };
             while receiver.wake().await.is_ok() {
-                cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
+                cx.background_executor().timer(WATCH_SETTLE).await;
                 let Some(change) = receiver.take_pending() else {
                     continue;
                 };

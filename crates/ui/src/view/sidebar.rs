@@ -8,6 +8,11 @@ const INSET: f32 = 8.;
 const INDENT: f32 = 14.;
 const HEADER_HEIGHT: f32 = 28.;
 const ROW_HEIGHT: f32 = 26.;
+const WORKING_ROW_HEIGHT: f32 = geometry::SIZE_TARGET_REGULAR;
+const ICON_SIZE: f32 = 14.;
+/// Indent of folder rows and of entries, which clear the folders' disclosure arrows.
+const FOLDER_INDENT: f32 = 4.;
+const ENTRY_INDENT: f32 = 18.;
 
 type EntryClick = Rc<dyn Fn(&mut GitCrab, &ClickEvent, &mut Window, &mut Context<GitCrab>)>;
 
@@ -48,7 +53,7 @@ impl GitCrab {
             .foreground(Role::TextSecondary)
             .font_weight(FontWeight::SEMIBOLD)
             .leading(disclosure(collapsed))
-            .leading(icon(glyph).size(px(14.)))
+            .leading(icon(glyph).size(px(ICON_SIZE)))
             .label(label.to_uppercase())
             .trailing(
                 div()
@@ -94,11 +99,15 @@ impl GitCrab {
                         ListRow::new(SharedString::from(format!("folder-{key}")))
                             .height(ROW_HEIGHT)
                             .inset(INSET)
-                            .indent(4. + (depth - 1) as f32 * INDENT)
+                            .indent(FOLDER_INDENT + (depth - 1) as f32 * INDENT)
                             .tab_stop(!self.settings_open)
                             .foreground(Role::TextSecondary)
                             .leading(disclosure(collapsed))
-                            .leading(icon("folder").size(px(14.)).text_role(Role::TextMuted))
+                            .leading(
+                                icon("folder")
+                                    .size(px(ICON_SIZE))
+                                    .text_role(Role::TextMuted),
+                            )
                             .label(format!("{name}/"))
                             .tooltip(format!(
                                 "{} {path}/",
@@ -129,22 +138,26 @@ impl GitCrab {
                 ListRow::new(SharedString::from(id))
                     .height(ROW_HEIGHT)
                     .inset(INSET)
-                    .indent(18. + depth as f32 * INDENT)
+                    .indent(ENTRY_INDENT + depth as f32 * INDENT)
                     .tab_stop(!self.settings_open)
                     .foreground(if current || previewed {
                         Role::TextDefault
                     } else {
                         Role::TextMuted
                     })
-                    .leading(icon(lead).size(px(14.)).text_role(if previewed {
+                    .leading(icon(lead).size(px(ICON_SIZE)).text_role(if previewed {
                         Role::ActionPrimary
                     } else {
                         Role::TextMuted
                     }))
                     .label(leaf)
                     .when(current, |row| {
-                        row.trailing(icon("check").size(px(14.)).text_role(Role::StatusSuccessFg))
-                            .font_weight(FontWeight::SEMIBOLD)
+                        row.trailing(
+                            icon("check")
+                                .size(px(ICON_SIZE))
+                                .text_role(Role::StatusSuccessFg),
+                        )
+                        .font_weight(FontWeight::SEMIBOLD)
                     })
                     .when(current && !previewed, |row| {
                         row.background(Role::StatusSuccessBg)
@@ -202,10 +215,10 @@ impl GitCrab {
             )
             .child(
                 ListRow::new("working")
-                    .height(32.)
+                    .height(WORKING_ROW_HEIGHT)
                     .inset(INSET)
                     .tab_stop(!self.settings_open)
-                    .leading(icon("changes").size(px(14.)))
+                    .leading(icon("changes").size(px(ICON_SIZE)))
                     .label("Working changes")
                     .trailing(Badge::role(
                         changes.to_string(),

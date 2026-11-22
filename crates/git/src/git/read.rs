@@ -1,6 +1,9 @@
 //! Reads: repository snapshots, history, commit details, diffs and status.
 use super::*;
 
+/// Largest operation-state file read when fingerprinting history state.
+const MAX_HISTORY_METADATA_BYTES: u64 = 1024 * 1024;
+
 impl Git {
     /// Reads repository status, refs and history with a fresh Git query.
     ///
@@ -311,7 +314,7 @@ impl Git {
             path.hash(&mut stamp);
             match std::fs::metadata(path) {
                 Ok(metadata) => {
-                    if metadata.len() > 1024 * 1024 {
+                    if metadata.len() > MAX_HISTORY_METADATA_BYTES {
                         return Err("Git history metadata exceeds 1 MiB.".into());
                     }
                     std::fs::read(path)

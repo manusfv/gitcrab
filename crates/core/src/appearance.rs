@@ -2,6 +2,10 @@
 
 use crate::design_tokens::{Role, DARK, LIGHT};
 
+/// Palette IDs accepted by [`palette`].
+pub const PALETTE_DARK: &str = "dark";
+pub const PALETTE_LIGHT: &str = "light";
+
 /// Saved theme preference, including values from older or newer settings files.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -19,7 +23,7 @@ impl ThemePreference {
     ///
     /// All preferences currently resolve to `"dark"`, regardless of system appearance.
     pub fn resolve(self, _system_dark: bool) -> &'static str {
-        "dark"
+        PALETTE_DARK
     }
 }
 /// Looks up `"light"` or `"dark"`, with dark as the fallback for unknown IDs.
@@ -27,7 +31,7 @@ impl ThemePreference {
 /// Colors are packed as `0xRRGGBB` and indexed by [`Role`].
 pub fn palette(id: &str) -> &'static [u32] {
     match id {
-        "light" => &LIGHT,
+        PALETTE_LIGHT => &LIGHT,
         _ => &DARK,
     }
 }

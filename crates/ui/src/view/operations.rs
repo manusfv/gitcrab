@@ -319,7 +319,6 @@ impl GitCrab {
     pub(super) fn render_branch_prompt(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prompt = self.branch_prompt.as_ref()?;
         let snapshot = self.state.snapshot.as_ref()?;
-        let short = |id: &str| id.chars().take(8).collect::<String>();
         let place = match &prompt.start {
             Some(start) => {
                 let subject = snapshot
@@ -328,12 +327,12 @@ impl GitCrab {
                     .find(|c| &c.id == start)
                     .map(|c| format!(" ({})", c.subject))
                     .unwrap_or_default();
-                format!("Creates a branch at {}{subject}", short(start))
+                format!("Creates a branch at {}{subject}", short_id(start))
             }
             None => format!(
                 "Creates a branch at {} ({}) and switches to it",
                 snapshot.head_label(),
-                short(&snapshot.head_id)
+                short_id(&snapshot.head_id)
             ),
         };
         let busy = self.state.busy || self.pending_run.is_some();
@@ -398,7 +397,7 @@ impl GitCrab {
                 .when_some(prompt.error.clone(), |el, error| {
                     el.child(
                         div()
-                            .text_size(scaled(12.))
+                            .text_size(scaled(TEXT_SIZE_SMALL))
                             .text_role(Role::StatusErrorFg)
                             .child(error),
                     )

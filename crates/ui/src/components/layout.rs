@@ -130,7 +130,7 @@ pub fn slim_scrollbar(
 /// library-drawn scrollbars so the two cannot drift apart.
 pub fn slim_styles(styles: gpui::base::ScrollbarStyles) -> gpui::base::ScrollbarStyles {
     styles
-        .track(|t| t.width(px(8.)).bg(gpui::transparent_black()))
+        .track(|t| t.width(SCROLLBAR_GUTTER).bg(gpui::transparent_black()))
         .track_hover(|t| t.bg(gpui::transparent_black()))
         .track_active(|t| {
             t.bg(gpui::transparent_black())

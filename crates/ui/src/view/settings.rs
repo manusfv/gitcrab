@@ -1,6 +1,20 @@
 use super::*;
 use gpui::component::switch::Switch;
 
+/// Bounds of the appearance steppers by index: font size, sidebar width,
+/// inspector width and code size.
+const STEPPER_BOUNDS: [(f32, f32); 4] = [
+    (Preferences::MIN_FONT_SIZE, Preferences::MAX_FONT_SIZE),
+    (Preferences::MIN_NAV_WIDTH, Preferences::MAX_NAV_WIDTH),
+    (
+        Preferences::MIN_INSPECTOR_WIDTH,
+        Preferences::MAX_INSPECTOR_WIDTH,
+    ),
+    (Preferences::MIN_FONT_SIZE, Preferences::MAX_FONT_SIZE),
+];
+/// How far one press of a width stepper moves the pane edge.
+const WIDTH_STEP: f32 = 10.;
+
 impl GitCrab {
     /// Opens appearance settings when no other dialog is active.
     ///
@@ -42,7 +56,7 @@ impl GitCrab {
                         .id("appearance-save-status")
                         .min_w_0()
                         .truncate()
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_role(role)
                         .child(text),
                 )
@@ -127,6 +141,7 @@ impl GitCrab {
         value: f32,
         cx: &mut Context<Self>,
     ) -> Div {
+        let (min, max) = STEPPER_BOUNDS[index];
         let mut row = segmented_group();
         for direction in [-1., 1.] {
             if direction > 0. {
@@ -139,7 +154,7 @@ impl GitCrab {
                         .justify_center()
                         .border_x_1()
                         .border_role(Role::BorderDivider)
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_role(Role::TextDefault)
                         .child(format!("{value:.0}")),
                 );
@@ -158,16 +173,16 @@ impl GitCrab {
                     ),
                 )
                 .disabled_when(if direction < 0. {
-                    value <= [11., 150., 260., 11.][index]
+                    value <= min
                 } else {
-                    value >= [26., 330., 560., 26.][index]
+                    value >= max
                 })
                 .tab_stop(true)
                 .on_click(cx.listener(move |v, _, w, cx| {
                     match index {
                         0 => {
                             v.preferences.font_size =
-                                (v.preferences.font_size + direction).clamp(11., 26.);
+                                (v.preferences.font_size + direction).clamp(min, max);
                             crate::preferences::set_app_appearance(
                                 v.preferences.font_size,
                                 v.preferences.theme,
@@ -176,15 +191,16 @@ impl GitCrab {
                         }
                         1 => {
                             v.preferences.nav_width =
-                                (v.preferences.nav_width + direction * 10.).clamp(150., 330.)
+                                (v.preferences.nav_width + direction * WIDTH_STEP).clamp(min, max)
                         }
                         2 => {
-                            v.preferences.inspector_width =
-                                (v.preferences.inspector_width + direction * 10.).clamp(260., 560.)
+                            v.preferences.inspector_width = (v.preferences.inspector_width
+                                + direction * WIDTH_STEP)
+                                .clamp(min, max)
                         }
                         _ => {
                             v.preferences.code_size =
-                                (v.preferences.code_size + direction).clamp(11., 26.);
+                                (v.preferences.code_size + direction).clamp(min, max);
                         }
                     };
                     if index == 1 || index == 2 {
@@ -309,8 +325,8 @@ impl GitCrab {
                         el.child(
                             div()
                                 .id("update-check-status")
-                                .text_size(scaled(12.))
-                                .line_height(relative(1.45))
+                                .text_size(scaled(TEXT_SIZE_SMALL))
+                                .line_height(relative(PROSE_LINE_HEIGHT))
                                 .text_role(role)
                                 .child(text),
                         )
@@ -358,7 +374,7 @@ impl GitCrab {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_role(Role::TextMuted)
                         .child(label.clone())
                         .child(update_progress_bar(
@@ -409,7 +425,7 @@ impl GitCrab {
                 el.child(
                     div()
                         .id("settings-update-error")
-                        .text_size(scaled(12.))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
                         .text_role(Role::StatusErrorFg)
                         .child(error),
                 )

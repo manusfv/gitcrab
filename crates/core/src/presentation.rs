@@ -2,6 +2,8 @@
 //!
 //! These functions are independent of the UI toolkit so their policy is unit tested.
 
+use crate::design_tokens::geometry;
+
 /// Formats a filesystem path for people to read.
 ///
 /// Windows verbatim prefixes (`\\?\C:\…` and `\\?\UNC\server\share\…`) are
@@ -14,6 +16,16 @@ pub fn display_path(path: &str) -> String {
     } else {
         path.to_owned()
     }
+}
+
+/// Characters of an object id shown where a commit is named in passing.
+pub const SHORT_ID_LEN: usize = 8;
+
+/// The abbreviated form of an object id, as in `git log --oneline`.
+pub fn short_id(id: &str) -> &str {
+    id.char_indices()
+        .nth(SHORT_ID_LEN)
+        .map_or(id, |(end, _)| &id[..end])
 }
 
 fn components(path: &str) -> Vec<&str> {
@@ -219,6 +231,15 @@ const TOOLBAR_GAP: f32 = 4.;
 const TOOLBAR_SEPARATOR: f32 = 17.;
 /// Clear space kept between the centred actions and the controls beside them.
 const TOOLBAR_CLEARANCE: f32 = 16.;
+/// Width of the menu caret beside the Pull action.
+pub const TOOLBAR_CARET: f32 = 12.;
+/// Search field width, and the least it gets as a share of a narrow toolbar.
+const SEARCH_WIDTH: f32 = 200.;
+const SEARCH_MIN_WIDTH: f32 = 140.;
+const SEARCH_MAX_SHARE: f32 = 0.25;
+/// Width of each selector when there is room, and the least it may shrink to.
+const SELECTOR_WIDTH: f32 = 176.;
+const SELECTOR_MIN_WIDTH: f32 = 112.;
 
 /// Width of a group of `commands` toolbar actions, one of which has a menu caret.
 pub fn toolbar_actions_width(scale: f32, commands: usize, labels: bool) -> f32 {
@@ -226,8 +247,12 @@ pub fn toolbar_actions_width(scale: f32, commands: usize, labels: bool) -> f32 {
         return 0.;
     }
     let scale = scale.max(0.5);
-    let command = if labels { 46. } else { 32. } * scale;
-    let caret = 12. * scale;
+    let command = if labels {
+        geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_WIDTH
+    } else {
+        geometry::SIZE_TARGET_REGULAR
+    } * scale;
+    let caret = TOOLBAR_CARET * scale;
     commands as f32 * command + (commands - 1) as f32 * TOOLBAR_GAP + caret
 }
 
@@ -241,10 +266,11 @@ pub fn toolbar_actions_width(scale: f32, commands: usize, labels: bool) -> f32 {
 /// action stays visible.
 pub fn toolbar_layout(width: f32, scale: f32, commands: usize, right_extra: f32) -> ToolbarLayout {
     let scale = scale.max(0.5);
-    let search_width = (200. * scale.min(1.5)).min((width * 0.25).max(140.));
+    let search_width =
+        (SEARCH_WIDTH * scale.min(1.5)).min((width * SEARCH_MAX_SHARE).max(SEARCH_MIN_WIDTH));
     let right = search_width + right_extra.max(0.);
-    let preferred = 176. * scale;
-    let minimum = (112. * scale.min(1.6)).min(preferred);
+    let preferred = SELECTOR_WIDTH * scale;
+    let minimum = (SELECTOR_MIN_WIDTH * scale.min(1.6)).min(preferred);
     // Two selectors, the gap between them and the separator after the
     // repository selector.
     let selectors_fixed = TOOLBAR_SEPARATOR + 2. * TOOLBAR_GAP;
@@ -338,13 +364,17 @@ pub fn failure_heading(action: &str, kind: crate::git::FailureKind) -> String {
     }
 }
 
+pub const SECS_PER_MINUTE: u64 = 60;
+pub const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
+pub const SECS_PER_DAY: u64 = 24 * SECS_PER_HOUR;
+
 /// Short relative time for activity records, from elapsed seconds.
 pub fn elapsed_label(seconds: u64) -> String {
     match seconds {
         0..=9 => "just now".into(),
-        10..=59 => format!("{seconds} s ago"),
-        60..=3599 => format!("{} min ago", seconds / 60),
-        _ => format!("{} h ago", seconds / 3600),
+        10..SECS_PER_MINUTE => format!("{seconds} s ago"),
+        SECS_PER_MINUTE..SECS_PER_HOUR => format!("{} min ago", seconds / SECS_PER_MINUTE),
+        _ => format!("{} h ago", seconds / SECS_PER_HOUR),
     }
 }
 
