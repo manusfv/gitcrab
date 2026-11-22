@@ -208,32 +208,26 @@ impl Command {
         Availability::Enabled
     }
 
-    /// Tooltip text naming the upstream and the commits Pull or Push would
-    /// move as last fetched, such as “Push 2 commits to origin/main”.
-    pub fn describe_with_upstream(self, cx: &CommandContext, upstream: Option<&str>) -> String {
-        let availability = self.availability(cx);
-        if !availability.enabled() {
-            return self.describe_availability(availability);
+    /// The toolbar button's tooltip: the action's name, such as "Push" or
+    /// "Pull (fast-forward if possible)" for Pull's default mode, or for Undo
+    /// and Redo the step they act on, such as `Undo commit “Fix parser”`. A
+    /// disabled command gives its reason instead; Undo and Redo give theirs
+    /// in one line, leaving the full explanation to the status bar.
+    pub fn toolbar_tooltip(self, cx: &CommandContext, summary: Option<&str>) -> String {
+        use crate::journal::{NOTHING_TO_REDO, NOTHING_TO_UNDO};
+        if let Availability::Disabled(reason) = self.availability(cx) {
+            return match self {
+                Self::Undo if reason == NOTHING_TO_UNDO => "No recent action to undo".to_owned(),
+                Self::Redo if reason == NOTHING_TO_REDO => "No recent undo to redo".to_owned(),
+                Self::Undo | Self::Redo => reason.to_owned(),
+                _ => self.describe(cx),
+            };
         }
-        let commits = |count: usize| match count {
-            1 => "1 commit".to_owned(),
-            count => format!("{count} commits"),
-        };
-        match (self, upstream) {
-            (Self::Fetch, _) => {
-                "Download new commits from every remote and prune deleted branches".to_owned()
-            }
-            (Self::Pull, Some(name)) if cx.behind == 0 => {
-                format!("Fetch and pull from {name}, which had no new commits when last fetched")
-            }
-            (Self::Pull, Some(name)) => format!("Pull {} from {name}", commits(cx.behind)),
-            (Self::Push, Some(name)) if cx.upstream => {
-                format!("Push {} to {name}", commits(cx.ahead))
-            }
-            (Self::Push, _) if !cx.upstream => {
-                "Push and set the branch's upstream (git push -u)".to_owned()
-            }
-            _ => self.describe_availability(availability),
+        match self {
+            Self::Undo | Self::Redo => self.describe_with_summary(cx, summary),
+            Self::Pull => crate::git::PullMode::ALL[0].label().to_owned(),
+            Self::PopStash => "Pop Stash".to_owned(),
+            _ => self.label().to_owned(),
         }
     }
 
@@ -449,28 +443,56 @@ mod tests {
     }
 
     #[test]
-    fn network_commands_are_enabled_with_a_tracked_branch_and_name_their_counts() {
+    fn network_commands_are_enabled_with_a_tracked_branch() {
         let cx = tracking();
         for command in [Command::Fetch, Command::Pull, Command::Push] {
             assert!(command.availability(&cx).enabled(), "{command:?}");
         }
         assert!(!Command::Fetch.writes());
         assert!(Command::Pull.writes() && Command::Push.writes());
+    }
+
+    #[test]
+    fn toolbar_tooltips_name_the_action() {
+        let cx = tracking();
+        let tooltips = Command::PRIMARY.map(|command| command.toolbar_tooltip(&cx, None));
         assert_eq!(
-            Command::Push.describe_with_upstream(&cx, Some("origin/main")),
-            "Push 2 commits to origin/main"
+            &tooltips[2..],
+            [
+                "Pull (fast-forward if possible)",
+                "Push",
+                "Branch",
+                "Stash",
+                "Pop Stash"
+            ]
         );
         assert_eq!(
-            Command::Pull.describe_with_upstream(&cx, Some("origin/main")),
-            "Pull 3 commits from origin/main"
+            tooltips[..2],
+            ["No recent action to undo", "No recent undo to redo"]
         );
-        let no_upstream = CommandContext {
-            upstream: false,
+
+        use crate::journal::{Blocker, StepState};
+        let blocked = CommandContext {
+            undo: StepState::Blocked(Blocker::BranchMissing),
             ..cx
         };
-        assert!(Command::Push
-            .describe_with_upstream(&no_upstream, None)
-            .ends_with("(git push -u)"));
+        assert_eq!(
+            Command::Undo.toolbar_tooltip(&blocked, None),
+            "The branch no longer exists."
+        );
+        let busy = CommandContext { busy: true, ..cx };
+        assert_eq!(
+            Command::Undo.toolbar_tooltip(&busy, None),
+            "A Git operation is running. Wait for it to finish."
+        );
+        let empty = CommandContext {
+            stash_count: 0,
+            ..cx
+        };
+        assert_eq!(
+            Command::PopStash.toolbar_tooltip(&empty, None),
+            Command::PopStash.describe(&empty)
+        );
     }
 
     #[test]

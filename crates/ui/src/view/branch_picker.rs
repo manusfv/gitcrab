@@ -34,18 +34,6 @@ impl GitCrab {
         );
         let checkout_reason = Command::Checkout.availability(commands).reason();
         let enabled = commands.repository && !commands.modal;
-        let tooltip = match (&current, snapshot) {
-            (_, None) => "Open a repository to choose a branch".to_owned(),
-            (Some(name), Some(_)) => format!(
-                "Checked out: {name}. New commits go here. Choose a branch to review switching to it."
-            ),
-            (None, Some(s)) if s.head_id.is_empty() => format!(
-                "{value}. Choose a branch to review switching to it."
-            ),
-            (None, Some(_)) => format!(
-                "{value}. HEAD is not on a branch. Choose a branch to review switching to it."
-            ),
-        };
 
         let focus = self.focus.clone();
         let weak = cx.weak_entity();
@@ -74,8 +62,7 @@ impl GitCrab {
                 width,
                 height,
             )
-            .set_disabled(!enabled)
-            .tooltip(tooltip),
+            .set_disabled(!enabled),
             width.max(px(MIN_POPUP_WIDTH)),
             &focus,
             // Reviews a checkout of the branch unless it is already checked out.
