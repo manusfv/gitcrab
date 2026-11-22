@@ -2,10 +2,9 @@
 //!
 //! A dialog is a [`ModalHeader`] and a width applied with [`ModalFrame`], a
 //! [`modal_body`] passed to [`ModalFrame::body`] and a [`ModalFooter`]. The
-//! body pieces
-//! ([`subject`], [`paragraph`], [`callout`], [`section`], [`setting_row`],
-//! [`shortcut_row`]) keep content consistent between dialogs. The rules they
-//! encode are in `docs/modals.md`.
+//! body pieces ([`subject`], [`paragraph`], [`callout`], [`section`],
+//! [`setting_row`], [`shortcut_row`]) keep content consistent between
+//! dialogs.
 use super::buttons::{basic, ButtonKind, ControlSize};
 use super::layout::scroll_area;
 use crate::theme::Role;
