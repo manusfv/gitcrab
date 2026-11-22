@@ -2179,7 +2179,7 @@ checksum = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10"
 
 [[package]]
 name = "gitcrab"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "embed-resource",
  "gitcrab-git",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "gitcrab-core"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "semver",
  "serde",
@@ -2201,7 +2201,7 @@ dependencies = [
 
 [[package]]
 name = "gitcrab-git"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "gitcrab-core",
  "libc",
@@ -2213,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "gitcrab-settings"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "gitcrab-core",
  "serde",
@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "gitcrab-ui"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "async-channel",
  "gitcrab-core",
@@ -2236,7 +2236,7 @@ dependencies = [
 
 [[package]]
 name = "gitcrab-update"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "base64 0.22.1",
  "cargo-packager-updater",
