@@ -9,7 +9,7 @@ mod repository;
 mod review;
 mod settings;
 mod sidebar;
-use super::components::{self, prelude::*};
+use super::components::{self, modal, prelude::*};
 use super::preferences::Preferences;
 use super::theme::Role;
 use super::theme::*;
@@ -1633,20 +1633,38 @@ impl GitCrab {
         window.open_alert_dialog(cx, move |d, w, cx| {
             let content = weak.update(cx, |v, cx| v.sidebar(w, cx)).ok();
             let closed = closed.clone();
-            d.title("References")
-                .footer(components::dialog_footer([components::dialog_ok(
-                    "OK",
-                    components::ButtonKind::Primary,
-                    cx,
-                )]))
-                .p_4()
-                .child(div().h(px(400.)).children(content))
-                .on_close(move |_, _, cx| {
-                    let _ = closed.update(cx, |v, cx| {
-                        v.references_open = false;
-                        cx.notify();
-                    });
-                })
+            d.frame(
+                ModalHeader::new("References")
+                    .description("Choose a reference to show it in the history.")
+                    .closable(),
+                ModalWidth::Medium,
+                cx,
+            )
+            .footer(ModalFooter::new().action(components::dialog_ok(
+                "Close",
+                components::ButtonKind::Primary,
+                cx,
+            )))
+            .fill_body(
+                440.,
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_role(Role::BorderDivider)
+                    .overflow_hidden()
+                    .children(content),
+            )
+            .on_close(move |_, _, cx| {
+                let _ = closed.update(cx, |v, cx| {
+                    v.references_open = false;
+                    cx.notify();
+                });
+            })
         });
     }
 
@@ -1955,93 +1973,83 @@ impl GitCrab {
                 .map(OperationRecord::summary)
                 .collect::<Vec<_>>()
                 .join("\n");
-            dialog
-                .title("Activity · this tab")
-                .footer(components::dialog_footer([components::dialog_ok(
-                    "OK",
-                    components::ButtonKind::Primary,
-                    cx,
-                )]))
-                .p_4()
-                .child(
+            let empty = records.is_empty();
+            let list = div().id("activity-records").flex().flex_col().children(
+                records.iter().enumerate().map(|(i, r)| {
+                    let copy = r.summary();
+                    let status = {
+                        use gitcrab_core::git::FailureKind;
+                        match r.failure {
+                            None => Role::StatusSuccessFg,
+                            Some(FailureKind::Rejected) => Role::StatusWarningFg,
+                            Some(FailureKind::Conflict | FailureKind::ConflictMarkers) => {
+                                Role::StatusConflictFg
+                            }
+                            Some(_) => Role::StatusErrorFg,
+                        }
+                    };
                     div()
+                        .group("activity-record")
+                        .py(scaled(10.))
                         .flex()
-                        .items_center()
-                        .gap_2()
+                        .items_start()
+                        .gap(scaled(12.))
+                        .when(i > 0, |row| {
+                            row.border_t_1().border_role(Role::BorderDivider)
+                        })
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
-                                .text_role(Role::TextSecondary)
-                                .child(repo.clone()),
-                        )
-                        .child(
-                            components::sized(
-                                Button::new("activity-copy-all").label("Copy all").ghost(),
-                                ControlSize::Compact,
-                            )
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(all.clone()))
-                            }),
-                        ),
-                )
-                .child(scroll_area(
-                    "activity-records",
-                    &scroll,
-                    div().id("activity-records").max_h(px(360.)).children(
-                        records.iter().enumerate().map(|(i, r)| {
-                            let copy = r.summary();
-                            div()
-                                .py_2()
                                 .flex()
-                                .gap_2()
-                                .border_b_1()
-                                .border_role(Role::BorderDivider)
+                                .flex_col()
+                                .gap(scaled(4.))
                                 .child(
                                     div()
-                                        .flex_1()
-                                        .min_w_0()
                                         .flex()
-                                        .flex_col()
-                                        .gap_1()
+                                        .flex_wrap()
+                                        .items_center()
+                                        .gap(scaled(8.))
                                         .child(
                                             div()
-                                                .flex()
-                                                .flex_wrap()
-                                                .gap_2()
-                                                .child(
-                                                    div()
-                                                        .font_weight(FontWeight::SEMIBOLD)
-                                                        .child(r.action.clone()),
-                                                )
-                                                .when_some(r.target.clone(), |row, target| {
-                                                    row.child(target)
-                                                })
-                                                .child(
-                                                    div()
-                                                        .text_role(if r.failure.is_some() {
-                                                            Role::StatusErrorFg
-                                                        } else {
-                                                            Role::StatusSuccessFg
-                                                        })
-                                                        .child(r.status()),
-                                                ),
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_role(Role::TextDefault)
+                                                .child(r.action.clone()),
                                         )
-                                        .child(
-                                            div()
-                                                .text_size(scaled(12.))
-                                                .text_role(Role::TextMuted)
-                                                .child(gitcrab_core::presentation::elapsed_label(
-                                                    r.at.elapsed().as_secs(),
-                                                )),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(scaled(12.))
-                                                .text_role(Role::TextSecondary)
-                                                .child(r.details.clone()),
-                                        ),
+                                        .when_some(r.target.clone(), |row, target| {
+                                            row.child(
+                                                div()
+                                                    .font_family(CODE_FONT)
+                                                    .text_size(scaled(12.))
+                                                    .text_role(Role::TextSecondary)
+                                                    .child(target),
+                                            )
+                                        })
+                                        .child(Badge::role(r.status(), status)),
+                                )
+                                .when(!r.details.is_empty(), |column| {
+                                    column.child(
+                                        div()
+                                            .text_size(scaled(12.))
+                                            .line_height(relative(1.45))
+                                            .text_role(Role::TextSecondary)
+                                            .child(r.details.clone()),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(scaled(4.))
+                                .child(
+                                    div()
+                                        .text_size(scaled(12.))
+                                        .text_role(Role::TextMuted)
+                                        .child(gitcrab_core::presentation::elapsed_label(
+                                            r.at.elapsed().as_secs(),
+                                        )),
                                 )
                                 .child(
                                     components::sized(
@@ -2050,6 +2058,10 @@ impl GitCrab {
                                             .ghost(),
                                         ControlSize::Compact,
                                     )
+                                    .w(scaled(28.))
+                                    .px_0()
+                                    .mt(scaled(-4.))
+                                    .tab_stop(true)
                                     .tooltip("Copy this record")
                                     .on_click(
                                         move |_, _, cx| {
@@ -2058,10 +2070,55 @@ impl GitCrab {
                                             ))
                                         },
                                     ),
+                                ),
+                        )
+                }),
+            );
+            dialog
+                .frame(
+                    ModalHeader::new("Activity")
+                        .description(format!("Operations run from this tab in {repo}."))
+                        .closable(),
+                    ModalWidth::Large,
+                    cx,
+                )
+                .footer(
+                    ModalFooter::new()
+                        .when(!empty, |footer| {
+                            footer.leading(
+                                components::basic(
+                                    Button::new("activity-copy-all")
+                                        .icon(icon("copy"))
+                                        .label("Copy all"),
+                                    components::ButtonKind::Ghost,
+                                    ControlSize::Compact,
                                 )
-                        }),
-                    ),
-                ))
+                                .tab_stop(true)
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(all.clone()))
+                                }),
+                            )
+                        })
+                        .action(components::dialog_ok(
+                            "Close",
+                            components::ButtonKind::Primary,
+                            cx,
+                        )),
+                )
+                .body(
+                    &scroll,
+                    modal_body().map(|body| {
+                        if empty {
+                            body.child(div().py(scaled(24.)).flex().justify_center().child(
+                                modal::fine_print(
+                                    "Nothing yet. Operations run from this tab appear here.",
+                                ),
+                            ))
+                        } else {
+                            body.child(list)
+                        }
+                    }),
+                )
         });
     }
     fn can_commit(&self) -> bool {
@@ -2346,6 +2403,7 @@ impl GitCrab {
         self.button(id, "")
             .icon(icon(glyph).size(scaled(GLYPH_SIZE)))
             .size(scaled(CONTROL_HEIGHT))
+            .px_0()
             .flex_none()
             .tooltip(name)
     }

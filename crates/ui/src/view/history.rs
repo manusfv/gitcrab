@@ -826,13 +826,16 @@ impl GitCrab {
                             .items_center()
                             .bg_role(Role::SurfaceChrome)
                             .child(
-                                self.button("history-columns", "")
-                                    .icon(icon("columns").size(scaled(14.)))
-                                    .size(scaled(24.))
-                                    .tooltip("Columns: show, order and size history columns")
-                                    .dropdown_menu(move |menu, w, cx| {
-                                        Self::columns_menu(weak.clone(), menu, w, cx)
-                                    }),
+                                self.icon_button(
+                                    "history-columns",
+                                    "columns",
+                                    "Columns: show, order and size history columns",
+                                )
+                                .icon(icon("columns").size(scaled(14.)))
+                                .size(scaled(24.))
+                                .dropdown_menu(move |menu, w, cx| {
+                                    Self::columns_menu(weak.clone(), menu, w, cx)
+                                }),
                             )
                     }),
             )

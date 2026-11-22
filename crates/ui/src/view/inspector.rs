@@ -1038,15 +1038,10 @@ impl GitCrab {
         let epoch = self.state.epoch;
         let weak = cx.weak_entity();
         let cancel_focus = cx.focus_handle();
+        let scroll = ScrollHandle::new();
         let initial_focus = cancel_focus.clone();
         let display = gitcrab_core::git::display_path(&path);
         window.open_alert_dialog(cx, move |dialog, _, cx| {
-            let cancel = div()
-                .track_focus(&cancel_focus)
-                .rounded(px(4.))
-                .focus(|s| s.border_2().border_role(Role::InteractionFocus))
-                .child(components::dialog_cancel(cx))
-                .into_any_element();
             let weak = weak.clone();
             let path = path.clone();
             let confirm = components::style(
@@ -1079,27 +1074,43 @@ impl GitCrab {
                     }
                 });
                 w.close_dialog(cx);
-            })
-            .into_any_element();
+            });
+            let header = if markers {
+                ModalHeader::new("Mark resolved with conflict markers?")
+                    .description("The file still looked unresolved when GitCrab last checked.")
+                    .tone(Tone::Warning)
+            } else {
+                ModalHeader::new("Mark conflict resolved?")
+                    .description("Stage this file's working-tree content as the resolution.")
+            };
+            let note = if markers {
+                modal::callout(
+                    Tone::Warning,
+                    "It contained conflict markers (<<<<<<<, =======, >>>>>>>). Continuing records the markers as file content.",
+                )
+            } else {
+                modal::fine_print(
+                    "If the file still contains conflict markers (<<<<<<<, =======, >>>>>>>), GitCrab refuses and keeps the conflict.",
+                )
+            };
             dialog
-                .title("Mark conflict resolved?")
+                .frame(header, ModalWidth::Small, cx)
                 .confirm()
-                .p_4()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(div().font_family(CODE_FONT).child(display.clone()))
-                        .child("GitCrab stages the current working-tree file as the resolution and removes its conflict entries from the index. Deleting the file resolves it as a deletion.")
-                        .child(if markers {
-                            "This file still contained conflict markers (<<<<<<<, =======, >>>>>>>) when GitCrab last checked. Continuing records the markers as file content."
-                        } else {
-                            "If the file still contains conflict markers (<<<<<<<, =======, >>>>>>>), GitCrab refuses and keeps the conflict."
-                        }),
+                .body(
+                    &scroll,
+                    modal_body()
+                        .child(modal::subject(display.clone(), None))
+                        .child(modal::paragraph(
+                            "GitCrab removes the file's conflict entries from the index and stages it as it is in the working tree. A deleted file resolves as a deletion.",
+                        ))
+                        .child(note),
                 )
                 .on_ok(|_, _, _| true)
-                .footer(components::dialog_footer([cancel, confirm]))
+                .footer(
+                    ModalFooter::new()
+                        .action(components::dialog_cancel_focused(&cancel_focus, cx))
+                        .action(confirm),
+                )
         });
         window.on_next_frame(move |w, cx| initial_focus.focus(w, cx));
     }

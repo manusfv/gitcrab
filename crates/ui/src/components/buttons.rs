@@ -348,9 +348,21 @@ pub fn dialog_cancel(cx: &App) -> Button {
     .on_click(|_, window, cx| window.close_dialog(cx))
 }
 
-/// A right-aligned row of dialog buttons, for dialogs with a custom footer.
-pub fn dialog_footer(buttons: impl IntoIterator<Item = AnyElement>) -> Div {
-    div().flex().justify_end().gap_2().pt_2().children(buttons)
+/// The Cancel button of a dialog whose confirming action is destructive. It
+/// tracks `focus`, which the caller focuses once the dialog opens, so Enter
+/// and Space land on the safe choice. The ring sits in a negative margin so
+/// focusing it does not shift the footer.
+pub fn dialog_cancel_focused(focus: &FocusHandle, cx: &App) -> AnyElement {
+    div()
+        .track_focus(focus)
+        .flex_none()
+        .m(px(-2.))
+        .rounded(px(5.))
+        .border_2()
+        .border_color(gpui::transparent_black())
+        .focus(|s| s.border_role(Role::InteractionFocus))
+        .child(dialog_cancel(cx))
+        .into_any_element()
 }
 
 /// A dialog's confirming button, such as OK. Clicking it confirms the dialog

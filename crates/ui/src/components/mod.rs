@@ -8,6 +8,7 @@
 //! - [`badge`]: tinted labels for counts, statuses and markers.
 //! - [`layout`]: pane surfaces, header strips, groups and dividers.
 //! - [`menu`]: popup menu entries with the pointer cursor.
+//! - [`modal`]: the dialog frame (header, body, footer) and its content pieces.
 //! - [`picker`]: the searchable popup list for choosing a branch, repository or tab.
 //! - [`rail`]: drag-to-reorder for tab strips and column headers.
 //!
@@ -17,6 +18,7 @@ pub mod buttons;
 pub mod layout;
 pub mod list_row;
 pub mod menu;
+pub mod modal;
 pub mod picker;
 pub mod rail;
 
@@ -29,6 +31,9 @@ pub mod prelude {
     pub use super::buttons::{ButtonExt as _, ControlSize};
     pub use super::layout::*;
     pub use super::list_row::{disclosure, ListRow};
+    pub use super::modal::{
+        modal_body, ModalFooter, ModalFrame as _, ModalHeader, ModalWidth, Tone,
+    };
     pub use super::picker::{Picker, PickerEntry, PickerItem};
 }
 
