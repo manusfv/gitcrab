@@ -40,9 +40,6 @@ use std::ops::Range;
 
 /// What startup restores, shown where recent repositories are listed.
 const SESSION_NOTE: &str = "At startup GitCrab reopens the repositories that were open in your tabs. Empty tabs and commit drafts are not restored.";
-/// Shown beside the commit composer while a draft exists.
-pub(super) const DRAFT_NOTE: &str =
-    "Draft kept in memory for this tab until you commit or close it. It is not saved to disk.";
 
 /// The action whose key binding a command's tooltip shows.
 fn command_action(command: Command) -> Option<&'static dyn gpui::Action> {

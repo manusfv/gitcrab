@@ -475,6 +475,16 @@ fn resolve_decoration(snapshot: &crate::git::RepoSnapshot, label: &str) -> Decor
     }
 }
 
+/// Summary length Git tools display without truncating. Longer summaries are
+/// still valid.
+pub const SUMMARY_RECOMMENDED_CHARS: usize = 72;
+
+/// Characters left before `summary` passes [`SUMMARY_RECOMMENDED_CHARS`],
+/// negative once it does.
+pub fn summary_chars_left(summary: &str) -> isize {
+    SUMMARY_RECOMMENDED_CHARS as isize - summary.chars().count() as isize
+}
+
 /// Joins a commit summary and body the way Git stores the message.
 pub fn compose_message(summary: &str, body: &str) -> String {
     if body.is_empty() {

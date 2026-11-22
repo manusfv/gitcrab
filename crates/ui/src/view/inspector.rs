@@ -1118,7 +1118,8 @@ impl GitCrab {
     fn composer(&self, cx: &mut Context<Self>) -> Div {
         let snapshot = self.state.snapshot.as_ref().unwrap();
         let staged_count = snapshot.side(true).len();
-        let summary_length = self.draft.read(cx).value().chars().count();
+        let remaining =
+            gitcrab_core::presentation::summary_chars_left(self.draft.read(cx).value().as_ref());
         let no_summary = self.draft.read(cx).value().trim().is_empty();
         let git_blocker = snapshot.commit_blocker();
         // Only blockers the user must resolve elsewhere get a visible note.
@@ -1153,8 +1154,7 @@ impl GitCrab {
                 n => format!("Commit {n} staged files"),
             }
         };
-        let has_draft = !self.state.draft.trim().is_empty();
-        let short_head = snapshot.head_id.chars().take(8).collect::<String>();
+        let short_head = short_id(&snapshot.head_id);
         let branches_at_head: Vec<String> = if snapshot.is_detached() {
             snapshot
                 .branches
@@ -1165,9 +1165,15 @@ impl GitCrab {
         } else {
             vec![]
         };
-        let counter_size = scaled(11.);
-        let limit = geometry::SIZE_COMMIT_EDITOR_RECOMMENDED_SUMMARY_LENGTH as i64;
-        let remaining = limit - summary_length as i64;
+        let summary_counter = div()
+            .id("summary-length")
+            .flex_none()
+            .text_role(if remaining < 0 {
+                Role::StatusWarningFg
+            } else {
+                Role::TextMuted
+            })
+            .child(remaining.to_string());
         div()
             .flex_none()
             .flex()
@@ -1224,64 +1230,34 @@ impl GitCrab {
                     .border_1()
                     .border_role(Role::BorderDivider)
                     .bg_role(Role::SurfaceChrome)
-                    .when(has_draft, |el| {
-                        el.tooltip(|w, cx| Tooltip::new(DRAFT_NOTE).build(w, cx))
-                    })
-                    .child(
-                        // Summary row: the input fills it and the count of characters
-                        // left in the suggested limit sits at its right edge.
+                    .child(if self.settings_open {
+                        Self::editor_preview(
+                            self.draft.read(cx).value().as_ref(),
+                            geometry::SIZE_COMMIT_EDITOR_SUMMARY,
+                            self.inspector_editor_width(),
+                            "Commit summary",
+                        )
+                    } else {
+                        // The counter is the input's suffix, so it shares the
+                        // summary's line box and font size. The wrapper pins the
+                        // height so the input never grows over the file lists.
                         div()
                             .w_full()
                             .flex_none()
-                            .flex()
-                            .items_center()
+                            .overflow_hidden()
                             .h(scaled(geometry::SIZE_COMMIT_EDITOR_SUMMARY))
-                            .child(if self.settings_open {
-                                self.editor(
-                                    &self.draft,
-                                    geometry::SIZE_COMMIT_EDITOR_SUMMARY,
-                                    self.inspector_editor_width(),
-                                    "Commit summary",
-                                    cx,
-                                )
-                            } else {
-                                // The wrapper pins the height so the input can never
-                                // grow with its content and cover the file lists.
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .h(scaled(geometry::SIZE_COMMIT_EDITOR_SUMMARY))
-                                    .child(
-                                        Input::new(&self.draft)
-                                            .px(scaled(geometry::SIZE_COMMIT_EDITOR_INSET_X))
-                                            .appearance(false)
-                                            .bordered(false)
-                                            .w_full()
-                                            .h(scaled(geometry::SIZE_COMMIT_EDITOR_SUMMARY)),
-                                    )
-                                    .into_any_element()
-                            })
                             .child(
-                                div()
-                                    .id("summary-length")
-                                    .flex_none()
-                                    .pr(scaled(geometry::SIZE_COMMIT_EDITOR_INSET_X))
-                                    .text_size(counter_size)
-                                    .text_role(if remaining < 0 {
-                                        Role::StatusWarningFg
-                                    } else {
-                                        Role::TextMuted
-                                    })
-                                    .child(remaining.to_string())
-                                    .tooltip(|w, cx| {
-                                        Tooltip::new(
-                                            "Characters left in the suggested 72. Longer summaries are still valid but read worse in Git tools.",
-                                        )
-                                        .build(w, cx)
-                                    }),
-                            ),
-                    )
+                                Input::new(&self.draft)
+                                    .px(scaled(geometry::SIZE_COMMIT_EDITOR_INSET_X))
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .w_full()
+                                    .h(scaled(geometry::SIZE_COMMIT_EDITOR_SUMMARY))
+                                    .text_size(scaled(TEXT_SIZE_BODY))
+                                    .suffix(summary_counter),
+                            )
+                            .into_any_element()
+                    })
                     .child(div().border_t_1().border_role(Role::BorderDivider))
                     .child(if self.settings_open {
                         Self::editor_preview(
@@ -1297,9 +1273,11 @@ impl GitCrab {
                             .overflow_hidden()
                             .h(scaled(geometry::SIZE_COMMIT_EDITOR_BODY_MIN))
                             .child(
+                                // Small pads the text by SIZE_COMMIT_EDITOR_INSET_X
+                                // across and barely at all down, so it starts just
+                                // under the summary and lines up with it.
                                 Textarea::new(&self.description)
-                                    // Multi-line inputs pad their text by SIZE_COMMIT_EDITOR_INSET_X
-                                    // themselves; an outer inset would double it.
+                                    .small()
                                     .appearance(false)
                                     .bordered(false)
                                     .w_full()
