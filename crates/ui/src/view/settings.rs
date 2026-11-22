@@ -35,13 +35,12 @@ impl GitCrab {
         let weak = cx.weak_entity();
         let close = weak.clone();
         let scroll = self.settings_scroll.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_modal(cx, move |dialog, _, cx| {
             let content = weak.update(cx, |v, cx| v.settings_dialog(cx)).ok();
             let status = weak
                 .read_with(cx, |v, _| v.appearance_status.clone())
                 .unwrap_or_default();
             let close = close.clone();
-            let footer_close = close.clone();
             let (text, role) = match &status {
                 AppearanceStatus::Idle => (String::new(), Role::TextMuted),
                 AppearanceStatus::Saving(_) => ("Saving…".to_owned(), Role::TextMuted),
@@ -60,19 +59,11 @@ impl GitCrab {
                         .text_role(role)
                         .child(text),
                 )
-                .action(
-                    components::style(
-                        Button::new("settings-close").label("Done").tab_stop(true),
-                        components::ButtonKind::Primary,
-                        ControlSize::Regular,
-                        cx,
-                    )
-                    .on_click(move |_, w, cx| {
-                        // The same persistence path as Escape and dismissal.
-                        let _ = footer_close.update(cx, |v, cx| v.finish_settings(w, cx));
-                        w.close_dialog(cx);
-                    }),
-                );
+                .action(components::dialog_ok(
+                    "Done",
+                    components::ButtonKind::Primary,
+                    cx,
+                ));
             dialog
                 .frame(
                     ModalHeader::new("Appearance")

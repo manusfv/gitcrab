@@ -1671,7 +1671,7 @@ impl GitCrab {
         self.references_open = true;
         let weak = cx.weak_entity();
         let closed = weak.clone();
-        window.open_alert_dialog(cx, move |d, w, cx| {
+        window.open_modal(cx, move |d, w, cx| {
             let content = weak.update(cx, |v, cx| v.sidebar(w, cx)).ok();
             let closed = closed.clone();
             d.frame(
@@ -2005,7 +2005,7 @@ impl GitCrab {
         let repo = display_path(&self.state.path);
         let weak = cx.weak_entity();
         let scroll = self.activity_scroll.clone();
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_modal(cx, move |dialog, _, cx| {
             let records = weak
                 .read_with(cx, |v, _| v.activity.clone())
                 .unwrap_or_default();
