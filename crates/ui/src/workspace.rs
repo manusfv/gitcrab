@@ -89,6 +89,9 @@ const TAB_ACCENT: f32 = 1.;
 /// Room kept at the end of the strip so the last tab never touches the buttons.
 const TAB_STRIP_END_MIN: f32 = 8.;
 const TAB_STRIP_BUTTON: f32 = 28.;
+/// Space on each side of the New tab button, between the last tab and the
+/// rest of the strip.
+const TAB_STRIP_BUTTON_INSET: f32 = 4.;
 /// Tabs sit flush, so a drag places them with no gap between neighbours.
 const TAB_DRAG_GAP: f32 = 0.;
 const TAB_PICKER_WIDTH: f32 = 280.;
@@ -1151,16 +1154,6 @@ impl Render for Workspace {
                 now,
             ));
         }
-        strip = strip.child(
-            div()
-                .id("repository-tabs-end")
-                .flex_1()
-                .min_w(scaled(TAB_STRIP_END_MIN))
-                .border_b_1()
-                .border_role(Role::BorderDivider),
-        );
-        // New tab and the tab list stay outside the scrolling strip so they
-        // remain reachable however many tabs are open.
         let new_tab = Button::new("new-repository-tab")
             .ghost()
             .small()
@@ -1180,6 +1173,28 @@ impl Render for Workspace {
                     v.add(None, w, cx);
                 }
             }));
+        // New tab follows the last tab, as in a browser. The tab list stays
+        // outside the scrolling strip so it remains reachable however many
+        // tabs are open, and it offers New tab too.
+        strip = strip
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .px(scaled(TAB_STRIP_BUTTON_INSET))
+                    .border_b_1()
+                    .border_role(Role::BorderDivider)
+                    .child(new_tab),
+            )
+            .child(
+                div()
+                    .id("repository-tabs-end")
+                    .flex_1()
+                    .min_w(scaled(TAB_STRIP_END_MIN))
+                    .border_b_1()
+                    .border_role(Role::BorderDivider),
+            );
         let tab_entries = tab_labels
             .iter()
             .enumerate()
@@ -1296,7 +1311,6 @@ impl Render for Workspace {
                             .px_2()
                             .border_b_1()
                             .border_role(Role::BorderDivider)
-                            .child(new_tab)
                             .child(tab_list),
                     ),
             )
