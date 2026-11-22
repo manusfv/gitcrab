@@ -113,6 +113,7 @@ impl WatchScope {
             )
             || relative.starts_with("refs")
             || relative == Path::new("info/grafts")
+            || relative == Path::new("logs/refs/stash")
     }
 
     /// Whether `path` is inside Git metadata rather than the worktree.

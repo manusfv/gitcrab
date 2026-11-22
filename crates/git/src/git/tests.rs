@@ -1466,3 +1466,97 @@ fn ignored_paths_reports_ignored_files_but_not_tracked_or_plain_ones() {
     // Nothing ignored is exit status 1, which is not a failure.
     assert!(git.ignored_paths(&asked[3..]).unwrap().is_empty());
 }
+
+#[test]
+fn stashes_show_as_one_row_on_their_base_commit() {
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    fixture.write("a.txt", "base\n");
+    git.run(&["add", "."]).unwrap();
+    git.run(&["commit", "-qm", "base"]).unwrap();
+    git.run(&["checkout", "-qb", "side"]).unwrap();
+    fixture.write("a.txt", "side\n");
+    git.run(&["commit", "-qam", "side work"]).unwrap();
+    let side = git.run(&["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+    fixture.write("a.txt", "stashed\n");
+    fixture.write("untracked.txt", "new\n");
+    git.run(&["stash", "push", "-u", "-m", "on side"]).unwrap();
+    git.run(&["checkout", "-q", "main"]).unwrap();
+    git.run(&["branch", "-qD", "side"]).unwrap();
+    fixture.write("a.txt", "working\n");
+
+    let snapshot = git.snapshot(50).unwrap();
+    let stash = git
+        .run(&["rev-parse", "refs/stash"])
+        .unwrap()
+        .trim()
+        .to_owned();
+    let stash_rows: Vec<_> = snapshot.commits.iter().filter(|c| c.stash).collect();
+    assert_eq!(stash_rows.len(), 1);
+    assert_eq!(stash_rows[0].id, stash);
+    assert_eq!(stash_rows[0].parents, std::slice::from_ref(&side));
+    assert_eq!(stash_rows[0].subject, "On side: on side");
+    let position = |id: &str| snapshot.commits.iter().position(|c| c.id == id).unwrap();
+    assert!(position(&stash) < position(&side));
+    assert_eq!(snapshot.commits.len(), 3);
+    assert!(snapshot
+        .commits
+        .iter()
+        .all(|c| c.refs.iter().all(|r| r != "stash")));
+    assert_eq!(snapshot.stash_count, 1);
+}
+
+#[test]
+fn stash_rows_follow_date_order_and_wait_for_their_base() {
+    let commit = |id: &str, parent: &str, date: &str| Commit {
+        id: id.into(),
+        parents: if parent.is_empty() {
+            vec![]
+        } else {
+            vec![parent.into()]
+        },
+        date: date.into(),
+        ..Default::default()
+    };
+    let stash = |id: &str, base: &str, date: &str| Commit {
+        stash: true,
+        ..commit(id, base, date)
+    };
+    let history = [
+        commit("c", "b", "2026-01-03T00:00:00+00:00"),
+        commit("b", "a", "2026-01-02T00:00:00+00:00"),
+        commit("a", "", "2026-01-01T00:00:00+00:00"),
+    ];
+    let ids = |rows: Vec<Commit>| rows.into_iter().map(|c| c.id).collect::<Vec<_>>();
+    // Newer than every commit: at the top, though its base is the oldest.
+    assert_eq!(
+        ids(with_stashes(
+            &history,
+            [stash("s", "a", "2026-01-04T00:00:00+00:00")]
+        )),
+        ["s", "c", "b", "a"]
+    );
+    // Offsets count: 01:00+02:00 is earlier than b.
+    assert_eq!(
+        ids(with_stashes(
+            &history,
+            [stash("s", "a", "2026-01-02T01:00:00+02:00")]
+        )),
+        ["c", "b", "s", "a"]
+    );
+    // Never below its base, even with an older date.
+    assert_eq!(
+        ids(with_stashes(
+            &history,
+            [stash("s", "b", "2025-12-31T00:00:00Z")]
+        )),
+        ["c", "s", "b", "a"]
+    );
+    assert_eq!(
+        ids(with_stashes(
+            &history,
+            [stash("s", "missing", "2026-01-04T00:00:00Z")]
+        )),
+        ["c", "b", "a"]
+    );
+}

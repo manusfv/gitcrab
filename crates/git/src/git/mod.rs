@@ -470,7 +470,12 @@ pub(crate) struct HistoryCache {
     pub(super) refs: String,
     pub(super) head: String,
     pub(super) limit: usize,
+    /// History as `git log` printed it, which paging appends to.
     pub(super) commits: Vec<Commit>,
+    /// `git stash list` output the rows were built with.
+    pub(super) stashes: String,
+    /// `commits` with the stash entries placed among them.
+    pub(super) rows: Vec<Commit>,
     pub(super) graph: crate::graph::Graph,
     pub(super) metadata: u64,
 }

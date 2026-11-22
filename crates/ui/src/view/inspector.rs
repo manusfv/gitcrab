@@ -577,6 +577,10 @@ impl GitCrab {
                     .child(scrollbar_overlay("committed-files", &files_scroll)),
             );
         }
+        // Commit actions would act on Git's internal stash commit, not the stash.
+        if c.stash {
+            return el;
+        }
         el.child(
             div()
                 .flex_none()
