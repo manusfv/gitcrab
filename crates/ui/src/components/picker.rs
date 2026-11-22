@@ -41,6 +41,8 @@ pub struct PickerItem {
     tooltip: Option<SharedString>,
 }
 
+impl gpui::prelude::FluentBuilder for PickerItem {}
+
 impl PickerItem {
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {

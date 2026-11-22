@@ -13,6 +13,7 @@ use gpui::{prelude::*, *};
 use std::{cell::RefCell, rc::Rc};
 
 use components::rail::RailDrag;
+use components::shortcut_text;
 
 actions!(
     gitcrab,
@@ -1106,7 +1107,7 @@ impl Render for Workspace {
                     .child("+"),
             )
             .set_disabled(blocked)
-            .tooltip("New repository tab · Ctrl/Cmd+T")
+            .tooltip_with_action("New tab", &NewTab, None)
             .on_click(cx.listener(|v, _, w, cx| {
                 if !v.blocked(w, cx) {
                     v.add(None, w, cx);
@@ -1122,11 +1123,11 @@ impl Render for Workspace {
         let weak = cx.weak_entity();
         let tab_focus = self.tab_focus[&self.tabs[self.active].entity_id()].clone();
         let tab_list = {
-            let moves = [
-                ("Move tab left", "Ctrl+Shift+PgUp", -1, active_index > 0),
+            let moves: [(&str, &dyn Action, isize, bool); 2] = [
+                ("Move tab left", &MoveTabLeft, -1, active_index > 0),
                 (
                     "Move tab right",
-                    "Ctrl+Shift+PgDn",
+                    &MoveTabRight,
                     1,
                     active_index + 1 < tab_count,
                 ),
@@ -1135,14 +1136,16 @@ impl Render for Workspace {
                 .iter()
                 .map(|(_, label, active)| PickerItem::new(label.clone()).checked(*active).into())
                 .chain([PickerEntry::Rule])
-                .chain(moves.iter().map(|&(label, shortcut, _, available)| {
+                .chain(moves.iter().map(|&(label, action, _, available)| {
                     PickerItem::new(label)
-                        .note(shortcut)
+                        .when_some(shortcut_text(action, window), PickerItem::note)
                         .disabled(!available)
                         .into()
                 }))
                 .chain([PickerEntry::Rule])
-                .chain([PickerItem::new("New tab").note("Ctrl/Cmd+T").into()]);
+                .chain([PickerItem::new("New tab")
+                    .when_some(shortcut_text(&NewTab, window), PickerItem::note)
+                    .into()]);
             Picker::new(
                 "repository-tab-picker",
                 Button::new("repository-tab-list")
@@ -1153,7 +1156,7 @@ impl Render for Workspace {
                     .icon(icon("down"))
                     .label(format!("{tab_count}"))
                     .set_disabled(blocked)
-                    .tooltip("All tabs and tab order"),
+                    .tooltip("All tabs"),
                 px(280.),
                 &tab_focus,
                 move |index, w, cx| {

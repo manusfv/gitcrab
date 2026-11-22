@@ -859,7 +859,7 @@ impl GitCrab {
                                 self.icon_button(
                                     "history-columns",
                                     "columns",
-                                    "Columns: show, order and size history columns",
+                                    "Columns",
                                 )
                                 .icon(icon("columns").size(scaled(14.)))
                                 .size(scaled(geometry::SIZE_TARGET_INLINE))
@@ -1152,7 +1152,7 @@ impl GitCrab {
                                             .fixed_width(44.)
                                             .tooltip(
                                                 SharedString::from(format!("wip-{name}")),
-                                                format!("{count} {name} paths"),
+                                                format!("{count} {}", name.to_lowercase()),
                                             )
                                     })
                             }))

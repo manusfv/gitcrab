@@ -1,5 +1,5 @@
 use super::*;
-use gitcrab_core::sidebar::{branch_hint, section, section_key, tree_rows, RefFilter, TreeRow};
+use gitcrab_core::sidebar::{section, section_key, tree_rows, RefFilter, TreeRow};
 use std::rc::Rc;
 
 /// Horizontal inset shared by every sidebar row, header and the filter box.
@@ -92,7 +92,7 @@ impl GitCrab {
                     key,
                     depth,
                     name,
-                    path,
+                    path: _,
                     collapsed,
                 } => {
                     tree = tree.child(
@@ -109,10 +109,6 @@ impl GitCrab {
                                     .text_role(Role::TextMuted),
                             )
                             .label(format!("{name}/"))
-                            .tooltip(format!(
-                                "{} {path}/",
-                                if collapsed { "Expand" } else { "Collapse" }
-                            ))
                             .on_click(cx.listener(move |v, _, w, cx| {
                                 Self::toggle_collapsed(v, &key, w, cx)
                             })),
@@ -258,7 +254,7 @@ impl GitCrab {
                         glyph: "branch",
                         current,
                         previewed,
-                        tooltip: format!("{name} · {}", branch_hint(current, previewed)),
+                        tooltip: name.clone(),
                         on_click: Rc::new(move |v, e, w, cx| {
                             if e.click_count() == 2 {
                                 v.run_operation(Operation::Checkout, name.clone(), w, cx);

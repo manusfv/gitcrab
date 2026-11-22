@@ -212,7 +212,7 @@ impl GitCrab {
                         self.icon_button(
                             "copy-commit-info",
                             "copy",
-                            "Copy commit ID, author, date and message",
+                            "Copy commit details",
                         )
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(copy_info.clone()))
@@ -598,7 +598,13 @@ impl GitCrab {
                                 .disabled_when(
                                     !command.availability_for_commit(commands, parents).enabled(),
                                 )
-                                .tooltip(command.describe_for_commit(commands, parents))
+                                .when(
+                                    !command.availability_for_commit(commands, parents).enabled(),
+                                    |button| {
+                                        button
+                                            .tooltip(command.describe_for_commit(commands, parents))
+                                    },
+                                )
                                 .on_click(cx.listener(move |v, _, w, cx| {
                                     v.run_command(command, id.clone(), w, cx)
                                 }))
@@ -783,7 +789,11 @@ impl GitCrab {
                     .child(
                         self.button("operation-refresh", "Refresh")
                             .icon(icon("refresh"))
-                            .tooltip("Reread the repository after continuing or aborting in a terminal · F5")
+                            .tooltip_with_action(
+                                "Refresh after continuing or aborting in a terminal",
+                                &Refresh,
+                                Some(KEY_CONTEXT),
+                            )
                             .on_click(cx.listener(|v, _, w, cx| v.refresh(&Refresh, w, cx))),
                     ),
             )
@@ -806,8 +816,9 @@ impl GitCrab {
                     .when_some(first_conflict, |row, path| {
                         row.child(
                             self.action_button("review-conflicts", "Review conflicts")
-                                .tooltip("Open the first conflicted file")
-                                .on_click(cx.listener(move |v, _, w, cx| v.file(path.clone(), false, w, cx))),
+                                .on_click(cx.listener(move |v, _, w, cx| {
+                                    v.file(path.clone(), false, w, cx)
+                                })),
                         )
                     }),
             )
@@ -832,16 +843,10 @@ impl GitCrab {
             .as_ref()
             .map_or(0, |snapshot| snapshot.conflict_count());
         let staged = section.staged();
-        let (scope, tooltip) = if staged {
-            (
-                "entire index",
-                "Unstage every staged path in the repository when Git runs. Conflicted files keep their conflict entries.",
-            )
+        let conflict_note = if staged {
+            "Conflicted files keep their conflict entries"
         } else {
-            (
-                "includes files that appear later",
-                "Stage every changed path Git finds when it runs, including files that arrive after this list loaded. Conflicted files are left unresolved.",
-            )
+            "Conflicted files stay unresolved"
         };
         div()
             .w_full()
@@ -863,19 +868,7 @@ impl GitCrab {
                     })
                     .child(format!("{} ({count})", section.title())),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(scaled(11.))
-                    .text_role(Role::TextMuted)
-                    .child(match section {
-                        Section::Conflicts => "resolve each file explicitly".to_string(),
-                        _ if conflicts > 0 => format!("{scope} · conflicts kept"),
-                        _ => scope.to_string(),
-                    }),
-            )
+            .child(div().flex_1())
             .when(section != Section::Conflicts, |header| {
                 let id = match (staged, sticky) {
                     (true, false) => "unstage-all",
@@ -886,7 +879,7 @@ impl GitCrab {
                 header.child(
                     self.semantic_button(
                         id,
-                        format!("{} all ({count})", if staged { "Unstage" } else { "Stage" }),
+                        if staged { "Unstage all" } else { "Stage all" },
                         if staged {
                             components::ButtonKind::Unstage
                         } else {
@@ -896,7 +889,7 @@ impl GitCrab {
                         cx,
                     )
                     .flex_none()
-                    .tooltip(tooltip)
+                    .when(conflicts > 0, |button| button.tooltip(conflict_note))
                     .disabled_when(self.state.blocking_write() || count == 0)
                     .on_click(cx.listener(move |v, _, w, cx| {
                         v.mutate(Action::StageAll { unstage: staged }, w, cx)
@@ -967,9 +960,6 @@ impl GitCrab {
             let path = f.path.clone();
             self.action_button(("mark-resolved", i), "Mark resolved…")
                 .flex_none()
-                .tooltip(format!(
-                    "Review staging the working-tree version of {display_path} as its resolution"
-                ))
                 .disabled_when(self.state.blocking_write() || path_issue.is_some())
                 .on_click(cx.listener(move |v, _, w, cx| v.review_resolution(path.clone(), w, cx)))
                 .into_any_element()
@@ -1207,16 +1197,12 @@ impl GitCrab {
                         .child(
                             self.action_button("detached-create-branch", "Create a branch…")
                                 .disabled_when(self.state.blocking_write())
-                                .tooltip("Create a branch at HEAD, then switch to it before committing")
-                                .on_click(cx.listener(|v, _, w, cx| {
-                                    v.prompt_branch(None, w, cx)
-                                })),
+                                .on_click(cx.listener(|v, _, w, cx| v.prompt_branch(None, w, cx))),
                         )
                         .children(branches_at_head.into_iter().enumerate().map(|(i, name)| {
                             let target = name.clone();
                             self.action_button(("detached-switch", i), format!("Switch to {name}"))
                                 .disabled_when(self.state.blocking_write())
-                                .tooltip("Switch to this branch, which points at the current commit")
                                 .on_click(cx.listener(move |v, _, w, cx| {
                                     v.run_operation(Operation::Checkout, target.clone(), w, cx)
                                 }))
@@ -1330,9 +1316,11 @@ impl GitCrab {
                     .mx(scaled(INSPECTOR_INSET))
                     .mt(px(COMPOSER_GAP))
                     .mb(scaled(if note.is_some() { 0. } else { INSPECTOR_INSET }))
-                    .tooltip(match &blocker {
-                        Some(reason) => format!("Commit unavailable. {reason}"),
-                        None => "Commit staged changes · Ctrl/Cmd+Enter".to_string(),
+                    .map(|button| match &blocker {
+                        Some(reason) => button.tooltip(format!("Commit unavailable. {reason}")),
+                        None => {
+                            button.tooltip_with_action("Commit", &CommitStaged, Some(KEY_CONTEXT))
+                        }
                     })
                     .on_click(cx.listener(|v, _, w, cx| v.commit_staged(&CommitStaged, w, cx))),
             )

@@ -6,7 +6,6 @@ const RESIZE_HALF_WIDTH: f32 = 5.;
 /// Room at the default font size kept clear at the right of the history table
 /// for the floating Columns button, so it never covers a column header.
 const COLUMNS_BUTTON_ROOM: f32 = 32.;
-const GRAPH_LEGEND: &str = "Graph · Each colored lane is a line of history. A dot is a commit, a diamond is a merge or branch point, and the dashed circle is Working changes. Commit details list each parent.";
 /// How much the Widen and Narrow menu items change a column's width.
 const COLUMN_WIDTH_STEP: f32 = 32.;
 
@@ -130,16 +129,15 @@ impl GitCrab {
             menu
         });
         let weak = weak.clone();
-        menu.separator().item(
-            components::menu_item("Reset columns · fit to window", true).on_click(
-                move |_, w, cx| {
+        menu.separator()
+            .item(
+                components::menu_item("Reset columns", true).on_click(move |_, w, cx| {
                     let _ = weak.update(cx, |v, cx| {
                         v.history_columns = HistoryColumns::default();
                         v.columns_changed(w, cx);
                     });
-                },
-            ),
-        )
+                }),
+            )
     }
 
     /// The graph column's own horizontal scrollbar, along the bottom of the
@@ -455,11 +453,6 @@ impl GitCrab {
                                         })
                                         .when(!minimized_graph, |el| {
                                             el.child(div().truncate().child(column.label()))
-                                        })
-                                        .when(column == HistoryColumn::Graph, |el| {
-                                            el.tooltip(|w, cx| {
-                                                Tooltip::new(GRAPH_LEGEND).build(w, cx)
-                                            })
                                         }),
                                 )
                                 .child(

@@ -385,12 +385,10 @@ impl GitCrab {
                                 ControlSize::Compact,
                             )
                             .set_disabled(busy)
-                            .tooltip("Create the branch · Enter")
                             .on_click(cx.listener(|v, _, w, cx| v.submit_branch_prompt(w, cx))),
                         )
                         .child(
                             self.button("branch-prompt-cancel", "Cancel")
-                                .tooltip("Close without creating a branch · Esc")
                                 .on_click(cx.listener(|v, _, w, cx| v.close_branch_prompt(w, cx))),
                         ),
                 )

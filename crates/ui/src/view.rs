@@ -9,6 +9,7 @@ mod repository;
 mod review;
 mod settings;
 mod sidebar;
+pub use super::components::KEY_CONTEXT;
 use super::components::{self, modal, prelude::*};
 use super::preferences::Preferences;
 use super::theme::Role;
@@ -42,6 +43,16 @@ const SESSION_NOTE: &str = "At startup GitCrab reopens the repositories that wer
 /// Shown beside the commit composer while a draft exists.
 pub(super) const DRAFT_NOTE: &str =
     "Draft kept in memory for this tab until you commit or close it. It is not saved to disk.";
+
+/// The action whose key binding a command's tooltip shows.
+fn command_action(command: Command) -> Option<&'static dyn gpui::Action> {
+    match command {
+        Command::Refresh => Some(&Refresh),
+        Command::Undo => Some(&UndoLast),
+        Command::Redo => Some(&RedoLast),
+        _ => None,
+    }
+}
 
 fn command_glyph(command: Command) -> &'static str {
     match command {
@@ -2095,7 +2106,7 @@ impl GitCrab {
                                     .px_0()
                                     .mt(scaled(-4.))
                                     .tab_stop(true)
-                                    .tooltip("Copy this record")
+                                    .tooltip("Copy")
                                     .on_click(
                                         move |_, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
@@ -2802,16 +2813,9 @@ impl Render for GitCrab {
                 .gap_2()
                 .when(in_diff, |rail| {
                     rail.child(
-                        self.icon_button(
-                            "rail-back",
-                            "back",
-                            if self.state.selected.is_some() {
-                                "Close the diff and return to history · Escape"
-                            } else {
-                                "Close the diff and return to working changes in history · Escape"
-                            },
-                        )
-                        .on_click(cx.listener(|v, _, w, cx| v.leave_diff(w, cx))),
+                        self.icon_button("rail-back", "back", "Back to history")
+                            .tooltip_with_action("Back to history", &Back, Some(KEY_CONTEXT))
+                            .on_click(cx.listener(|v, _, w, cx| v.leave_diff(w, cx))),
                     )
                 })
                 .child(
@@ -2903,7 +2907,15 @@ impl Render for GitCrab {
                     labelled,
                     false,
                 )
-                .tooltip(self.command_tooltip(command, &commands))
+                .map(|button| {
+                    let tooltip = self.command_tooltip(command, &commands);
+                    match command_action(command) {
+                        Some(action) => {
+                            button.tooltip_with_action(tooltip, action, Some(KEY_CONTEXT))
+                        }
+                        None => button.tooltip(tooltip),
+                    }
+                })
                 .on_click(
                     cx.listener(move |v, _, w, cx| v.run_command(command, String::new(), w, cx)),
                 );
@@ -2984,14 +2996,12 @@ impl Render for GitCrab {
                 let entries = std::iter::once(
                     PickerItem::new("Browse for a repository…")
                         .icon("folder")
-                        .note("Ctrl/Cmd+O")
+                        .when_some(components::shortcut_text(&Open, window), |item, key| {
+                            item.note(key)
+                        })
                         .into(),
                 )
-                .chain((!recent.is_empty()).then(|| {
-                    PickerEntry::Heading(
-                        "Recent · opens in a new tab or switches to its tab".into(),
-                    )
-                }))
+                .chain((!recent.is_empty()).then(|| PickerEntry::Heading("Recent".into())))
                 .chain(recent.iter().map(|(path, label)| {
                     PickerItem::new(label.suffix.clone())
                         .icon("history")
@@ -3009,10 +3019,7 @@ impl Render for GitCrab {
                         selector_width,
                         selector_height,
                     )
-                    .tooltip(format!(
-                        "{} · Open another repository in a tab · Ctrl/Cmd+O",
-                        display_path(&self.state.path)
-                    ))
+                    .tooltip(display_path(&self.state.path))
                     .set_disabled(self.state.blocking_write()),
                     selector_width.max(px(REPOSITORY_PICKER_MIN_WIDTH)),
                     &menu_focus,
@@ -3062,16 +3069,14 @@ impl Render for GitCrab {
                         .child(status),
                 )
                 .child(
-                    self.icon_button(
-                        "search-prev",
-                        "up",
-                        "Previous match · Shift+Enter or Shift+F3",
-                    )
-                    .set_disabled(self.search_matches.is_empty())
-                    .on_click(cx.listener(|v, _, w, cx| v.search_step(-1, w, cx))),
+                    self.icon_button("search-prev", "up", "Previous match")
+                        .tooltip_with_action("Previous match", &SearchPrevious, Some(KEY_CONTEXT))
+                        .set_disabled(self.search_matches.is_empty())
+                        .on_click(cx.listener(|v, _, w, cx| v.search_step(-1, w, cx))),
                 )
                 .child(
-                    self.icon_button("search-next", "down", "Next match · Enter or F3")
+                    self.icon_button("search-next", "down", "Next match")
+                        .tooltip_with_action("Next match", &SearchNext, Some(KEY_CONTEXT))
                         .set_disabled(self.search_matches.is_empty())
                         .on_click(cx.listener(|v, _, w, cx| v.search_step(1, w, cx))),
                 )
@@ -3173,7 +3178,7 @@ impl Render for GitCrab {
             .text_role(Role::TextDefault)
             .text_size(px(self.preferences.font_size))
             .track_focus(&self.focus)
-            .key_context("GitCrab")
+            .key_context(KEY_CONTEXT)
             .on_action(cx.listener(|v, _: &Refresh, w, cx| {
                 v.run_command(Command::Refresh, String::new(), w, cx)
             }))
@@ -3394,7 +3399,7 @@ impl GitCrab {
                 |group| {
                     group.child(
                         self.button("cancel-network", "Cancel")
-                            .tooltip("Stop Git while it contacts the remote. A pull that has started updating the branch finishes first.")
+                            .tooltip("A pull that has started updating the branch finishes first")
                             .on_click(cx.listener(|v, _, _, cx| v.cancel_network(cx))),
                     )
                 },

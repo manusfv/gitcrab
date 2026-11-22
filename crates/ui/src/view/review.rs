@@ -2,6 +2,8 @@ use super::*;
 use gitcrab_core::highlight::Span;
 use std::ops::Range;
 
+const TEXT_ONLY_LAYOUTS: &str = "Layouts apply to text changes";
+
 const DIFF_ROW_HEIGHT_COMPACT: f32 = 18.;
 const DIFF_ROW_HEIGHT: f32 = geometry::SIZE_ROW_DIFF;
 /// Space a diff row keeps above and below code at large code sizes.
@@ -429,20 +431,13 @@ impl GitCrab {
             Some(id) => format!("Commit {}", short_id(id)),
             None => "Working changes".into(),
         };
-        let back_tooltip = match &p.id {
-            Some(id) => format!(
-                "Close the diff and return to commit {} in history · Escape",
-                short_id(id)
-            ),
-            None => "Close the diff and return to working changes · Escape".into(),
-        };
         // Route back, file identity and the inspector toggle.
         let header = section_bar()
             .child(
                 self.button("back", back_label)
                     .icon(icon("back"))
                     .flex_none()
-                    .tooltip(back_tooltip)
+                    .tooltip_with_action("Back to history", &Back, Some(KEY_CONTEXT))
                     .on_click(cx.listener(|v, _, w, cx| v.leave_diff(w, cx))),
             )
             .child(
@@ -499,7 +494,6 @@ impl GitCrab {
                         },
                     )
                     .flex_none()
-                    .tooltip("Show or hide the details pane to give the diff more room")
                     .on_click(cx.listener(|v, _, _, cx| {
                         v.inspector_collapsed = !v.inspector_collapsed;
                         cx.notify();
@@ -521,10 +515,8 @@ impl GitCrab {
                     side == staged,
                 )
                 .disabled_when(!available)
-                .tooltip(if available {
-                    format!("Show {} changes", label.to_lowercase())
-                } else {
-                    format!("This file has no {} changes", label.to_lowercase())
+                .when(!available, |button| {
+                    button.tooltip(format!("No {} changes in this file", label.to_lowercase()))
                 })
                 .on_click(cx.listener(move |v, _, w, cx| {
                     if let Some(p) = &v.state.patch {
@@ -535,137 +527,129 @@ impl GitCrab {
                 }))
             }))
         });
-        let layout_note = (self.split && text && !self.split_active)
-            .then_some("Split needs a wider pane · showing Unified");
-        let comparison = section_bar()
-            .h_auto()
-            .min_h(scaled(SECTION_HEIGHT))
-            .py_1()
-            .flex_wrap()
-            .when(conflict, |bar| {
-                bar.child(Badge::role("Conflict", Role::StatusConflictFg))
-            })
-            .when_some(source, |bar, source| bar.child(source))
-            .child(
-                div()
-                    .text_size(scaled(12.))
-                    .text_role(Role::TextMuted)
-                    .child(self.comparison_label(p, conflict)),
-            )
-            .child(div().flex_1())
-            .when_some(layout_note, |bar, note| {
-                bar.child(
+        let layout_note =
+            (self.split && text && !self.split_active).then_some("Too narrow for Split");
+        let comparison =
+            section_bar()
+                .h_auto()
+                .min_h(scaled(SECTION_HEIGHT))
+                .py_1()
+                .flex_wrap()
+                .when(conflict, |bar| {
+                    bar.child(Badge::role("Conflict", Role::StatusConflictFg))
+                })
+                .when_some(source, |bar, source| bar.child(source))
+                .child(
                     div()
-                        .id("split-fallback")
-                        .text_size(scaled(12.))
-                        .text_role(Role::StatusWarningFg)
-                        .child(note)
-                        .tooltip(|w, cx| {
-                            Tooltip::new(
-                                "Both sides do not fit. Hide details or widen the window to compare side by side.",
-                            )
-                            .build(w, cx)
-                        }),
+                        .text_size(scaled(TEXT_SIZE_SMALL))
+                        .text_role(Role::TextMuted)
+                        .child(self.comparison_label(p, conflict)),
                 )
-            })
-            .child(
-                segmented_group()
-                    .child(
-                        self.segment_button("unified-mode", "Unified", text && !self.split)
-                            .disabled_when(!text)
-                            .tooltip(if text {
-                                "One column with removals and additions"
-                            } else {
-                                "Layouts apply to text changes"
-                            })
-                            .on_click(cx.listener(|v, _, w, cx| {
-                                v.split = false;
-                                v.selection = None;
-                                v.persist_preferences(w, cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        self.segment_button("split-mode", "Split", text && self.split)
-                            .disabled_when(!text)
-                            .tooltip(if text {
-                                "Before and After side by side when the pane is wide enough"
-                            } else {
-                                "Layouts apply to text changes"
-                            })
-                            .on_click(cx.listener(|v, _, w, cx| {
-                                v.split = true;
-                                v.selection = None;
-                                v.persist_preferences(w, cx);
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .when(conflict, |el| {
-                let path = p.path.clone();
-                el.child(
-                    self.action_button("resolve-file", "Mark resolved…")
-                        .disabled_when(self.state.blocking_write())
-                        .tooltip("Review staging this working-tree file as the resolution")
-                        .on_click(cx.listener(move |v, _, w, cx| {
-                            v.review_resolution(path.clone(), w, cx)
-                        })),
-                )
-            })
-            .when(p.id.is_none() && !conflict, |el| {
-                el.child(
-                    self.semantic_button(
-                        "stage-file",
-                        if staged { "Unstage file" } else { "Stage file" },
-                        if staged {
-                            components::ButtonKind::Unstage
-                        } else {
-                            components::ButtonKind::Stage
-                        },
-                        ControlSize::Compact,
-                        cx,
-                    )
-                    .icon(icon("check"))
-                    .tooltip(if staged {
-                        "Unstage the whole file · Alt+S"
-                    } else {
-                        "Stage the whole file · Alt+S"
-                    })
-                    .disabled_when(
-                        self.state.blocking_write()
-                            || !self.state.snapshot.as_ref().is_some_and(|s| {
-                                s.status.iter().any(|f| {
-                                    f.path == p.path && Controller::on_side(f, staged)
-                                })
+                .child(div().flex_1())
+                .when_some(layout_note, |bar, note| {
+                    bar.child(
+                        div()
+                            .id("split-fallback")
+                            .text_size(scaled(TEXT_SIZE_SMALL))
+                            .text_role(Role::StatusWarningFg)
+                            .child(note)
+                            .tooltip(|w, cx| {
+                                Tooltip::new(
+                                    "Hide details or widen the window to compare side by side.",
+                                )
+                                .build(w, cx)
                             }),
                     )
-                    .on_click(cx.listener(|v, _, w, cx| {
-                        if let Some(p) = &v.state.patch {
-                            let Some(reviewed) = v
-                                .state
-                                .snapshot
-                                .as_ref()
-                                .and_then(|s| {
+                })
+                .child(
+                    segmented_group()
+                        .child(
+                            self.segment_button("unified-mode", "Unified", text && !self.split)
+                                .disabled_when(!text)
+                                .when(!text, |button| button.tooltip(TEXT_ONLY_LAYOUTS))
+                                .on_click(cx.listener(|v, _, w, cx| {
+                                    v.split = false;
+                                    v.selection = None;
+                                    v.persist_preferences(w, cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            self.segment_button("split-mode", "Split", text && self.split)
+                                .disabled_when(!text)
+                                .when(!text, |button| button.tooltip(TEXT_ONLY_LAYOUTS))
+                                .on_click(cx.listener(|v, _, w, cx| {
+                                    v.split = true;
+                                    v.selection = None;
+                                    v.persist_preferences(w, cx);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .when(conflict, |el| {
+                    let path = p.path.clone();
+                    el.child(
+                        self.action_button("resolve-file", "Mark resolved…")
+                            .disabled_when(self.state.blocking_write())
+                            .on_click(cx.listener(move |v, _, w, cx| {
+                                v.review_resolution(path.clone(), w, cx)
+                            })),
+                    )
+                })
+                .when(p.id.is_none() && !conflict, |el| {
+                    el.child(
+                        self.semantic_button(
+                            "stage-file",
+                            if staged { "Unstage file" } else { "Stage file" },
+                            if staged {
+                                components::ButtonKind::Unstage
+                            } else {
+                                components::ButtonKind::Stage
+                            },
+                            ControlSize::Compact,
+                            cx,
+                        )
+                        .icon(icon("check"))
+                        .tooltip_with_action(
+                            if staged { "Unstage file" } else { "Stage file" },
+                            &StageSelectedFile,
+                            Some(KEY_CONTEXT),
+                        )
+                        .disabled_when(
+                            self.state.blocking_write()
+                                || !self.state.snapshot.as_ref().is_some_and(|s| {
                                     s.status
                                         .iter()
-                                        .find(|f| f.path == p.path && f.on_side(p.staged))
-                                })
-                                .cloned()
-                            else {
-                                return;
-                            };
-                            v.mutate(
-                                Action::StageFile {
-                                    reviewed,
-                                    unstage: p.staged,
-                                },
-                                w,
-                                cx,
-                            );
-                        }
-                    })),
-                )
-            });
+                                        .any(|f| f.path == p.path && Controller::on_side(f, staged))
+                                }),
+                        )
+                        .on_click(cx.listener(|v, _, w, cx| {
+                            if let Some(p) = &v.state.patch {
+                                let Some(reviewed) = v
+                                    .state
+                                    .snapshot
+                                    .as_ref()
+                                    .and_then(|s| {
+                                        s.status
+                                            .iter()
+                                            .find(|f| f.path == p.path && f.on_side(p.staged))
+                                    })
+                                    .cloned()
+                                else {
+                                    return;
+                                };
+                                v.mutate(
+                                    Action::StageFile {
+                                        reviewed,
+                                        unstage: p.staged,
+                                    },
+                                    w,
+                                    cx,
+                                );
+                            }
+                        })),
+                    )
+                });
         let el = panel()
             .bg_role(Role::SurfaceCanvas)
             .child(header)
@@ -769,12 +753,21 @@ impl GitCrab {
             .py_1()
             .flex_wrap();
         if let Some((position, scrollable)) = position {
-            for (index, forward, glyph, name, target) in [
-                (0, false, "up", "Previous hunk · Alt+Up", position.previous),
-                (1, true, "down", "Next hunk · Alt+Down", position.next),
-            ] {
+            let hunk_nav: [(usize, bool, &str, &str, &dyn gpui::Action, _); 2] = [
+                (
+                    0,
+                    false,
+                    "up",
+                    "Previous hunk",
+                    &PreviousHunk,
+                    position.previous,
+                ),
+                (1, true, "down", "Next hunk", &NextHunk, position.next),
+            ];
+            for (index, forward, glyph, name, action, target) in hunk_nav {
                 bar = bar.child(
-                    self.icon_button(("hunk-nav", index as usize), glyph, name)
+                    self.icon_button(("hunk-nav", index), glyph, name)
+                        .tooltip_with_action(name, action, Some(KEY_CONTEXT))
                         .disabled_when(target.is_none())
                         .on_click(cx.listener(move |v, _, w, cx| v.step_hunk(forward, w, cx))),
                 );
@@ -799,7 +792,6 @@ impl GitCrab {
                 let token = p.token;
                 let unstage = p.staged;
                 let ready = self.diff_actions_ready();
-                let title = p.hunks[index].clone();
                 bar = bar
                     .child(separator())
                     .child(
@@ -819,7 +811,6 @@ impl GitCrab {
                             cx,
                         )
                         .disabled_when(!ready)
-                        .tooltip(format!("{title} · select rows to act on single lines"))
                         .on_click(cx.listener(move |v, _, w, cx| {
                             v.mutate(
                                 Action::Hunk {
@@ -842,9 +833,6 @@ impl GitCrab {
                                 cx,
                             )
                             .disabled_when(!ready)
-                            .tooltip(format!(
-                                "Review discarding only this working-copy hunk · {title}"
-                            ))
                             .on_click(cx.listener(
                                 move |v, _, w, cx| {
                                     v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
@@ -896,7 +884,8 @@ impl GitCrab {
         })
         .child(div().flex_1())
         .child(
-            self.icon_button("diff-find", "search", "Find in diff · Ctrl/Cmd+F")
+            self.icon_button("diff-find", "search", "Find in diff")
+                .tooltip_with_action("Find in diff", &Find, Some(KEY_CONTEXT))
                 .selected(self.diff_find_open)
                 .on_click(cx.listener(|v, _, w, cx| {
                     if v.diff_find_open {
@@ -909,15 +898,14 @@ impl GitCrab {
         .child(
             self.button("show-whitespace", "Whitespace")
                 .selected(self.show_whitespace)
-                .tooltip("Mark spaces and tabs")
+                .tooltip("Show spaces and tabs")
                 .on_click(cx.listener(|v, _, _, cx| {
                     v.show_whitespace = !v.show_whitespace;
                     cx.notify();
                 })),
         )
         .child(
-            self.button("selection-help", "Help")
-                .tooltip("Selection, copy and navigation shortcuts")
+            self.button("selection-help", "Shortcuts")
                 .on_click(|_, w, cx| {
                     let scroll = ScrollHandle::new();
                     w.open_alert_dialog(cx, move |d, _, cx| diff_help(d, &scroll, cx))
@@ -944,22 +932,20 @@ impl GitCrab {
                     .child(status),
             )
             .child(
-                self.icon_button(
-                    "diff-find-prev",
-                    "up",
-                    "Previous match · Shift+Enter or Shift+F3",
-                )
-                .disabled_when(self.diff_matches.is_empty())
-                .on_click(cx.listener(|v, _, w, cx| v.diff_find_step(-1, w, cx))),
+                self.icon_button("diff-find-prev", "up", "Previous match")
+                    .tooltip_with_action("Previous match", &SearchPrevious, Some(KEY_CONTEXT))
+                    .disabled_when(self.diff_matches.is_empty())
+                    .on_click(cx.listener(|v, _, w, cx| v.diff_find_step(-1, w, cx))),
             )
             .child(
-                self.icon_button("diff-find-next", "down", "Next match · Enter or F3")
+                self.icon_button("diff-find-next", "down", "Next match")
+                    .tooltip_with_action("Next match", &SearchNext, Some(KEY_CONTEXT))
                     .disabled_when(self.diff_matches.is_empty())
                     .on_click(cx.listener(|v, _, w, cx| v.diff_find_step(1, w, cx))),
             )
             .child(
                 self.button("diff-find-close", "×")
-                    .tooltip("Close Find · Escape")
+                    .tooltip_with_action("Close", &Back, Some(KEY_CONTEXT))
                     .on_click(cx.listener(|v, _, w, cx| v.close_diff_find(w, cx))),
             )
             .into_any_element()
@@ -1125,11 +1111,6 @@ impl GitCrab {
                 cx,
             )
             .disabled_when(!ready)
-            .tooltip(if unstage {
-                "Move only the selected added and removed lines out of the index"
-            } else {
-                "Add only the selected added and removed lines to the index"
-            })
             .on_click(cx.listener(move |v, _, w, cx| {
                 v.mutate(
                     Action::Lines {
@@ -1152,7 +1133,6 @@ impl GitCrab {
                     cx,
                 )
                 .disabled_when(!ready)
-                .tooltip("Review discarding only the selected working-copy lines")
                 .on_click(cx.listener(move |v, _, w, cx| {
                     v.review_discard(token, DiscardTarget::Lines(lines.clone()), w, cx)
                 })),
@@ -1410,7 +1390,6 @@ impl GitCrab {
                             cx,
                         )
                         .disabled_when(!ready)
-                        .tooltip("Review discarding only this working-copy hunk")
                         .on_click(cx.listener(move |v, _, w, cx| {
                             v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
                         })),
