@@ -1752,28 +1752,20 @@ impl GitCrab {
         }
     }
 
-    /// Tooltip for a command, naming the journal step Undo or Redo acts on.
+    /// A toolbar command's tooltip, naming the journal step Undo or Redo acts on.
     fn command_tooltip(&self, command: Command, context: &CommandContext) -> String {
         let direction = match command {
-            Command::Undo => gitcrab_core::journal::Direction::Undo,
-            Command::Redo => gitcrab_core::journal::Direction::Redo,
-            Command::Fetch | Command::Pull | Command::Push => {
-                let upstream = self
-                    .state
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.remote.network_upstream())
-                    .map(|u| u.name.as_str());
-                return command.describe_with_upstream(context, upstream);
-            }
-            _ => return command.describe(context),
+            Command::Undo => Some(gitcrab_core::journal::Direction::Undo),
+            Command::Redo => Some(gitcrab_core::journal::Direction::Redo),
+            _ => None,
         };
-        let summary = self
-            .state
-            .snapshot
-            .as_ref()
-            .and_then(|s| s.journal.summary(direction));
-        command.describe_with_summary(context, summary)
+        let summary = direction.and_then(|direction| {
+            self.state
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.journal.summary(direction))
+        });
+        command.toolbar_tooltip(context, summary)
     }
 
     /// Runs Undo or Redo from its shortcut. A focused text field keeps its
@@ -1904,7 +1896,6 @@ impl GitCrab {
             ))
             .px_0()
             .child(icon("down").size(px(CARET_SIZE)))
-            .tooltip("Fetch and pull options")
             .dropdown_menu(move |menu, _, _| {
                 let fetch_view = weak.clone();
                 let mut menu = menu.item(components::menu_item("Fetch", fetch).on_click(
