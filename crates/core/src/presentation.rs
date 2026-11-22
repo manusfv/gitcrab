@@ -141,7 +141,7 @@ pub fn search_status(
     );
     if matches.is_empty() {
         return if more_available {
-            format!("No matches in {scope}. Load more to search further.")
+            format!("No matches in {scope}. Search older commits to keep looking.")
         } else {
             format!("No matches in {scope}")
         };
@@ -804,7 +804,7 @@ mod tests {
         );
         assert_eq!(
             search_status(&[], None, 1, true),
-            "No matches in 1 loaded commit. Load more to search further."
+            "No matches in 1 loaded commit. Search older commits to keep looking."
         );
         assert_eq!(
             search_status(&[], None, 7, false),

@@ -15,7 +15,7 @@ use super::theme::Role;
 use super::theme::*;
 use gitcrab_core::{
     commands::{Command, CommandContext},
-    controller::{Controller, Lane, RefreshPlan, Seek},
+    controller::{Controller, Lane, RefreshPlan, Seek, HISTORY_MAX},
     git::ReferenceKind,
     presentation::{
         compose_message, display_date, display_path, path_labels, split_message, ToolbarActions,
@@ -1413,7 +1413,8 @@ impl GitCrab {
                 self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
             } else {
                 self.state.notice =
-                    "This commit is outside loaded history. Load more commits to reveal it.".into();
+                    "This commit is outside loaded history. Scroll down to load older commits."
+                        .into();
             }
         }
     }
@@ -3038,9 +3039,8 @@ impl Render for GitCrab {
                 )
                 .when(load_more_offered, |bar| {
                     bar.child(
-                        self.action_button("search-load-more", "Load more history")
+                        self.action_button("search-load-more", "Search older commits")
                             .set_disabled(self.state.loading())
-                            .tooltip("Load 500 more commits and search them")
                             .on_click(cx.listener(|v, _, w, cx| {
                                 let plan = v.state.load_more();
                                 v.apply_refresh(plan, w, cx);
@@ -3354,6 +3354,18 @@ impl GitCrab {
                 },
             );
         let mut items: Vec<AnyElement> = Vec::new();
+        if self.state.loading_history_page() {
+            items.push(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(components::spinner(px(GLYPH_SIZE)))
+                    .child("Loading older commits…")
+                    .into_any_element(),
+            );
+        }
         if let Some(fetched) = self.last_fetch_label() {
             let tooltip = self
                 .state

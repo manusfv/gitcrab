@@ -5,6 +5,9 @@ mod graph_scroll;
 pub(super) use graph_scroll::GraphScroll;
 
 const HISTORY_CELL_INSET: Rems = Rems(0.5);
+/// Rows left below the viewport when the next history page is requested,
+/// so it usually arrives before the user reaches the end.
+const NEXT_PAGE_PREFETCH_ROWS: usize = 100;
 
 /// Narrowest the WIP summary editor gets when the history pane is cramped.
 const WIP_EDITOR_MIN_WIDTH: f32 = 48.;
@@ -752,6 +755,17 @@ impl GitCrab {
                                     .child(
                                         uniform_list("history", count + wip_rows, move |range, w, cx| {
                                             weak.update(cx, |v, cx| {
+                                                if range.end + NEXT_PAGE_PREFETCH_ROWS
+                                                    >= count + wip_rows
+                                                    && v.state.wants_next_page()
+                                                {
+                                                    cx.defer_in(w, |v, w, cx| {
+                                                        if v.state.wants_next_page() {
+                                                            let plan = v.state.load_more();
+                                                            v.apply_refresh(plan, w, cx);
+                                                        }
+                                                    });
+                                                }
                                                 range
                                                     .map(|i| v.history_row(i, w, cx))
                                                     .collect::<Vec<_>>()
@@ -839,31 +853,15 @@ impl GitCrab {
                             )
                     }),
             )
-            .when(self.state.limit == 100_000 && count == 100_000, |e| {
+            .when(self.state.limit == HISTORY_MAX && count == HISTORY_MAX, |e| {
                 e.child(
                     div()
                         .h(px(30.))
                         .px_3()
                         .text_role(Role::TextMuted)
-                        .child(format!("{count} commits shown · history limit reached")),
+                        .child(format!("Showing the newest {count} commits")),
                 )
             })
-            .when(
-                count >= self.state.limit && self.state.limit < 100_000,
-                |e| {
-                    e.child(
-                        self.action_button(
-                            "more",
-                            format!("Load 500 more commits · {count} shown"),
-                        )
-                        .disabled_when(self.state.loading())
-                        .on_click(cx.listener(|v, _, w, cx| {
-                            let plan = v.state.load_more();
-                            v.apply_refresh(plan, w, cx);
-                        })),
-                    )
-                },
-            )
             .into_any_element()
     }
     /// The Working changes row only exists while there is something in it.
