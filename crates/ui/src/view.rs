@@ -2120,7 +2120,7 @@ impl GitCrab {
                             footer.leading(
                                 components::basic(
                                     Button::new("activity-copy-all")
-                                        .icon(icon("copy"))
+                                        .icon(components::label_icon("copy"))
                                         .label("Copy all"),
                                     components::ButtonKind::Ghost,
                                     ControlSize::Compact,
@@ -2619,7 +2619,7 @@ impl GitCrab {
                     .bottom(px(PAGE_CORNER_INSET))
                     .child(
                         self.button("new-tab-appearance", "Appearance")
-                            .icon(icon("settings"))
+                            .icon(components::label_icon("settings"))
                             .on_click(cx.listener(|v, _, w, cx| {
                                 v.open_settings(w, cx);
                             })),

@@ -435,7 +435,7 @@ impl GitCrab {
         let header = section_bar()
             .child(
                 self.button("back", back_label)
-                    .icon(icon("back"))
+                    .icon(components::label_icon("back"))
                     .flex_none()
                     .tooltip_with_action("Back to history", &Back, Some(KEY_CONTEXT))
                     .on_click(cx.listener(|v, _, w, cx| v.leave_diff(w, cx))),
@@ -609,7 +609,7 @@ impl GitCrab {
                             ControlSize::Compact,
                             cx,
                         )
-                        .icon(icon("check"))
+                        .icon(components::label_icon("check"))
                         .tooltip_with_action(
                             if staged { "Unstage file" } else { "Stage file" },
                             &StageSelectedFile,
