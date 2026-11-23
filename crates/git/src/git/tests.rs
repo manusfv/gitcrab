@@ -1005,7 +1005,9 @@ fn generic_staging_never_clears_unmerged_entries() {
     assert!(snapshot
         .commit_blocker()
         .is_some_and(|reason| reason.contains("1 conflicted file")));
-    assert!(snapshot.operation_recovery().contains("git merge --abort"));
+    assert!(snapshot
+        .operation_recovery()
+        .contains("Abort returns to the state before the merge"));
 
     let unstaged = git.stage_all(true).unwrap();
     assert_eq!(unstaged.conflicts, 1);
@@ -1558,5 +1560,116 @@ fn stash_rows_follow_date_order_and_wait_for_their_base() {
             [stash("s", "missing", "2026-01-04T00:00:00Z")]
         )),
         ["c", "b", "a"]
+    );
+}
+
+fn head_parents(git: &Git) -> usize {
+    git.run(&["show", "-s", "--format=%P", "HEAD"])
+        .unwrap()
+        .split_whitespace()
+        .count()
+}
+
+fn head_message(git: &Git) -> String {
+    git.run(&["show", "-s", "--format=%B", "HEAD"])
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
+fn resolve(fixture: &Fixture, text: &str) {
+    fixture.write("shared.txt", text);
+    fixture.git.mark_resolved("shared.txt", false).unwrap();
+}
+
+#[test]
+fn committing_while_merge_head_exists_records_a_merge_commit_with_gits_message() {
+    let fixture = conflicted_fixture();
+    let git = &fixture.git;
+    let main = git.resolve_commit("HEAD").unwrap();
+    let snapshot = git.snapshot(10).unwrap();
+    assert_eq!(snapshot.sequence(), Some(Sequence::Merge));
+    let message = snapshot.operation_message.unwrap();
+    assert_eq!(message, "Merge branch 'feature'");
+    resolve(&fixture, "resolved\n");
+    git.commit(&message).unwrap();
+    assert_eq!(head_parents(git), 2);
+    assert_eq!(git.resolve_commit("HEAD^1").unwrap(), main);
+    assert_eq!(head_message(git), message);
+    assert!(git.operation_markers().unwrap().is_empty());
+}
+
+#[test]
+fn stopped_operations_abort_continue_and_skip_without_an_editor() {
+    let fixture = conflicted_fixture();
+    let git = &fixture.git;
+    // Any step that opened an editor would fail.
+    git.run(&["config", "core.editor", "false"]).unwrap();
+    let main = git.resolve_commit("HEAD").unwrap();
+
+    git.abort_sequence(Sequence::Merge).unwrap();
+    assert_eq!(git.resolve_commit("HEAD").unwrap(), main);
+    assert!(git.operation_markers().unwrap().is_empty());
+    assert!(!git.has_unmerged_entries().unwrap());
+    assert!(git.skip_sequence(Sequence::Merge).is_err());
+
+    assert!(git.merge("feature").is_err());
+    assert!(git.continue_sequence(Sequence::Merge, None).is_err());
+    resolve(&fixture, "merged\n");
+    git.continue_sequence(Sequence::Merge, None).unwrap();
+    assert_eq!(head_parents(git), 2);
+    assert_eq!(head_message(git), "Merge branch 'feature'");
+    git.reset(&main, false).unwrap();
+    git.run(&["checkout", "--", "shared.txt"]).unwrap();
+
+    assert!(git.cherry_pick("feature").is_err());
+    let snapshot = git.snapshot(10).unwrap();
+    assert_eq!(snapshot.sequence(), Some(Sequence::CherryPick));
+    assert_eq!(snapshot.operation_message.as_deref(), Some("Feature"));
+    resolve(&fixture, "picked\n");
+    git.continue_sequence(Sequence::CherryPick, Some("Feature, picked by hand"))
+        .unwrap();
+    assert_eq!(head_parents(git), 1);
+    assert_eq!(head_message(git), "Feature, picked by hand");
+    assert!(git.operation_markers().unwrap().is_empty());
+    let picked = git.resolve_commit("HEAD").unwrap();
+
+    assert!(git.cherry_pick("feature").is_err());
+    git.skip_sequence(Sequence::CherryPick).unwrap();
+    assert_eq!(git.resolve_commit("HEAD").unwrap(), picked);
+    assert!(git.operation_markers().unwrap().is_empty());
+
+    git.checkout("feature").unwrap();
+    assert!(git.rebase("main").is_err());
+    let snapshot = git.snapshot(10).unwrap();
+    assert_eq!(snapshot.sequence(), Some(Sequence::Rebase));
+    assert_eq!(snapshot.operation_message, None);
+    assert!(snapshot.is_detached());
+    resolve(&fixture, "rebased\n");
+    git.continue_sequence(Sequence::Rebase, Some("ignored"))
+        .unwrap();
+    assert!(git.operation_markers().unwrap().is_empty());
+    assert_eq!(git.resolve_commit("HEAD^").unwrap(), picked);
+    assert_eq!(head_message(git), "Feature");
+    assert_eq!(git.head_state().unwrap().0, "refs/heads/feature");
+}
+
+#[test]
+fn a_sequence_between_picks_is_named_from_its_todo_list() {
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    let sequencer = git.path.join(".git/sequencer");
+    std::fs::create_dir(&sequencer).unwrap();
+    std::fs::write(sequencer.join("todo"), "revert 0123456 Fix\n").unwrap();
+    let operations = git.operation_markers().unwrap();
+    assert_eq!(operations, ["revert", "sequencer"]);
+    assert_eq!(
+        Sequence::from_operations(&operations),
+        Some(Sequence::Revert)
+    );
+    std::fs::write(sequencer.join("todo"), "pick 0123456 Fix\n").unwrap();
+    assert_eq!(
+        git.operation_markers().unwrap(),
+        ["cherry-pick", "sequencer"]
     );
 }

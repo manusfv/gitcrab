@@ -236,6 +236,20 @@ pub enum Operation {
     Undo,
     /// Re-applies the top entry of the tab's redo journal.
     Redo,
+    /// Abandons the merge, rebase, cherry-pick or revert that the target
+    /// names ([`crate::git::Sequence::name`]) and returns to the state
+    /// before it started.
+    Abort,
+    /// Concludes the step the named operation stopped at, without an
+    /// editor. A merge, cherry-pick or revert commits with `message`, or
+    /// with Git's prepared message when it is `None`.
+    Continue {
+        #[serde(default)]
+        message: Option<String>,
+    },
+    /// Drops the commit the named rebase or cherry-pick stopped at and goes
+    /// on with the rest.
+    Skip,
 }
 
 /// Operation target and destination resolved by [`Action::ReviewOperation`].
@@ -372,6 +386,15 @@ impl ReviewedOperation {
                 .as_ref()
                 .map(crate::journal::Step::describe)
                 .unwrap_or_default(),
+            Operation::Abort => format!(
+                "Abort the {} and return {here} to the state before it started.",
+                self.target
+            ),
+            Operation::Continue { .. } => format!("Continue the {} on {here}.", self.target),
+            Operation::Skip => format!(
+                "Skip the commit the {} stopped at and go on with the rest.",
+                self.target
+            ),
         }
     }
 }
@@ -415,7 +438,16 @@ impl Operation {
             Self::Push => "Push",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
+            Self::Abort => "Abort",
+            Self::Continue { .. } => "Continue",
+            Self::Skip => "Skip commit",
         }
+    }
+
+    /// Whether the operation finishes or abandons the merge, rebase,
+    /// cherry-pick or revert its target names.
+    pub fn finishes_sequence(&self) -> bool {
+        matches!(self, Self::Abort | Self::Continue { .. } | Self::Skip)
     }
 
     /// The journal stack an Undo or Redo acts on.
@@ -463,6 +495,15 @@ impl Operation {
         ) {
             return Ok(());
         }
+        if self.finishes_sequence() {
+            return match crate::git::Sequence::from_name(target) {
+                Some(sequence) if matches!(self, Self::Skip) && !sequence.can_skip() => {
+                    Err(crate::commands::SKIP_UNSUPPORTED.into())
+                }
+                Some(_) => Ok(()),
+                None => Err(crate::commands::NO_SEQUENCE.into()),
+            };
+        }
         if target.trim().is_empty() {
             return Err("Enter a target before continuing.".into());
         }
@@ -497,7 +538,14 @@ impl Operation {
         match self {
             Self::CreateBranch | Self::CreateBranchAt { .. } => "feature/branch-name",
             Self::Stash => "Optional message",
-            Self::PopStash | Self::Pull { .. } | Self::Push | Self::Undo | Self::Redo => "",
+            Self::PopStash
+            | Self::Pull { .. }
+            | Self::Push
+            | Self::Undo
+            | Self::Redo
+            | Self::Abort
+            | Self::Continue { .. }
+            | Self::Skip => "",
             _ => "Branch name or commit revision",
         }
     }
@@ -536,6 +584,10 @@ pub struct Request {
 /// Successful result of an [`Action`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one-shot reply moved through a channel; boxing buys nothing measurable"
+)]
 pub enum Reply {
     /// Canonical worktree path, repository snapshot and its matching graph.
     Snapshot {

@@ -71,6 +71,11 @@ impl Journal {
         self.redo.clear();
     }
 
+    /// Forgets the redo stack after a new action that is not recorded.
+    pub fn clear_redo(&mut self) {
+        self.redo.clear();
+    }
+
     /// Records a successful action. A new action clears the redo stack.
     pub fn record(&mut self, entry: Entry) {
         self.redo.clear();

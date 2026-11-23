@@ -287,6 +287,25 @@ pub struct WriteIdentity {
     /// Raw NUL-delimited index entries from `git ls-files --stage -z`.
     pub index: Vec<u8>,
 }
+
+impl WriteIdentity {
+    /// The index entries at a conflict stage (1 to 3), each as
+    /// `git ls-files --unmerged -z` prints it, without the terminating NUL.
+    pub fn unmerged_entries(&self) -> Vec<&[u8]> {
+        self.index
+            .split(|&byte| byte == 0)
+            .filter(|entry| {
+                let meta = entry
+                    .split(|&byte| byte == b'\t')
+                    .next()
+                    .unwrap_or_default();
+                meta.rsplit(|&byte| byte == b' ')
+                    .next()
+                    .is_some_and(|stage| !stage.is_empty() && stage != b"0")
+            })
+            .collect()
+    }
+}
 /// Human-readable identity of a resolved commit or stash.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitSummary {
@@ -438,6 +457,10 @@ pub struct RepoSnapshot {
     pub status: Vec<FileChange>,
     #[serde(default)]
     pub operations: Vec<String>,
+    /// Git's prepared commit message (`MERGE_MSG`) for the merge,
+    /// cherry-pick or revert in progress, without comment lines.
+    #[serde(default)]
+    pub operation_message: Option<String>,
     /// HEAD and index identity captured for subsequent write review.
     #[serde(default)]
     pub reviewed: Option<WriteIdentity>,
@@ -526,24 +549,34 @@ impl RepoSnapshot {
         })
     }
 
-    /// Describes how to finish or abandon the active operation with Git.
+    /// The merge, rebase, cherry-pick or revert that Git stopped part-way,
+    /// which Continue, Skip and Abort act on.
+    pub fn sequence(&self) -> Option<Sequence> {
+        Sequence::from_operations(&self.operations)
+    }
+
+    /// Describes how to finish or abandon the active operation.
     pub fn operation_recovery(&self) -> String {
-        let command = self
-            .operations
-            .iter()
-            .map(String::as_str)
-            .find(|op| *op != "sequencer")
-            .or_else(|| (!self.operations.is_empty()).then_some("cherry-pick"));
-        let Some(command) = command else {
-            return "Edit each conflicted file, mark it resolved, then commit the result.".into();
+        let Some(sequence) = self.sequence() else {
+            if self.operations.is_empty() {
+                return "Edit each conflicted file, mark it resolved, then commit the result."
+                    .into();
+            }
+            return "Finish or abort the operation in a terminal, then refresh GitCrab.".into();
         };
-        let continuation = if command == "merge" {
-            "commit the merge or run `git merge --continue`".to_owned()
-        } else {
-            format!("run `git {command} --continue`")
+        let name = sequence.name();
+        let continuation = match sequence {
+            Sequence::Merge => {
+                "Continue commits the merge with the message in the commit box".to_owned()
+            }
+            Sequence::Rebase => "Continue goes on with the next commit, Skip drops this one".into(),
+            Sequence::CherryPick => "Continue commits the result with the message in the commit box, Skip drops this commit".into(),
+            Sequence::Revert => {
+                "Continue commits the result with the message in the commit box".into()
+            }
         };
         format!(
-            "Edit each conflicted file and mark it resolved. Then {continuation} in a terminal, or run `git {command} --abort` to return to the state before the {command}. Refresh GitCrab afterwards."
+            "Edit each conflicted file and mark it resolved. Then {continuation}, or Abort returns to the state before the {name}."
         )
     }
 
@@ -558,7 +591,7 @@ impl RepoSnapshot {
         }
         if let Some(op) = self.operation_label() {
             return Some(format!(
-                "A {op} is in progress. Continue or abort it in a terminal, then refresh."
+                "A {op} is in progress. Finish it with Continue, or Abort it."
             ));
         }
         if self.is_detached() {

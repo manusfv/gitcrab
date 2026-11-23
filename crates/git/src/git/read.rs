@@ -280,6 +280,7 @@ impl Git {
                 head_id,
                 status,
                 operations: metadata.operations,
+                operation_message: metadata.message,
                 upstream_context,
                 remote,
                 reviewed: Some(reviewed),
@@ -308,24 +309,48 @@ impl Git {
         for (marker, _) in OPERATION_MARKERS {
             args.extend(["--git-path", marker]);
         }
-        for path in ["shallow", "info/grafts", "config", "config.worktree"] {
+        let history_files = ["shallow", "info/grafts", "config", "config.worktree"];
+        for path in history_files {
             args.extend(["--git-path", path]);
         }
+        args.extend(["--git-path", "MERGE_MSG"]);
         let paths = self.run(&args)?;
         let paths: Vec<_> = paths.lines().collect();
-        if paths.len() != OPERATION_MARKERS.len() + 4 {
+        if paths.len() != OPERATION_MARKERS.len() + history_files.len() + 1 {
             return Err("Git metadata paths could not be represented.".into());
         }
-        let mut active = paths
-            .iter()
-            .zip(OPERATION_MARKERS)
-            .filter(|(p, _)| Path::new(p).exists())
-            .map(|(_, (_, name))| name.to_string())
-            .collect::<Vec<_>>();
+        let (markers, rest) = paths.split_at(OPERATION_MARKERS.len());
+        let (history, merge_message) = rest.split_at(history_files.len());
+        let mut active = vec![];
+        let mut sequencer = None;
+        for (path, (_, name)) in markers.iter().zip(OPERATION_MARKERS) {
+            if Path::new(path).exists() {
+                active.push(name.to_string());
+                if *name == "sequencer" {
+                    sequencer = Some(Path::new(path));
+                }
+            }
+        }
+        // Between the picks of a multi-commit cherry-pick or revert, only the
+        // sequencer directory says which of the two is in progress.
+        if let Some(sequencer) = sequencer {
+            if !active
+                .iter()
+                .any(|op| op == "cherry-pick" || op == "revert")
+            {
+                active.push(sequencer_kind(sequencer).name().to_owned());
+            }
+        }
         active.sort();
         active.dedup();
+        let message = match Sequence::from_operations(&active) {
+            Some(sequence) if sequence.takes_message() => {
+                prepared_message(Path::new(merge_message[0]))?
+            }
+            _ => None,
+        };
         let mut stamp = std::collections::hash_map::DefaultHasher::new();
-        for path in &paths[OPERATION_MARKERS.len()..] {
+        for path in history {
             path.hash(&mut stamp);
             match std::fs::metadata(path) {
                 Ok(metadata) => {
@@ -342,6 +367,7 @@ impl Git {
         }
         Ok(RepositoryMetadata {
             operations: active,
+            message,
             history_stamp: stamp.finish(),
         })
     }
@@ -643,4 +669,40 @@ impl Git {
             "--untracked-files=all",
         ])?))
     }
+}
+
+/// Whether the multi-commit sequence saved in the `sequencer` directory is a
+/// cherry-pick or a revert, from the first instruction of its todo list.
+fn sequencer_kind(sequencer: &Path) -> Sequence {
+    let todo = std::fs::read(sequencer.join("todo")).unwrap_or_default();
+    let todo = String::from_utf8_lossy(&todo);
+    let first = todo
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .and_then(|line| line.split_whitespace().next());
+    if first == Some("revert") {
+        Sequence::Revert
+    } else {
+        Sequence::CherryPick
+    }
+}
+
+/// Git's prepared commit message at `path` without its comment lines, or
+/// `None` when the file is missing or holds nothing else.
+fn prepared_message(path: &Path) -> GitResult<Option<String>> {
+    let bytes = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > MAX_HISTORY_METADATA_BYTES => return Ok(None),
+        Ok(_) => std::fs::read(path).map_err(|e| e.to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let message = String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let message = message.trim_matches('\n');
+    Ok((!message.is_empty()).then(|| message.to_owned()))
 }

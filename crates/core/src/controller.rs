@@ -149,6 +149,9 @@ pub struct Controller {
     // Some(true) requires a full refresh because Git metadata changed.
     pending_watcher_refresh: Option<bool>,
     drafts: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Git's prepared message for the operation in progress, once it has
+    /// been offered to the draft. Clearing the draft does not bring it back.
+    offered_message: Option<String>,
     /// Unmerged paths whose resolution GitCrab refused because of conflict markers.
     pub marker_refusals: std::collections::BTreeSet<String>,
     resolving: Option<String>,
@@ -226,6 +229,7 @@ impl Default for Controller {
             selection_generation: 0,
             pending_watcher_refresh: None,
             drafts: Default::default(),
+            offered_message: None,
             marker_refusals: Default::default(),
             resolving: None,
             reveal: None,
@@ -246,6 +250,33 @@ impl Controller {
         if self.draft != value {
             self.draft = value;
             self.draft_revision += 1;
+        }
+    }
+
+    /// Puts Git's prepared message for a merge, cherry-pick or revert in
+    /// progress into an empty draft, once per message, so continuing commits
+    /// with it rather than with a stale draft.
+    fn offer_operation_message(&mut self, message: Option<&String>) {
+        if self.offered_message.as_ref() == message {
+            return;
+        }
+        self.offered_message = message.cloned();
+        if let Some(message) = message {
+            if self.draft.trim().is_empty() {
+                self.set_draft(message.clone());
+            }
+        }
+    }
+
+    /// Replaces the draft with Git's prepared message for the operation in
+    /// progress, if there is one.
+    pub fn use_operation_message(&mut self) {
+        if let Some(message) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.operation_message.clone())
+        {
+            self.set_draft(message);
         }
     }
 
@@ -292,6 +323,7 @@ impl Controller {
             self.invalidate(l);
         }
         self.snapshot = None;
+        self.offered_message = None;
         // Writes waiting for a refresh belong to the repository being left.
         self.queued.clear();
         self.predicted_from = None;
@@ -691,8 +723,15 @@ impl Controller {
 
     /// Starts `action` now. Callers have checked that no write is running.
     fn start_write(&mut self, action: Action) -> Option<(Lane, Request)> {
-        self.submitted_revision =
-            matches!(action, Action::Commit { .. }).then_some(self.draft_revision);
+        self.submitted_revision = matches!(
+            action,
+            Action::Commit { .. }
+                | Action::RunOperation {
+                    op: crate::service::Operation::Continue { message: Some(_) },
+                    ..
+                }
+        )
+        .then_some(self.draft_revision);
         self.resolving = match &action {
             Action::MarkResolved { path, .. } => Some(path.clone()),
             _ => None,
@@ -961,6 +1000,7 @@ impl Controller {
                     self.path = path;
                     // Git's status replaces any predicted file move.
                     self.settle_prediction(false);
+                    self.offer_operation_message(snapshot.operation_message.as_ref());
                     self.snapshot = Some(snapshot);
                     // Writes queued behind a commit start once its refresh lands.
                     if !self.busy {
@@ -2682,6 +2722,46 @@ mod tests {
         assert!(
             matches!(&jobs[0].1.action, Action::Open { trust: RepositoryTrust::Confirmed(location), .. } if location.worktree == std::path::Path::new("c"))
         );
+    }
+    #[test]
+    fn gits_prepared_message_fills_only_an_empty_draft_once() {
+        fn install(c: &mut Controller, message: Option<&str>) {
+            let request = match c.snapshot {
+                None => c.open_trusted(RepositoryLocation::test_path("repo")),
+                Some(_) => c.refresh().unwrap().dispatch,
+            }
+            .unwrap()
+            .1;
+            c.complete(
+                Lane::Snapshot,
+                reply(
+                    &request,
+                    Ok(Reply::Snapshot {
+                        path: "repo".into(),
+                        snapshot: RepoSnapshot {
+                            operations: vec!["merge".into()],
+                            operation_message: message.map(str::to_owned),
+                            ..Default::default()
+                        },
+                        graph: Default::default(),
+                    }),
+                ),
+            );
+        }
+        let merge = "Merge branch 'topic'";
+        let mut c = Controller::default();
+        install(&mut c, Some(merge));
+        assert_eq!(c.draft, merge);
+        c.set_draft(String::new());
+        install(&mut c, Some(merge));
+        assert!(c.draft.is_empty());
+
+        c.set_draft("Stale draft".into());
+        install(&mut c, None);
+        install(&mut c, Some("Revert \"Fix\""));
+        assert_eq!(c.draft, "Stale draft");
+        c.use_operation_message();
+        assert_eq!(c.draft, "Revert \"Fix\"");
     }
     #[test]
     fn draft_recovery_is_tab_local_and_closing_drops_it() {

@@ -73,6 +73,70 @@ pub const OPERATION_MARKERS: &[(&str, &str)] = &[
     ("sequencer", "sequencer"),
 ];
 
+/// Explains why a write is unavailable while Git has stopped part-way.
+pub const OPERATION_IN_PROGRESS: &str = "A merge, rebase, cherry-pick or revert is in progress, or the index has conflicts. Finish or abort it first.";
+
+/// A Git command that can stop part-way, leaving the repository to be
+/// continued, skipped past or aborted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Sequence {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+impl Sequence {
+    const ALL: [Self; 4] = [Self::Rebase, Self::CherryPick, Self::Revert, Self::Merge];
+
+    /// The Git subcommand, which is also the operation's name in
+    /// [`RepoSnapshot::operations`].
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Rebase => "rebase",
+            Self::CherryPick => "cherry-pick",
+            Self::Revert => "revert",
+        }
+    }
+
+    /// The name with a capital letter, to start a sentence or a label.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Merge => "Merge",
+            Self::Rebase => "Rebase",
+            Self::CherryPick => "Cherry-pick",
+            Self::Revert => "Revert",
+        }
+    }
+
+    /// The sequence called `name`, as [`Self::name`] spells it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|sequence| sequence.name() == name)
+    }
+
+    /// The sequence to continue or abort for the active operation names.
+    /// A rebase can stop on a merge, so it is chosen first.
+    pub fn from_operations(operations: &[String]) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|sequence| operations.iter().any(|op| op == sequence.name()))
+    }
+
+    /// Whether Git can drop the commit it stopped at and go on with the rest.
+    pub fn can_skip(self) -> bool {
+        matches!(self, Self::Rebase | Self::CherryPick)
+    }
+
+    /// Whether continuing records a commit with a message the user can edit.
+    /// A rebase keeps each commit's own message.
+    pub fn takes_message(self) -> bool {
+        self != Self::Rebase
+    }
+}
+
 /// Explains why Stash cannot run when only untracked files changed.
 pub const NOTHING_TO_STASH: &str =
     "There are no changes to tracked files to stash. Stash leaves untracked files in the working tree.";
