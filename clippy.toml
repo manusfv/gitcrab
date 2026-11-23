@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "gpui_component::WindowExt::open_dialog", reason = "open dialogs with `OpenModal::open_modal` so they share GitCrab's placement and dismissal" },
+    { path = "gpui_component::WindowExt::open_alert_dialog", reason = "open confirmations with `OpenModal::open_alert` so they share GitCrab's placement and dismissal" },
+]

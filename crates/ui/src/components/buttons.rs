@@ -49,6 +49,15 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
         // swap it for not-allowed.
         .cursor_pointer()
 }
+/// An icon for a button that also has a text label.
+///
+/// The button centers the icon on the label's line box, but the letters sit
+/// below that box's middle, so a centered icon reads as too high. The nudge
+/// lines the icon up with the letters instead.
+pub fn label_icon(name: &str) -> gpui::component::Icon {
+    icon(name).relative().top(px(1.))
+}
+
 /// The role a button plays, which selects its palette everywhere it appears.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {

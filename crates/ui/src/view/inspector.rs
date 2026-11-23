@@ -792,7 +792,7 @@ impl GitCrab {
                     )
                     .child(
                         self.button("operation-refresh", "Refresh")
-                            .icon(icon("refresh"))
+                            .icon(components::label_icon("refresh"))
                             .tooltip_with_action(
                                 "Refresh after continuing or aborting in a terminal",
                                 &Refresh,
@@ -1045,7 +1045,7 @@ impl GitCrab {
         let scroll = ScrollHandle::new();
         let initial_focus = cancel_focus.clone();
         let display = gitcrab_core::git::display_path(&path);
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert(cx, move |dialog, _, cx| {
             let weak = weak.clone();
             let path = path.clone();
             let confirm = components::style(
@@ -1099,7 +1099,6 @@ impl GitCrab {
             };
             dialog
                 .frame(header, ModalWidth::Small, cx)
-                .confirm()
                 .body(
                     &scroll,
                     modal_body()
@@ -1293,7 +1292,7 @@ impl GitCrab {
             )
             .child(
                 self.primary_button("commit", commit_label, !can_commit)
-                    .when(can_commit, |b| b.icon(icon("check")))
+                    .when(can_commit, |b| b.icon(components::label_icon("check")))
                     .flex_none()
                     .mx(scaled(INSPECTOR_INSET))
                     .mt(px(COMPOSER_GAP))
