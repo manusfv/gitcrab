@@ -1148,7 +1148,7 @@ impl GitCrab {
             ),
         };
         let epoch = self.state.epoch;
-        let repo = self.state.path.clone();
+        let repo = gitcrab_core::presentation::display_path(&self.state.path);
         let weak = cx.weak_entity();
         let cancel_focus = cx.focus_handle();
         let scroll = ScrollHandle::new();
