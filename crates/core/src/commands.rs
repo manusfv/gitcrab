@@ -208,25 +208,26 @@ impl Command {
         Availability::Enabled
     }
 
-    /// The toolbar button's tooltip: the action's name, such as "Push" or
-    /// "Pull (fast-forward if possible)" for Pull's default mode, or for Undo
-    /// and Redo the step they act on, such as `Undo commit “Fix parser”`. A
-    /// disabled command gives its reason instead; Undo and Redo give theirs
-    /// in one line, leaving the full explanation to the status bar.
+    /// The toolbar button's tooltip, worded as GitKraken's are: the action's
+    /// name, such as "Push" or "Pull (fast-forward if possible)" for Pull's
+    /// default mode, whether or not it can run. Undo and Redo instead name
+    /// the step they act on, such as `Undo commit “Fix parser”`, or say in
+    /// one line why there is none.
     pub fn toolbar_tooltip(self, cx: &CommandContext, summary: Option<&str>) -> String {
         use crate::journal::{NOTHING_TO_REDO, NOTHING_TO_UNDO};
-        if let Availability::Disabled(reason) = self.availability(cx) {
-            return match self {
-                Self::Undo if reason == NOTHING_TO_UNDO => "No recent action to undo".to_owned(),
-                Self::Redo if reason == NOTHING_TO_REDO => "No recent undo to redo".to_owned(),
-                Self::Undo | Self::Redo => reason.to_owned(),
-                _ => self.describe(cx),
-            };
-        }
-        match self {
-            Self::Undo | Self::Redo => self.describe_with_summary(cx, summary),
-            Self::Pull => crate::git::PullMode::ALL[0].label().to_owned(),
-            Self::PopStash => "Pop Stash".to_owned(),
+        match (self, self.availability(cx)) {
+            (Self::Undo, Availability::Disabled(NOTHING_TO_UNDO)) => {
+                "No recent action to undo".to_owned()
+            }
+            (Self::Redo, Availability::Disabled(NOTHING_TO_REDO)) => {
+                "No recent undo to redo".to_owned()
+            }
+            (Self::Undo | Self::Redo, Availability::Disabled(reason)) => reason.to_owned(),
+            (Self::Undo | Self::Redo, Availability::Enabled) => {
+                self.describe_with_summary(cx, summary)
+            }
+            (Self::Pull, _) => crate::git::PullMode::ALL[0].label().to_owned(),
+            (Self::PopStash, _) => "Pop Stash".to_owned(),
             _ => self.label().to_owned(),
         }
     }
@@ -485,13 +486,16 @@ mod tests {
             Command::Undo.toolbar_tooltip(&busy, None),
             "A Git operation is running. Wait for it to finish."
         );
-        let empty = CommandContext {
+        let idle = CommandContext {
             stash_count: 0,
+            tracked_changes: false,
+            remotes: 0,
             ..cx
         };
         assert_eq!(
-            Command::PopStash.toolbar_tooltip(&empty, None),
-            Command::PopStash.describe(&empty)
+            Command::PRIMARY.map(|command| command.toolbar_tooltip(&idle, None))[2..],
+            tooltips[2..],
+            "a disabled button keeps its name"
         );
     }
 
