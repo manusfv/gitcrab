@@ -97,6 +97,18 @@ pub fn scroll_area(id: &'static str, handle: &ScrollHandle, content: Stateful<Di
         .child(scrollbar_overlay(id, handle))
 }
 
+/// The slim horizontal scrollbar for `handle`, drawn along the bottom edge
+/// of the element it is laid over. Shown whenever the content is wider than
+/// its region, such as a path kept on one line.
+pub fn horizontal_scrollbar_overlay(id: impl Into<SharedString>, handle: &ScrollHandle) -> Div {
+    div().absolute().inset_0().child(slim_scrollbar(
+        gpui::component::scroll::Scrollbar::horizontal(handle)
+            .id(SharedString::from(format!("{}-scrollbar", id.into())))
+            .viewport_from_layout()
+            .mode(gpui::component::scroll::ScrollbarMode::Always),
+    ))
+}
+
 /// An always-visible vertical scrollbar to lay over a scrolling element's
 /// parent, for lists that track their own scroll handle.
 pub fn scrollbar_overlay<H>(id: &'static str, handle: &H) -> Div
@@ -182,12 +194,32 @@ pub fn track_overflow<H>(el: Div, handle: &H, was: bool) -> Div
 where
     H: gpui::component::scroll::ScrollbarHandle + Clone,
 {
+    settle_overflow(el, handle, was, overflows_vertically)
+}
+
+/// Whether a region is wider than it shows, as of the last layout.
+pub fn overflows_horizontally<H: gpui::component::scroll::ScrollbarHandle>(handle: &H) -> bool {
+    handle.content_size().width > handle.viewport_bounds().size.width + px(0.5)
+}
+
+/// [`track_overflow`] for a region that scrolls sideways.
+pub fn track_horizontal_overflow<H>(el: Div, handle: &H, was: bool) -> Div
+where
+    H: gpui::component::scroll::ScrollbarHandle + Clone,
+{
+    settle_overflow(el, handle, was, overflows_horizontally)
+}
+
+fn settle_overflow<H>(el: Div, handle: &H, was: bool, overflows: fn(&H) -> bool) -> Div
+where
+    H: gpui::component::scroll::ScrollbarHandle + Clone,
+{
     let handle = handle.clone();
     // One request per render. If the mismatch outlives the repaint (a cached
     // view that is not rebuilt), asking again every frame would never settle.
     let asked = std::cell::Cell::new(false);
     el.on_children_prepainted(move |_, _, cx| {
-        if overflows_vertically(&handle) != was && !asked.replace(true) {
+        if overflows(&handle) != was && !asked.replace(true) {
             // `Window::refresh` is ignored while the window is drawing, so
             // ask for the repaint once this frame is done.
             cx.defer(|cx| cx.refresh_windows());
