@@ -436,6 +436,10 @@ pub struct RepoSnapshot {
     /// Full HEAD object ID, even outside the loaded page. Empty for unborn HEAD.
     pub head_id: String,
     pub status: Vec<FileChange>,
+    /// Unmerged paths whose working file still had a conflict marker line
+    /// when `status` was read.
+    #[serde(default)]
+    pub conflict_markers: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub operations: Vec<String>,
     /// HEAD and index identity captured for subsequent write review.

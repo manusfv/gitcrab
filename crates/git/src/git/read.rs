@@ -240,6 +240,7 @@ impl Git {
         if refs_now != refs {
             return Err("References changed during refresh. Refresh again.".into());
         }
+        let conflict_markers = self.conflict_marker_paths(&status);
         let stash_count = stash_list.len();
         let latest_stash = stash_list.first().map(|(_, entry)| entry.clone());
         let upstream_context = remote.context(&reviewed);
@@ -279,6 +280,7 @@ impl Git {
                 head,
                 head_id,
                 status,
+                conflict_markers,
                 operations: metadata.operations,
                 upstream_context,
                 remote,
@@ -633,6 +635,26 @@ impl Git {
             return Err("Repository changed during refresh.".into());
         }
         Ok((status, identity))
+    }
+
+    /// The unmerged paths in `status` whose working file still has a
+    /// conflict marker line, as [`Self::mark_resolved`] would refuse them.
+    /// A file that cannot be read is left out.
+    pub(crate) fn conflict_marker_paths(
+        &self,
+        status: &[FileChange],
+    ) -> std::collections::BTreeSet<String> {
+        status
+            .iter()
+            .filter(|file| file.is_unmerged() && !file.unsupported_path)
+            .filter(|file| {
+                let path = self.path.join(&file.path);
+                std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file())
+                    && std::fs::read(&path)
+                        .is_ok_and(|content| conflict_marker_line(&content).is_some())
+            })
+            .map(|file| file.path.clone())
+            .collect()
     }
 
     pub(super) fn status(&self) -> GitResult<Vec<FileChange>> {

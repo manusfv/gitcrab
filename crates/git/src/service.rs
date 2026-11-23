@@ -13,6 +13,14 @@ use std::sync::{
 };
 use tokio::sync::oneshot;
 
+/// What a successful local operation reports beyond its effect on HEAD.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Ran {
+    /// A popped stash's staged changes could not be restored, so all of
+    /// its changes were applied unstaged.
+    pub staging_dropped: bool,
+}
+
 /// Resolves, revalidates and runs reviewed operations against a repository.
 pub(crate) trait OperationRun: Sized {
     fn capture(
@@ -27,8 +35,8 @@ pub(crate) trait OperationRun: Sized {
         target: String,
         destination: crate::git::WriteIdentity,
     ) -> Result<Self, String>;
-    fn execute(&self, git: &Git) -> Result<(), WriteError>;
-    fn run_captured(&self, git: &Git) -> Result<(), WriteError>;
+    fn execute(&self, git: &Git) -> Result<Ran, WriteError>;
+    fn run_captured(&self, git: &Git) -> Result<Ran, WriteError>;
     fn execute_network(
         &self,
         git: &Git,
@@ -177,7 +185,7 @@ impl OperationRun for ReviewedOperation {
         })
     }
 
-    fn execute(&self, git: &Git) -> Result<(), WriteError> {
+    fn execute(&self, git: &Git) -> Result<Ran, WriteError> {
         let current = Self::capture(
             git,
             self.op.clone(),
@@ -192,7 +200,7 @@ impl OperationRun for ReviewedOperation {
 
     /// Runs an operation whose capture was just taken in this worker request,
     /// so it needs no second revalidation.
-    fn run_captured(&self, git: &Git) -> Result<(), WriteError> {
+    fn run_captured(&self, git: &Git) -> Result<Ran, WriteError> {
         let id = self.target_id.as_deref().unwrap_or_default();
         let result = match self.op {
             Operation::Pull { .. } | Operation::Push => {
@@ -211,11 +219,20 @@ impl OperationRun for ReviewedOperation {
             Operation::Stash => git.stash_with_message(&self.target),
             // Apply the reviewed stash object, then drop its entry only after a
             // clean apply. Like `git stash pop`, conflicts keep the stash.
-            Operation::PopStash => git
-                .stash_apply(id, false)
-                .and_then(|()| git.drop_stash_object(id)),
+            Operation::PopStash => {
+                return git
+                    .stash_apply_with_index(id)
+                    .and_then(|restored| {
+                        git.drop_stash_object(id).map(|()| Ran {
+                            staging_dropped: !restored,
+                        })
+                    })
+                    .map_err(|error| operation_failure(git, error))
+            }
         };
-        result.map_err(|error| operation_failure(git, error))
+        result
+            .map(|()| Ran::default())
+            .map_err(|error| operation_failure(git, error))
     }
 
     /// Runs a reviewed Pull or Push after the same revalidation as other
@@ -254,18 +271,76 @@ impl OperationRun for ReviewedOperation {
     }
 }
 
+/// Words the result of a successful local operation. `head` is the full
+/// symbolic ref and commit of HEAD read after the write, so the wording
+/// follows where Git actually left HEAD.
+fn operation_message(reviewed: &ReviewedOperation, head: &(String, String), ran: Ran) -> String {
+    use gitcrab_core::presentation::short_id;
+    let (symbolic, head_id) = head;
+    let id = reviewed.target_id.as_deref().unwrap_or_default();
+    let target = reviewed.target.trim();
+    // A target typed as an object ID reads better shortened; a name stays.
+    let label = if target.is_empty() || id.starts_with(target) {
+        short_id(id).to_owned()
+    } else {
+        ["refs/heads/", "refs/remotes/", "refs/tags/"]
+            .iter()
+            .find_map(|prefix| target.strip_prefix(prefix))
+            .unwrap_or(target)
+            .to_owned()
+    };
+    let branch = symbolic.strip_prefix("refs/heads/");
+    let here = branch.map_or_else(|| "detached HEAD".to_owned(), str::to_owned);
+    match reviewed.op {
+        Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
+            if branch == Some(target) {
+                format!("Created branch {target} and switched to it")
+            } else {
+                format!("Created branch {target} at {}", short_id(id))
+            }
+        }
+        Operation::Checkout => match branch {
+            Some(branch) => format!("Checked out {branch}"),
+            None if label == short_id(head_id) => format!(
+                "HEAD is detached at {label}. Create a branch before committing."
+            ),
+            None => format!(
+                "Checked out {label}. HEAD is detached at {}. Create a branch before committing.",
+                short_id(head_id)
+            ),
+        },
+        Operation::Merge if *head_id == reviewed.destination.head => {
+            format!("Already up to date: {here} already contains {label}")
+        }
+        Operation::Merge if head_id == id => format!("Fast-forwarded {here} to {label}"),
+        Operation::Merge => format!("Merged {label} into {here}"),
+        Operation::CherryPick => format!("Cherry-picked {} onto {here}", short_id(id)),
+        Operation::Revert => format!("Reverted {} on {here}", short_id(id)),
+        Operation::Stash => {
+            "Stashed changes to tracked files; untracked files stay in the working tree".into()
+        }
+        Operation::PopStash if ran.staging_dropped => "Stash popped. The stash entry was removed. Its staged changes could not be restored on top of the current index, so all of its changes are now unstaged.".into(),
+        Operation::PopStash => "Stash popped. The stash entry was removed.".into(),
+        Operation::Pull { .. } | Operation::Push | Operation::Undo | Operation::Redo => {
+            format!("{} completed", reviewed.op.label())
+        }
+    }
+}
+
 fn operation_failure(git: &Git, error: WriteError) -> WriteError {
     if error.kind != FailureKind::GitFailure {
         return error;
     }
-    let message = error.message;
     match git.has_unmerged_entries() {
         Ok(true) => WriteError {
             kind: FailureKind::Conflict,
-            message: format!("Git left conflicts in the index. Inspect Working changes before retrying. {message}"),
+            message: format!("Git left conflicts in the index. {}", error.message),
         },
-        Ok(false) => WriteError::git(message),
-        Err(error) => WriteError::inspect(format!("{message} Could not check for conflicts. {error}")),
+        Ok(false) => error,
+        Err(read) => WriteError::inspect(format!(
+            "{} Could not check for conflicts. {read}",
+            error.git_text()
+        )),
     }
 }
 struct Pending {
@@ -561,6 +636,10 @@ fn read_diff(
         .iter()
         .find_map(|hunk| hunk.blocked_reason(&patch))
         .map(str::to_owned);
+    let discard_blocked = (!staged && !hunks.is_empty())
+        .then(|| crate::hunk_edit::discard_blocked_reason(&patch))
+        .flatten()
+        .map(str::to_owned);
     let preview = diff::classify(&patch, fits);
     // Only text patches have displayable lines. Other previews are
     // described by the view instead of synthetic code rows.
@@ -590,6 +669,7 @@ fn read_diff(
             content,
             hunks: titles,
             hunk_blocked,
+            discard_blocked,
             token,
             preview,
         },
@@ -920,7 +1000,10 @@ impl Session {
                     .unwrap()
                     .record_commit(reviewed, &sha, &message);
                 Reply::Done {
-                    message: format!("Verified commit {sha} in {}", g.path.display()),
+                    message: format!(
+                        "Verified commit {sha} in {}",
+                        gitcrab_core::presentation::display_location(&g.path)
+                    ),
                     committed_draft: Some(message),
                 }
             }
@@ -962,13 +1045,13 @@ impl Session {
                 // the index against `destination` and resolves the target now.
                 let reviewed = ReviewedOperation::capture(g, op, target, destination)?;
                 let before = crate::journal::Before::capture(g, &reviewed);
-                reviewed.run_captured(g)?;
-                self.operation_done(g, &reviewed, before)
+                let ran = reviewed.run_captured(g)?;
+                self.operation_done(g, &reviewed, before, ran)
             }
             Action::Operation { reviewed } => {
                 let before = crate::journal::Before::capture(g, &reviewed);
-                reviewed.execute(g)?;
-                self.operation_done(g, &reviewed, before)
+                let ran = reviewed.execute(g)?;
+                self.operation_done(g, &reviewed, before, ran)
             }
             Action::Fetch => return Err("Fetch runs as a network operation.".into()),
             Action::Open { .. }
@@ -1039,6 +1122,7 @@ impl Session {
         Reply::IndexDone {
             message,
             worktree: worktree.map(|((status, reviewed), journal)| WorktreeState {
+                conflict_markers: g.conflict_marker_paths(&status),
                 status,
                 reviewed,
                 journal,
@@ -1054,21 +1138,21 @@ impl Session {
         g: &Git,
         reviewed: &ReviewedOperation,
         before: Result<crate::journal::Before, String>,
+        ran: Ran,
     ) -> Reply {
+        let message = match g.head_state() {
+            Ok(head) => operation_message(reviewed, &head, ran),
+            Err(_) => format!("{} completed", reviewed.op.label()),
+        };
         let note = self
             .journal
             .lock()
             .unwrap()
             .record_operation(g, reviewed, before);
-        let message = if matches!(reviewed.op, Operation::PopStash) {
-            "Stash popped. The stash entry was removed."
-        } else {
-            "Operation completed"
-        };
         Reply::Done {
             message: match note {
                 Some(note) => format!("{}. {note}", message.trim_end_matches('.')),
-                None => message.into(),
+                None => message,
             },
             committed_draft: None,
         }
@@ -1821,6 +1905,198 @@ mod tests {
         let current = git.write_identity().unwrap();
         assert!(run(Operation::Push, "", current.clone()).is_err());
         assert!(run(Operation::Undo, "", current).is_err());
+    }
+
+    /// Runs `op` on `target` against the current HEAD and index and returns
+    /// the result message or the failure.
+    fn run_local(session: &mut Session, op: Operation, target: &str) -> Result<String, WriteError> {
+        let destination = session.repo.as_ref().unwrap().write_identity().unwrap();
+        match session.run(
+            1,
+            1,
+            Action::RunOperation {
+                op,
+                target: target.into(),
+                destination,
+            },
+        )? {
+            Reply::Done { message, .. } => Ok(message),
+            other => panic!("expected a result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_operations_word_their_result_from_head_after_the_write() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("tracked.txt", "base\n");
+        git.stage("tracked.txt").unwrap();
+        git.commit("base").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let short = |id: &str| gitcrab_core::presentation::short_id(id).to_owned();
+        // Each message may end with a note about Undo, so only its start is fixed.
+        let starts = |message: Result<String, WriteError>, expected: &str| {
+            let message = message.unwrap();
+            assert!(message.starts_with(expected), "{message:?}");
+        };
+        starts(
+            run_local(&mut session, Operation::CreateBranch, "topic"),
+            &format!(
+                "Created branch topic at {}",
+                short(&git.resolve_commit("HEAD").unwrap())
+            ),
+        );
+        starts(
+            run_local(&mut session, Operation::Checkout, "topic"),
+            "Checked out topic",
+        );
+        fixture.write("topic.txt", "topic\n");
+        git.stage("topic.txt").unwrap();
+        git.commit("topic").unwrap();
+        let topic = git.resolve_commit("HEAD").unwrap();
+        starts(
+            run_local(&mut session, Operation::Checkout, "main"),
+            "Checked out main",
+        );
+        starts(
+            run_local(&mut session, Operation::Merge, "topic"),
+            "Fast-forwarded main to topic",
+        );
+        starts(
+            run_local(&mut session, Operation::Merge, "topic"),
+            "Already up to date: main already contains topic",
+        );
+        starts(
+            run_local(&mut session, Operation::Revert, &topic),
+            &format!("Reverted {} on main", short(&topic)),
+        );
+        starts(
+            run_local(&mut session, Operation::CherryPick, &topic),
+            &format!("Cherry-picked {} onto main", short(&topic)),
+        );
+        git.checkout("topic").unwrap();
+        fixture.write("other.txt", "other\n");
+        git.stage("other.txt").unwrap();
+        git.commit("other").unwrap();
+        git.checkout("main").unwrap();
+        starts(
+            run_local(&mut session, Operation::Merge, "topic"),
+            "Merged topic into main",
+        );
+        starts(
+            run_local(&mut session, Operation::Checkout, &topic),
+            &format!(
+                "HEAD is detached at {}. Create a branch before committing.",
+                short(&topic)
+            ),
+        );
+        starts(
+            run_local(&mut session, Operation::Checkout, "main~1"),
+            "Checked out main~1. HEAD is detached at ",
+        );
+        fixture.write("tracked.txt", "edited\n");
+        starts(
+            run_local(&mut session, Operation::Stash, ""),
+            "Stashed changes to tracked files; untracked files stay in the working tree",
+        );
+    }
+
+    #[test]
+    fn diffs_say_up_front_when_discard_cannot_act_on_their_hunks() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("tracked.txt", "base\n");
+        git.stage("tracked.txt").unwrap();
+        git.commit("base").unwrap();
+        fixture.write("tracked.txt", "edited\n");
+        fixture.write("new.txt", "new\n");
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let mut blocked = |path: &str| {
+            let reply = session
+                .run(
+                    1,
+                    1,
+                    Action::Diff {
+                        id: None,
+                        path: path.into(),
+                        staged: false,
+                    },
+                )
+                .unwrap();
+            let Reply::Diff {
+                hunks,
+                hunk_blocked,
+                discard_blocked,
+                ..
+            } = reply
+            else {
+                panic!("expected a diff, got {reply:?}")
+            };
+            assert!(!hunks.is_empty() && hunk_blocked.is_none(), "{path}");
+            discard_blocked
+        };
+        assert_eq!(blocked("tracked.txt"), None);
+        assert!(blocked("new.txt").is_some_and(|reason| reason.contains("new")));
+        let hunk = git
+            .compare(None, "new.txt", false)
+            .map(|comparison| {
+                crate::git::hunk_ranges(&comparison.patch)[0].materialize(&comparison.patch)
+            })
+            .unwrap();
+        let refused = git.discard_hunk("new.txt", &hunk).unwrap_err();
+        assert_eq!(
+            Some(refused.message.as_str()),
+            crate::hunk_edit::discard_blocked_reason(&hunk.patch)
+        );
+    }
+
+    #[test]
+    fn pop_stash_restores_the_staged_split_and_conflicts_keep_the_stash() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("app.txt", "base\n");
+        git.stage("app.txt").unwrap();
+        git.commit("base").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        fixture.write("app.txt", "staged\n");
+        git.stage("app.txt").unwrap();
+        fixture.write("app.txt", "staged and edited\n");
+        run_local(&mut session, Operation::Stash, "").unwrap();
+        let popped = run_local(&mut session, Operation::PopStash, "").unwrap();
+        assert!(
+            popped.starts_with("Stash popped. The stash entry was removed.")
+                && !popped.contains("staged changes could not"),
+            "{popped:?}"
+        );
+        let status = git.snapshot(1).unwrap().status;
+        assert_eq!((status[0].index, status[0].worktree), ('M', 'M'));
+        assert_eq!(git.run(&["show", ":app.txt"]).unwrap(), "staged\n");
+        assert!(git.stash_entries().unwrap().is_empty());
+
+        run_local(&mut session, Operation::Stash, "").unwrap();
+        fixture.write("app.txt", "conflicting\n");
+        git.stage("app.txt").unwrap();
+        git.commit("conflicting").unwrap();
+        let failed = run_local(&mut session, Operation::PopStash, "").unwrap_err();
+        assert_eq!(failed.kind, FailureKind::Conflict, "{failed:?}");
+        assert_eq!(
+            failed.message.matches("Inspect Working changes").count(),
+            1,
+            "{failed:?}"
+        );
+        assert_eq!(git.stash_entries().unwrap().len(), 1);
     }
 
     #[test]

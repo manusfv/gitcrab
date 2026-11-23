@@ -532,6 +532,9 @@ pub struct GitCrab {
     branch_prompt: Option<BranchPrompt>,
     /// The branch to switch to once its creation succeeds.
     switch_after_branch: Option<String>,
+    /// The branch just created and being switched to, whose checkout result
+    /// is worded as both steps.
+    switching_to_new_branch: Option<String>,
     split: bool,
     compact: bool,
     show_whitespace: bool,
@@ -768,6 +771,7 @@ impl GitCrab {
             pending_run: None,
             branch_prompt: None,
             switch_after_branch: None,
+            switching_to_new_branch: None,
             split: preferences.split,
             compact: preferences.compact,
             show_whitespace: false,
@@ -2642,7 +2646,7 @@ impl GitCrab {
                 let copy = if path.is_empty() {
                     details.to_owned()
                 } else {
-                    format!("{path}\n{details}")
+                    format!("{}\n{details}", display_path(path))
                 };
                 el.child(
                     div()

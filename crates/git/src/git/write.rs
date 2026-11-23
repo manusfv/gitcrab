@@ -601,9 +601,46 @@ impl Git {
         }
         Ok(())
     }
-    /// Applies the latest stash and drops it if Git applies it successfully.
+    /// Applies the latest stash with its staged changes and drops it if Git
+    /// applies it successfully.
     pub fn stash_pop(&self) -> Result<(), WriteError> {
-        self.write(&["stash", "pop"]).map(|_| ())
+        self.write(&["stash", "pop", "--index"]).map(|_| ())
+    }
+
+    /// Applies stash commit `id` like `git stash pop --index`: staged changes
+    /// return to the index and the rest to the working tree. Returns whether
+    /// the staged changes were restored.
+    ///
+    /// When Git cannot rebuild the stashed index on the current one (it says
+    /// to try without `--index`), it has changed nothing. That is checked
+    /// before the stash is applied again with every change unstaged.
+    ///
+    /// # Errors
+    ///
+    /// Returns Git's failure, including conflicts, or an
+    /// [`FailureKind::Inspect`] error when the refused attempt changed tracked
+    /// files after all.
+    pub(crate) fn stash_apply_with_index(&self, id: &str) -> Result<bool, WriteError> {
+        let before = self.capture_tracked_state()?;
+        let error = match self.stash_apply(id, true) {
+            Ok(()) => return Ok(true),
+            Err(error) => error,
+        };
+        if error.kind != FailureKind::GitFailure || !error.message.contains("without --index") {
+            return Err(error);
+        }
+        let unchanged = match &before {
+            Some(state) => self.tracked_state_matches(state),
+            None => self.has_tracked_changes().map(|changed| !changed),
+        }
+        .map_err(WriteError::inspect)?;
+        if !unchanged {
+            return Err(WriteError::inspect(
+                "Git could not restore the stash's staged changes, and tracked files changed anyway. The stash is still listed.",
+            ));
+        }
+        self.stash_apply(id, false)?;
+        Ok(false)
     }
 
     /// Drops the newest stash entry whose commit is `id`.

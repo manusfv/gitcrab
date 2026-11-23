@@ -1560,3 +1560,75 @@ fn stash_rows_follow_date_order_and_wait_for_their_base() {
         ["c", "b", "a"]
     );
 }
+
+#[test]
+fn snapshots_report_which_conflicted_files_still_have_markers() {
+    let fixture = conflicted_fixture();
+    let git = &fixture.git;
+    let markers = |git: &Git| git.snapshot(10).unwrap().conflict_markers;
+    assert!(markers(git).contains("shared.txt"));
+    fixture.write("shared.txt", "main and feature\n");
+    assert!(markers(git).is_empty());
+    let (status, _) = git.worktree_state().unwrap();
+    assert!(status.iter().any(|file| file.is_unmerged()));
+    assert!(git.conflict_marker_paths(&status).is_empty());
+}
+
+/// Ten numbered lines, with the given lines replaced.
+fn numbered(edits: &[(usize, &str)]) -> String {
+    (1..=10)
+        .map(|i| {
+            let text = edits
+                .iter()
+                .find(|(line, _)| *line == i)
+                .map_or_else(|| i.to_string(), |(_, text)| (*text).to_owned());
+            format!("{text}\n")
+        })
+        .collect()
+}
+
+#[test]
+fn stash_apply_with_index_restores_staging_or_falls_back_without_touching_the_tree() {
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    fixture.write("app.txt", &numbered(&[]));
+    git.stage("app.txt").unwrap();
+    git.commit("base").unwrap();
+    fixture.write("app.txt", &numbered(&[(2, "two staged")]));
+    git.stage("app.txt").unwrap();
+    fixture.write("app.txt", &numbered(&[(2, "two staged"), (9, "nine")]));
+    git.stash().unwrap();
+    let id = git.resolve_commit("refs/stash").unwrap();
+
+    assert!(git.stash_apply_with_index(&id).unwrap());
+    let status = git.status().unwrap();
+    assert_eq!((status[0].index, status[0].worktree), ('M', 'M'));
+    assert_eq!(
+        git.run(&["show", ":app.txt"]).unwrap(),
+        numbered(&[(2, "two staged")])
+    );
+    git.reset_tracked_to_head().unwrap();
+
+    // A commit inside the staged hunk's context stops Git from rebuilding the
+    // stashed index, while the working-tree merge stays clean.
+    fixture.write("app.txt", &numbered(&[(5, "five")]));
+    git.stage("app.txt").unwrap();
+    git.commit("five").unwrap();
+    fixture.write("other.txt", "local\n");
+    git.run(&["add", "other.txt"]).unwrap();
+    let before = git.capture_tracked_state().unwrap().unwrap();
+    let refused = git.stash_apply(&id, true).unwrap_err();
+    assert!(refused.message.contains("without --index"), "{refused:?}");
+    assert!(git.tracked_state_matches(&before).unwrap());
+
+    assert!(!git.stash_apply_with_index(&id).unwrap());
+    let status = git.status().unwrap();
+    let app = status.iter().find(|file| file.path == "app.txt").unwrap();
+    assert_eq!((app.index, app.worktree), (' ', 'M'));
+    assert_eq!(
+        std::fs::read_to_string(git.path.join("app.txt")).unwrap(),
+        numbered(&[(2, "two staged"), (5, "five"), (9, "nine")])
+    );
+    assert_eq!(git.run(&["show", ":other.txt"]).unwrap(), "local\n");
+    assert_eq!(git.stash_entries().unwrap()[0].0, id);
+}

@@ -212,7 +212,7 @@ impl RepositoryLocationExt for RepositoryLocation {
                 if argument.canonicalize().ok().as_ref() != Some(path) {
                     return Err(format!(
                         "Git for Windows cannot open the repository path {}.",
-                        path.display()
+                        gitcrab_core::presentation::display_location(path)
                     ));
                 }
             }

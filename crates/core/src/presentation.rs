@@ -18,6 +18,11 @@ pub fn display_path(path: &str) -> String {
     }
 }
 
+/// [`display_path`] for a filesystem path that may not be valid Unicode.
+pub fn display_location(path: &std::path::Path) -> String {
+    display_path(&path.display().to_string())
+}
+
 /// Characters of an object id shown where a commit is named in passing.
 pub const SHORT_ID_LEN: usize = 8;
 
@@ -751,6 +756,10 @@ mod tests {
             r"\\host\share\repo"
         );
         assert_eq!(display_path("/home/me/repo"), "/home/me/repo");
+        assert_eq!(
+            display_location(std::path::Path::new(r"\\?\C:\src\gitcrab\.git")),
+            r"C:\src\gitcrab\.git"
+        );
     }
 
     #[test]

@@ -694,7 +694,7 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
                     git.reset_tracked_to_head()?;
                 }
             } else {
-                git.stash_apply(stash, false)?;
+                git.stash_apply_with_index(stash)?;
                 git.drop_stash_object(stash)?;
                 let result = git.capture_tracked_state()?;
                 return Ok(Change::PopStash {
@@ -1038,7 +1038,7 @@ mod tests {
                 Some(id.clone()),
             );
             let before = Before::capture(git, &op);
-            git.stash_apply(&id, false).unwrap();
+            assert!(git.stash_apply_with_index(&id).unwrap());
             git.drop_stash_object(&id).unwrap();
             journal.record_operation(git, &op, before);
         };
@@ -1080,6 +1080,45 @@ mod tests {
             state(&journal, git, Direction::Undo),
             StepState::Blocked(Blocker::PopNotRestorable)
         );
+    }
+
+    #[test]
+    fn undo_and_redo_of_a_pop_keep_the_staged_and_unstaged_split() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        base(&fixture);
+        fixture.write("tracked.txt", "staged\n");
+        git.stage("tracked.txt").unwrap();
+        fixture.write("tracked.txt", "staged and edited\n");
+        git.stash_with_message("split").unwrap();
+        let split = |git: &Git| {
+            let status = git.snapshot(1).unwrap().status;
+            assert_eq!(status.len(), 1);
+            assert_eq!((status[0].index, status[0].worktree), ('M', 'M'));
+            assert_eq!(git.run(&["show", ":tracked.txt"]).unwrap(), "staged\n");
+            assert_eq!(read(&fixture, "tracked.txt"), "staged and edited\n");
+        };
+        let id = git.resolve_commit("refs/stash").unwrap();
+        let op = reviewed(
+            Operation::PopStash,
+            "",
+            git.write_identity().unwrap(),
+            Some(id.clone()),
+        );
+        let before = Before::capture(git, &op);
+        assert!(git.stash_apply_with_index(&id).unwrap());
+        git.drop_stash_object(&id).unwrap();
+        let mut journal = Journal::default();
+        journal.record_operation(git, &op, before);
+        split(git);
+
+        step(&mut journal, git, Direction::Undo).unwrap();
+        assert!(!git.has_tracked_changes().unwrap());
+        assert_eq!(git.stash_entries().unwrap()[0].0, id);
+
+        step(&mut journal, git, Direction::Redo).unwrap();
+        assert!(git.stash_entries().unwrap().is_empty());
+        split(git);
     }
 
     #[test]

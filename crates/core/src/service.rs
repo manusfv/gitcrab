@@ -536,6 +536,10 @@ pub struct Request {
 /// Successful result of an [`Action`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one-shot reply moved through a channel; boxing buys nothing measurable"
+)]
 pub enum Reply {
     /// Canonical worktree path, repository snapshot and its matching graph.
     Snapshot {
@@ -565,6 +569,10 @@ pub enum Reply {
         hunks: Vec<String>,
         /// User-facing reason hunk actions are unavailable for this patch.
         hunk_blocked: Option<String>,
+        /// User-facing reason Discard is unavailable for this patch's hunks
+        /// and lines while staging them is not.
+        #[serde(default)]
+        discard_blocked: Option<String>,
         /// Token required by subsequent actions on this cached patch.
         token: u32,
         /// What the comparison can show. Non-text previews carry no patch lines.
@@ -595,6 +603,10 @@ pub struct WorktreeState {
     pub status: Vec<crate::git::FileChange>,
     /// HEAD and index identity that `status` was read against.
     pub reviewed: crate::git::WriteIdentity,
+    /// Unmerged paths whose working file still has a conflict marker line,
+    /// as in [`crate::git::RepoSnapshot::conflict_markers`].
+    #[serde(default)]
+    pub conflict_markers: std::collections::BTreeSet<String>,
     pub journal: crate::journal::JournalStatus,
     /// When the worker started reading. File watcher events from before
     /// then are already reflected.

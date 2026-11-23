@@ -242,10 +242,19 @@ impl GitCrab {
     }
 
     /// Follows a successful Create branch at HEAD by switching to it, which
-    /// changes no files because the branch points at HEAD.
+    /// changes no files because the branch points at HEAD. The switch's
+    /// result then names both steps.
     pub(super) fn after_mutation(&mut self, ok: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(branch) = self.switching_to_new_branch.take().filter(|_| ok) {
+            self.state.reword_operation_notice(
+                &format!("Checked out {branch}"),
+                &format!("Created branch {branch} and switched to it"),
+            );
+        }
         if let Some(branch) = self.switch_after_branch.take().filter(|_| ok) {
-            self.start_operation(Operation::Checkout, branch, false, window, cx);
+            if self.start_operation(Operation::Checkout, branch.clone(), false, window, cx) {
+                self.switching_to_new_branch = Some(branch);
+            }
         }
     }
 

@@ -30,12 +30,15 @@ pub struct WriteError {
     pub message: String,
 }
 
+/// The advice that ends every [`FailureKind::GitFailure`] message.
+const GIT_FAILURE_ADVICE: &str = "Inspect Working changes before retrying.";
+
 impl WriteError {
     /// Reports a Git command failure and prompts the user to check working changes.
     pub fn git(message: String) -> Self {
         Self {
             kind: FailureKind::GitFailure,
-            message: format!("{message} Inspect Working changes before retrying."),
+            message: with_advice(&message, GIT_FAILURE_ADVICE),
         }
     }
 
@@ -43,9 +46,36 @@ impl WriteError {
     pub fn inspect(message: impl std::fmt::Display) -> Self {
         Self {
             kind: FailureKind::Inspect,
-            message: format!("{message} Refresh and inspect the repository before retrying."),
+            message: with_advice(
+                &message.to_string(),
+                "Refresh and inspect the repository before retrying.",
+            ),
         }
     }
+
+    /// The message without the advice [`Self::git`] added, for wrapping it in
+    /// another failure that gives its own.
+    pub fn git_text(&self) -> &str {
+        self.message
+            .strip_suffix(GIT_FAILURE_ADVICE)
+            .map_or(self.message.as_str(), str::trim_end)
+    }
+}
+
+/// Ends `message` as a sentence and adds `advice` after it, on a line of its
+/// own when Git's output already spans several lines.
+fn with_advice(message: &str, advice: &str) -> String {
+    let message = message.trim_end();
+    if message.is_empty() {
+        return advice.to_owned();
+    }
+    let stop = if message.ends_with(['.', '!', '?']) {
+        ""
+    } else {
+        "."
+    };
+    let gap = if message.contains('\n') { "\n" } else { " " };
+    format!("{message}{stop}{gap}{advice}")
 }
 
 impl From<String> for WriteError {
@@ -82,3 +112,29 @@ mod remote;
 
 pub use model::*;
 pub use remote::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_messages_end_git_text_as_a_sentence_and_advise_once() {
+        assert_eq!(
+            WriteError::git("Git exited with exit status: 1. error: cannot pop".into()).message,
+            "Git exited with exit status: 1. error: cannot pop. Inspect Working changes before retrying."
+        );
+        let multi = WriteError::git(
+            "Git exited with exit status: 1. error: Your local changes would be overwritten:\n\tapp.txt\nAborting\n".into(),
+        );
+        assert_eq!(
+            multi.message,
+            "Git exited with exit status: 1. error: Your local changes would be overwritten:\n\tapp.txt\nAborting.\nInspect Working changes before retrying."
+        );
+        assert_eq!(multi.message.matches("Inspect Working changes").count(), 1);
+        assert!(multi.git_text().ends_with("Aborting."));
+        assert_eq!(
+            WriteError::inspect("Outcome uncertain.").message,
+            "Outcome uncertain. Refresh and inspect the repository before retrying."
+        );
+    }
+}
