@@ -637,6 +637,23 @@ impl RepoSnapshot {
             .strip_prefix("refs/heads/")
     }
 
+    /// The commit an operation target naming a branch points at: a local
+    /// branch by name, else a remote-tracking branch by short or full name.
+    /// `None` for other targets, such as commit IDs.
+    pub fn branch_target_tip(&self, target: &str) -> Option<&str> {
+        let local = target.strip_prefix("refs/heads/").unwrap_or(target);
+        self.branches
+            .iter()
+            .find(|branch| branch.name == local)
+            .map(|branch| branch.tip.as_str())
+            .or_else(|| {
+                self.remote_refs
+                    .iter()
+                    .find(|remote| remote.label == target || remote.full_name == target)
+                    .map(|remote| remote.tip.as_str())
+            })
+    }
+
     /// Returns a ref's object ID if it points to a commit in the loaded history.
     /// Use the short name for a local branch and the full ref name for a remote
     /// or tag.

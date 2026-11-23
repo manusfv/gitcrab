@@ -554,6 +554,108 @@ impl Git {
         }
     }
 
+    /// Decides what a Checkout of `target` does when it names a
+    /// remote-tracking branch (`origin/main` or `refs/remotes/origin/main`)
+    /// rather than a local branch: switch to the local branch that tracks it,
+    /// create a local branch of the same name tracking it, or, when a local
+    /// branch of that name tracks something else, detach. `None` for any
+    /// other target.
+    pub(crate) fn remote_checkout(
+        &self,
+        target: &str,
+    ) -> GitResult<Option<gitcrab_core::service::RemoteCheckout>> {
+        use gitcrab_core::service::{RemoteCheckout, RemoteCheckoutKind};
+        if target.starts_with("refs/heads/") {
+            return Ok(None);
+        }
+        let tracking = if target.starts_with("refs/remotes/") {
+            target.to_owned()
+        } else {
+            format!("refs/remotes/{target}")
+        };
+        let (refs, remotes) = std::thread::scope(|scope| {
+            let remotes = scope.spawn(|| self.run(&["remote"]));
+            let refs = self.run(&[
+                "for-each-ref",
+                "--format=%(refname)%00%(upstream)%00%(symref)",
+                "refs/heads/",
+                "refs/remotes/",
+            ]);
+            (refs, remotes.join())
+        });
+        let refs = refs?;
+        let remotes = remotes.map_err(|_| "Git remote read failed")??;
+        let refs: Vec<(&str, &str, &str)> = refs
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\0');
+                Some((fields.next()?, fields.next()?, fields.next()?))
+            })
+            .collect();
+        let local_exists = |name: &str| {
+            let full = format!("refs/heads/{name}");
+            refs.iter().any(|(refname, _, _)| *refname == full)
+        };
+        if local_exists(target)
+            || !refs
+                .iter()
+                .any(|(refname, _, symref)| *refname == tracking && symref.is_empty())
+        {
+            return Ok(None);
+        }
+        let in_remotes = tracking.trim_start_matches("refs/remotes/");
+        // Remote names may contain slashes, so the longest configured remote
+        // that prefixes the ref decides where the branch name starts.
+        let name = remotes
+            .lines()
+            .map(str::trim)
+            .filter_map(|remote| in_remotes.strip_prefix(remote)?.strip_prefix('/'))
+            .min_by_key(|name| name.len())
+            .or_else(|| in_remotes.split_once('/').map(|(_, name)| name))
+            .unwrap_or(in_remotes);
+        let mut trackers: Vec<&str> = refs
+            .iter()
+            .filter(|(_, upstream, _)| *upstream == tracking)
+            .filter_map(|(refname, _, _)| refname.strip_prefix("refs/heads/"))
+            .collect();
+        trackers.sort_by_key(|local| *local != name);
+        let (local, kind) = match trackers.first() {
+            Some(local) => (local.to_string(), RemoteCheckoutKind::SwitchTracking),
+            None if !local_exists(name) => (name.to_owned(), RemoteCheckoutKind::CreateTracking),
+            None => (name.to_owned(), RemoteCheckoutKind::DetachNameTaken),
+        };
+        Ok(Some(RemoteCheckout {
+            tracking,
+            local,
+            kind,
+        }))
+    }
+
+    /// Creates local branch `name` at commit `id` with the remote-tracking
+    /// branch `tracking` as its upstream, and switches to it. The branch is
+    /// created and checked out in one Git command, so a refused switch
+    /// leaves no branch behind.
+    pub(crate) fn switch_create_tracking(
+        &self,
+        name: &str,
+        tracking: &str,
+        id: &str,
+    ) -> Result<(), WriteError> {
+        validate_revision(name)?;
+        validate_revision(tracking)?;
+        validate_revision(id)?;
+        self.run(&["check-ref-format", "--branch", name])?;
+        self.write(&["switch", "--no-track", "--create", name, id])?;
+        self.write(&["branch", "--set-upstream-to", tracking, "--", name])
+            .map_err(|error| {
+                WriteError::inspect(format!(
+                    "Switched to the new branch {name}, but Git could not set its upstream. {}",
+                    error.message
+                ))
+            })?;
+        Ok(())
+    }
+
     /// Switches to the local branch named by `full_ref` (`refs/heads/...`).
     /// Any other ref, or none, detaches HEAD at commit `id`.
     pub(crate) fn switch_to(&self, full_ref: Option<&str>, id: &str) -> Result<(), WriteError> {
@@ -569,6 +671,24 @@ impl Git {
         }
         .map(|_| ())
     }
+    /// The full local or remote-tracking branch ref that `revision` names, as
+    /// Git resolves it; `None` for commit IDs, tags and other revisions.
+    pub(crate) fn branch_ref(&self, revision: &str) -> GitResult<Option<String>> {
+        validate_revision(revision)?;
+        // rev-parse echoes `--end-of-options` among the names it prints.
+        let full = self.run(&[
+            "rev-parse",
+            "--symbolic-full-name",
+            "--end-of-options",
+            revision,
+        ])?;
+        Ok(full
+            .lines()
+            .map(str::trim)
+            .find(|full| full.starts_with("refs/heads/") || full.starts_with("refs/remotes/"))
+            .map(str::to_owned))
+    }
+
     /// Merges the target into the current checkout using Git's default message.
     /// A Git failure may leave an in-progress merge or conflicts.
     pub fn merge(&self, target: &str) -> Result<(), WriteError> {
@@ -745,7 +865,6 @@ impl Git {
                 .write(&["commit", "--no-edit", "--cleanup=strip"])
                 .map(|_| ()),
             (_, message) => {
-                // Cherry-pick and revert commit with MERGE_MSG.
                 if let Some(message) = message {
                     let path = self.run(&[
                         "rev-parse",
@@ -816,6 +935,45 @@ impl Git {
             Some(1) if output.stderr.is_empty() => Ok(None),
             _ => Err(Self::failed_output(&output)),
         }
+    }
+
+    /// Whether commit `ancestor` is reachable from `descendant` (or is it).
+    pub(crate) fn is_ancestor(&self, ancestor: &str, descendant: &str) -> GitResult<bool> {
+        validate_revision(ancestor)?;
+        validate_revision(descendant)?;
+        let output = self.output(&["merge-base", "--is-ancestor", ancestor, descendant])?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(Self::failed_output(&output)),
+        }
+    }
+
+    /// Full names of the remote-tracking branches that contain commit `id`.
+    /// Symbolic refs such as `refs/remotes/origin/HEAD` are left out.
+    pub(crate) fn remote_refs_containing(&self, id: &str) -> GitResult<Vec<String>> {
+        validate_revision(id)?;
+        Ok(self
+            .run(&[
+                "for-each-ref",
+                "--format=%(refname)%00%(symref)",
+                "--contains",
+                id,
+                "refs/remotes/",
+            ])?
+            .lines()
+            .filter_map(|line| match line.split_once('\0') {
+                Some((name, "")) => Some(name.to_owned()),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// The full upstream ref of local branch `full_ref`, if it has one.
+    pub(crate) fn upstream_of(&self, full_ref: &str) -> GitResult<Option<String>> {
+        validate_revision(full_ref)?;
+        let line = self.run(&["for-each-ref", "--format=%(upstream)", full_ref])?;
+        Ok(Some(line.trim().to_owned()).filter(|upstream| !upstream.is_empty()))
     }
 
     /// Parent IDs of commit `id`, or `None` when no such commit exists.

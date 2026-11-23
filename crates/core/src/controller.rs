@@ -489,6 +489,13 @@ impl Controller {
         Seek::Loading(plan)
     }
 
+    /// The reference the sidebar selected, named as [`Self::preview_ref`] took it.
+    pub fn previewed_ref(&self) -> Option<(ReferenceKind, &str)> {
+        self.previewed_ref
+            .as_ref()
+            .map(|(kind, name)| (*kind, name.as_str()))
+    }
+
     /// Reports whether this exact reference is being previewed.
     pub fn is_previewing(&self, kind: ReferenceKind, name: &str) -> bool {
         self.previewed_ref

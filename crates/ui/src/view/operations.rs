@@ -133,6 +133,10 @@ impl GitCrab {
             cx.notify();
             return false;
         }
+        let expected = snapshot
+            .branch_target_tip(&target)
+            .filter(|_| op.takes_revision())
+            .map(str::to_owned);
         let label = op.label();
         if !op.is_network() && op.journal_direction().is_none() {
             // Local operations resolve and run in one worker request; the
@@ -145,6 +149,7 @@ impl GitCrab {
                 op,
                 target,
                 destination,
+                expected,
             });
             self.dispatch_mutation(job, window, cx);
             cx.notify();
@@ -250,9 +255,102 @@ impl GitCrab {
             .then_switch
             .then(|| reviewed.target.clone())
             .filter(|_| matches!(reviewed.op, Operation::CreateBranch));
+        if reviewed
+            .journal
+            .as_ref()
+            .is_some_and(|step| step.published.is_some())
+        {
+            self.confirm_published_step(reviewed, window, cx);
+            return;
+        }
         let job = self.state.mutate(Action::Operation { reviewed });
         self.loading_since = Some(pending.started);
         self.dispatch_mutation(job, window, cx);
+    }
+
+    /// Asks before an Undo or Redo that moves a branch away from commits a
+    /// remote already has, since the remote keeps them and a later Pull
+    /// brings them back. The worker checks the step again when it runs.
+    fn confirm_published_step(
+        &mut self,
+        reviewed: ReviewedOperation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(step) = reviewed.journal.clone() else {
+            return;
+        };
+        let Some(remote) = step.published.clone() else {
+            return;
+        };
+        let verb = reviewed.op.label();
+        let noun = match &step.entry.change {
+            gitcrab_core::journal::Change::Commit { .. } => "commit",
+            gitcrab_core::journal::Change::BranchMoved { action, .. } => action.as_str(),
+            _ => "change",
+        };
+        let title = format!("{verb} a published {noun}?");
+        let description = gitcrab_core::journal::published_note(&remote);
+        let explanation = step.describe();
+        let consequence = format!(
+            "{remote} keeps the commits, so your branch will be behind it and the next Pull brings them back. To remove them from the remote too, revert them and push instead."
+        );
+        let label = format!("{verb} locally");
+        let epoch = self.state.epoch;
+        let weak = cx.weak_entity();
+        let cancel_focus = cx.focus_handle();
+        let initial_focus = cancel_focus.clone();
+        let scroll = ScrollHandle::new();
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let weak = weak.clone();
+            let reviewed = reviewed.clone();
+            let confirm = components::style(
+                Button::new("confirm-published-step")
+                    .label(label.clone())
+                    .tab_stop(true),
+                components::ButtonKind::Primary,
+                ControlSize::Regular,
+                cx,
+            )
+            .on_click(move |_, w, cx| {
+                let _ = weak.update(cx, |v, cx| {
+                    if v.state.epoch == epoch && !v.state.busy && v.pending_run.is_none() {
+                        let job = v.state.mutate(Action::Operation {
+                            reviewed: reviewed.clone(),
+                        });
+                        v.dispatch_mutation(job, w, cx);
+                    }
+                });
+                w.close_dialog(cx);
+            });
+            dialog
+                .frame(
+                    ModalHeader::new(title.clone())
+                        .description(description.clone())
+                        .tone(Tone::Warning),
+                    ModalWidth::Small,
+                    cx,
+                )
+                .confirm()
+                .body(
+                    &scroll,
+                    modal_body()
+                        .child(modal::subject(
+                            step.entry.summary.clone(),
+                            Some(remote.clone().into()),
+                        ))
+                        .child(modal::paragraph(explanation.clone()))
+                        .child(modal::callout(Tone::Warning, consequence.clone())),
+                )
+                .on_ok(|_, _, _| true)
+                .footer(
+                    ModalFooter::new()
+                        .action(components::dialog_cancel_focused(&cancel_focus, cx))
+                        .action(confirm),
+                )
+        });
+        window.on_next_frame(move |w, cx| initial_focus.focus(w, cx));
+        cx.notify();
     }
 
     /// Follows a successful Create branch at HEAD by switching to it, which

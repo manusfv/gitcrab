@@ -581,6 +581,9 @@ impl GitCrab {
         if c.stash {
             return el;
         }
+        let branch = self.state.snapshot.as_ref().and_then(|snapshot| {
+            gitcrab_core::presentation::commit_branch(snapshot, &id, self.state.previewed_ref())
+        });
         el.child(
             div()
                 .flex_none()
@@ -596,8 +599,14 @@ impl GitCrab {
                         .into_iter()
                         .enumerate()
                         .map(|(i, command)| {
-                            let id = id.clone();
-                            self.action_button(("commit-op", i), command.menu_label())
+                            let (target, label) = match (command, &branch) {
+                                (Command::Checkout, Some(branch)) => (
+                                    branch.clone(),
+                                    format!("{} {branch}", command.label()).into(),
+                                ),
+                                _ => (id.clone(), SharedString::from(command.menu_label())),
+                            };
+                            self.action_button(("commit-op", i), label)
                                 .flex_none()
                                 .disabled_when(
                                     !command.availability_for_commit(commands, parents).enabled(),
@@ -610,7 +619,7 @@ impl GitCrab {
                                     },
                                 )
                                 .on_click(cx.listener(move |v, _, w, cx| {
-                                    v.run_command(command, id.clone(), w, cx)
+                                    v.run_command(command, target.clone(), w, cx)
                                 }))
                         }),
                 ),
