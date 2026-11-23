@@ -792,7 +792,7 @@ impl GitCrab {
                     )
                     .child(
                         self.button("operation-refresh", "Refresh")
-                            .icon(icon("refresh"))
+                            .icon(components::label_icon("refresh"))
                             .tooltip_with_action(
                                 "Refresh after continuing or aborting in a terminal",
                                 &Refresh,
@@ -1292,7 +1292,7 @@ impl GitCrab {
             )
             .child(
                 self.primary_button("commit", commit_label, !can_commit)
-                    .when(can_commit, |b| b.icon(icon("check")))
+                    .when(can_commit, |b| b.icon(components::label_icon("check")))
                     .flex_none()
                     .mx(scaled(INSPECTOR_INSET))
                     .mt(px(COMPOSER_GAP))
