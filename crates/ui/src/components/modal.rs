@@ -560,6 +560,23 @@ pub fn section(title: impl Into<SharedString>) -> Div {
     )
 }
 
+/// A form control under its label, such as a text field.
+pub fn field(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(scaled(6.))
+        .child(
+            div()
+                .text_size(scaled(TEXT_SIZE_SMALL))
+                .font_weight(FontWeight::MEDIUM)
+                .text_role(Role::TextSecondary)
+                .child(label.into()),
+        )
+        .child(control)
+}
+
 /// A labelled value, such as a path in a details list.
 pub fn detail_row(label: impl Into<SharedString>, value: impl Into<SharedString>) -> Div {
     div()

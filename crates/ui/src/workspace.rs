@@ -5,7 +5,7 @@ use super::{
         ButtonExt as _,
     },
     theme::{Role, *},
-    view::{GitCrab, Open, Quit},
+    view::{CloneRepository, CreateRepository, GitCrab, Open, Quit},
 };
 use gitcrab_core::presentation::{display_path, path_labels};
 use gpui::component::{button::*, tooltip::Tooltip, Sizable, WindowExt};
@@ -888,18 +888,96 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(tab) = self.tab_for(&location, window, cx) {
+            tab.update(cx, |tab, cx| tab.open_repository(location, window, cx));
+        }
+    }
+
+    /// The tab a repository opens in: an empty active tab, or a new one.
+    /// `None` when a tab already shows it, which is activated instead.
+    fn tab_for(
+        &mut self,
+        location: &gitcrab_core::platform::RepositoryLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<GitCrab>> {
         if let Some(index) = self
             .tabs
             .iter()
             .position(|tab| tab.read(cx).repository_identity() == Some(location.worktree.as_path()))
         {
             self.activate(index, window, cx);
-            return;
+            return None;
         }
         if self.tabs[self.active].read(cx).has_repository() {
             self.add(None, window, cx);
         }
-        self.tabs[self.active].update(cx, |tab, cx| tab.open_repository(location, window, cx));
+        Some(self.tabs[self.active].clone())
+    }
+
+    /// Opens the Clone or Create dialog, suggesting the folder that holds the
+    /// most recent repository, or the home folder.
+    fn start_setup(
+        &mut self,
+        kind: crate::repository_setup::Setup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blocked(window, cx) {
+            return;
+        }
+        let parent = crate::preferences::current(cx)
+            .recent
+            .first()
+            .and_then(|path| std::path::Path::new(path).parent())
+            .map(|parent| parent.display().to_string())
+            .or_else(|| {
+                std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                    .map(|home| std::path::PathBuf::from(home).display().to_string())
+            })
+            .unwrap_or_default();
+        let workspace = cx.weak_entity();
+        crate::repository_setup::open(
+            kind,
+            parent,
+            std::rc::Rc::new(move |path, window, cx| {
+                let _ = workspace.update(cx, |v, cx| v.open_created(path, window, cx));
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// Opens a repository the Clone or Create dialog just made.
+    fn open_created(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picking = true;
+        self.picker_error = None;
+        let backend = crate::backend::get(cx);
+        let task = cx
+            .background_executor()
+            .spawn(async move { backend.discover(&path) });
+        cx.spawn_in(window, async move |workspace, cx| {
+            let result = task.await;
+            let _ = workspace.update_in(cx, |v, w, cx| {
+                v.picking = false;
+                match result {
+                    Ok(location) => {
+                        if let Some(tab) = v.tab_for(&location, w, cx) {
+                            tab.update(cx, |tab, cx| tab.open_created(location, w, cx));
+                        }
+                    }
+                    Err(error) => v.picker_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn pick(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
@@ -1272,6 +1350,12 @@ impl Render for Workspace {
                 Self::cancel_tab_drag,
             ))
             .on_action(cx.listener(Self::pick))
+            .on_action(cx.listener(|v, _: &CloneRepository, w, cx| {
+                v.start_setup(crate::repository_setup::Setup::Clone, w, cx)
+            }))
+            .on_action(cx.listener(|v, _: &CreateRepository, w, cx| {
+                v.start_setup(crate::repository_setup::Setup::Create, w, cx)
+            }))
             .on_action(cx.listener(|v, _: &Quit, w, cx| {
                 if v.should_close_window(w, cx) {
                     w.remove_window();

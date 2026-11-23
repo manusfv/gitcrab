@@ -7,6 +7,7 @@ pub mod assets;
 pub mod backend;
 mod components;
 pub mod preferences;
+mod repository_setup;
 pub mod theme;
 #[cfg(feature = "native-evidence")]
 mod trace;
