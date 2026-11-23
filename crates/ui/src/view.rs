@@ -38,9 +38,6 @@ use gpui::component::{
 use gpui::{prelude::*, *};
 use std::ops::Range;
 
-/// What startup restores, shown where recent repositories are listed.
-const SESSION_NOTE: &str = "At startup GitCrab reopens the repositories that were open in your tabs. Empty tabs and commit drafts are not restored.";
-
 /// The action whose key binding a command's tooltip shows.
 fn command_action(command: Command) -> Option<&'static dyn gpui::Action> {
     match command {
@@ -2539,75 +2536,80 @@ impl GitCrab {
                                     .text_role(Role::TextMuted)
                                     .child("Recent repositories"),
                             )
-                            .child(scroll_area(
-                                "new-tab-recent-list",
-                                &self.recent_scroll,
+                            .child(
                                 div()
-                                    .id("new-tab-recent-list")
-                                    .max_h(scaled(180.))
-                                    .children(
-                                        path_labels(&recent)
-                                            .into_iter()
-                                            .zip(recent.clone())
-                                            .enumerate()
-                                            .map(|(index, (label, path))| {
-                                                self.button(("new-tab-recent", index), "")
-                                                    .icon(icon("history"))
-                                                    .w_full()
-                                                    .h(scaled(40.))
-                                                    .justify_start()
-                                                    .overflow_hidden()
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .flex()
-                                                            .flex_col()
-                                                            // Not `truncate()`: gpui keeps the first
-                                                            // measure of no-wrap text, taken here before
-                                                            // the width is known, so it would clip without
-                                                            // an ellipsis. A one-line clamp re-measures.
+                                    .w_full()
+                                    .p(scaled(4.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_role(Role::BorderDivider)
+                                    .bg_role(Role::SurfaceChrome)
+                                    .overflow_hidden()
+                                    .child(scroll_area(
+                                        "new-tab-recent-list",
+                                        &self.recent_scroll,
+                                        div()
+                                            .id("new-tab-recent-list")
+                                            .max_h(scaled(180.))
+                                            .children(
+                                                path_labels(&recent)
+                                                    .into_iter()
+                                                    .zip(recent.clone())
+                                                    .enumerate()
+                                                    .map(|(index, (label, path))| {
+                                                        self.button(("new-tab-recent", index), "")
+                                                            .icon(icon("history"))
+                                                            .w_full()
+                                                            .h(scaled(40.))
+                                                            .justify_start()
+                                                            .overflow_hidden()
                                                             .child(
                                                                 div()
-                                                                    .w_full()
-                                                                    .overflow_hidden()
-                                                                    .text_ellipsis()
-                                                                    .line_clamp(1)
-                                                                    .child(label.suffix),
+                                                                    .flex_1()
+                                                                    .min_w_0()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    // Not `truncate()`: gpui keeps the first
+                                                                    // measure of no-wrap text, taken here before
+                                                                    // the width is known, so it would clip without
+                                                                    // an ellipsis. A one-line clamp re-measures.
+                                                                    .child(
+                                                                        div()
+                                                                            .w_full()
+                                                                            .overflow_hidden()
+                                                                            .text_ellipsis()
+                                                                            .line_clamp(1)
+                                                                            .child(label.suffix),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .w_full()
+                                                                            .overflow_hidden()
+                                                                            .text_ellipsis()
+                                                                            .line_clamp(1)
+                                                                            .text_size(scaled(
+                                                                                TEXT_SIZE_CAPTION,
+                                                                            ))
+                                                                            .text_role(
+                                                                                Role::TextMuted,
+                                                                            )
+                                                                            .child(label.location),
+                                                                    ),
                                                             )
-                                                            .child(
-                                                                div()
-                                                                    .w_full()
-                                                                    .overflow_hidden()
-                                                                    .text_ellipsis()
-                                                                    .line_clamp(1)
-                                                                    .text_size(scaled(
-                                                                        TEXT_SIZE_CAPTION,
-                                                                    ))
-                                                                    .text_role(Role::TextMuted)
-                                                                    .child(label.location),
-                                                            ),
-                                                    )
-                                                    .tooltip(display_path(&path))
-                                                    .tab_stop(true)
-                                                    .set_disabled(self.settings_open)
-                                                    .on_click(move |_, w, cx| {
-                                                        w.dispatch_action(
+                                                            .tooltip(display_path(&path))
+                                                            .tab_stop(true)
+                                                            .set_disabled(self.settings_open)
+                                                            .on_click(move |_, w, cx| {
+                                                                w.dispatch_action(
                                                             Box::new(super::workspace::OpenRecent(
                                                                 path.clone(),
                                                             )),
                                                             cx,
                                                         );
-                                                    })
-                                            }),
-                                    ),
-                            ))
-                            .child(
-                                div()
-                                    .pt_1()
-                                    .text_size(scaled(TEXT_SIZE_CAPTION))
-                                    .text_role(Role::TextMuted)
-                                    .child(SESSION_NOTE),
+                                                            })
+                                                    }),
+                                            ),
+                                    )),
                             ),
                     )
                 })
