@@ -59,6 +59,9 @@ fn operation_command(op: &Operation) -> Option<Command> {
         Operation::Push => Command::Push,
         Operation::Undo => Command::Undo,
         Operation::Redo => Command::Redo,
+        Operation::Abort => Command::Abort,
+        Operation::Continue { .. } => Command::Continue,
+        Operation::Skip => Command::Skip,
     })
 }
 
@@ -116,6 +119,17 @@ impl GitCrab {
         };
         if let Err(error) = op.validate_target(&target) {
             self.state.notice = format!("{} unavailable. {error}", op.label());
+            cx.notify();
+            return false;
+        }
+        // Every surface that starts a write ends here, including the ones
+        // that skip `run_command`, such as double-clicking a branch.
+        if snapshot.commit_blocked() && !op.finishes_sequence() {
+            self.state.notice = format!(
+                "{} unavailable. {}",
+                op.label(),
+                gitcrab_core::git::OPERATION_IN_PROGRESS
+            );
             cx.notify();
             return false;
         }

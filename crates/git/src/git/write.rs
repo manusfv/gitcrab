@@ -1,6 +1,10 @@
 //! Writes: staging, hunks, commits, branches, stashes and resets.
 use super::*;
 
+/// Git takes `:` as an editor that keeps the message as it is without
+/// starting a process, so a step that would ask for a message never waits.
+const NO_EDITOR_CONFIG: &str = "core.editor=:";
+
 impl Git {
     /// Stages or unstages a file after checking its reviewed status entry.
     ///
@@ -150,7 +154,7 @@ impl Git {
     }
 
     /// Reads raw unmerged index entries from `git ls-files --unmerged`.
-    fn unmerged_entries(&self) -> GitResult<Vec<u8>> {
+    pub(crate) fn unmerged_entries(&self) -> GitResult<Vec<u8>> {
         self.bytes(&["ls-files", "--unmerged", "-z"])
     }
 
@@ -443,7 +447,10 @@ impl Git {
             )
         });
         if !markers??.is_empty() {
-            return Err("An active Git operation blocks ordinary commit. Complete or abort it in a terminal, then refresh.".into());
+            return Err(
+                "An active Git operation blocks ordinary commit. Continue or abort it first."
+                    .into(),
+            );
         }
         if identity?? != *reviewed {
             return Err("HEAD or index changed since review. Refresh and review staged changes. Your draft is kept in this tab.".into());
@@ -706,6 +713,65 @@ impl Git {
     pub fn rebase(&self, target: &str) -> Result<(), WriteError> {
         validate_revision(target)?;
         self.write(&["rebase", target]).map(|_| ())
+    }
+
+    /// Abandons the stopped `sequence` and restores HEAD, the index and the
+    /// working tree to their state before it started.
+    pub fn abort_sequence(&self, sequence: Sequence) -> Result<(), WriteError> {
+        self.write(&[sequence.name(), "--abort"]).map(|_| ())
+    }
+
+    /// Concludes the step `sequence` stopped at and lets it go on.
+    ///
+    /// A merge, cherry-pick or revert commits with `message`, or with Git's
+    /// prepared message when it is `None` or blank. A rebase keeps each
+    /// commit's own message. No editor opens.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Git refuses, for example while conflicts remain,
+    /// or when it stops again at the next conflicting commit.
+    pub fn continue_sequence(
+        &self,
+        sequence: Sequence,
+        message: Option<&str>,
+    ) -> Result<(), WriteError> {
+        let message = message.filter(|m| !m.trim().is_empty() && sequence.takes_message());
+        match (sequence, message) {
+            // `git merge --continue` only runs `git commit`, so a merge with
+            // MERGE_HEAD present concludes through the ordinary commit.
+            (Sequence::Merge, Some(message)) => self.commit(message),
+            (Sequence::Merge, None) => self
+                .write(&["commit", "--no-edit", "--cleanup=strip"])
+                .map(|_| ()),
+            (_, message) => {
+                // Cherry-pick and revert commit with MERGE_MSG.
+                if let Some(message) = message {
+                    let path = self.run(&[
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--git-path",
+                        "MERGE_MSG",
+                    ])?;
+                    std::fs::write(path.trim_end_matches(['\r', '\n']), format!("{message}\n"))
+                        .map_err(|error| {
+                            WriteError::from(format!("Could not save the commit message: {error}"))
+                        })?;
+                }
+                self.write(&["-c", NO_EDITOR_CONFIG, sequence.name(), "--continue"])
+                    .map(|_| ())
+            }
+        }
+    }
+
+    /// Drops the commit the stopped rebase or cherry-pick is at and goes on
+    /// with the rest.
+    pub fn skip_sequence(&self, sequence: Sequence) -> Result<(), WriteError> {
+        if !sequence.can_skip() {
+            return Err(gitcrab_core::commands::SKIP_UNSUPPORTED.into());
+        }
+        self.write(&["-c", NO_EDITOR_CONFIG, sequence.name(), "--skip"])
+            .map(|_| ())
     }
     /// Resets HEAD to `target` while preserving working-tree contents.
     /// With `soft`, the index stays as it is. A mixed reset updates the index

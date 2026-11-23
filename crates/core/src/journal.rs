@@ -155,7 +155,7 @@ impl Blocker {
             Self::PopNotRestorable => "Tracked files had other changes when the stash was popped, or the stash held untracked files, so GitCrab cannot separate the stash's changes from other work.",
             Self::StashMissing => "The stash entry is no longer in the stash list.",
             Self::StashPresent => "The stash entry is already back in the stash list.",
-            Self::OperationInProgress => "A merge, rebase, cherry-pick or revert is in progress, or the index has conflicts. Finish or abort it first.",
+            Self::OperationInProgress => crate::git::OPERATION_IN_PROGRESS,
             Self::Unchecked => "GitCrab could not check the repository. Refresh and try again.",
         }
     }

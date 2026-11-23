@@ -55,17 +55,34 @@ impl OperationRun for ReviewedOperation {
         if op.journal_direction().is_some() {
             return Err("Undo and Redo are reviewed against the tab's journal.".into());
         }
-        // Reading HEAD and the index does not depend on the target, so it runs
-        // beside the target lookups. A changed identity is reported first.
-        let (identity, resolved) = std::thread::scope(|scope| {
+        let finishes = op.finishes_sequence();
+        let continues = matches!(op, Operation::Continue { .. });
+        let named = crate::git::Sequence::from_name(&target);
+        // Reading HEAD, the index and the operation markers does not depend
+        // on the target, so they run beside the target lookups. A changed
+        // identity is reported first.
+        let (identity, markers, resolved) = std::thread::scope(|scope| {
             let identity = scope.spawn(|| git.write_identity());
+            let markers = scope.spawn(|| git.operation_markers());
             let resolved = Self::resolve(git, op, target, destination.clone());
-            (identity.join(), resolved)
+            (identity.join(), markers.join(), resolved)
         });
         if identity.map_err(|_| "HEAD and index read failed")?? != destination {
             return Err(
                 "HEAD or index changed since the repository was last read. Wait for the refresh, then try again.".into(),
             );
+        }
+        let markers = markers.map_err(|_| "Git metadata read failed")??;
+        let unmerged = !destination.unmerged_entries().is_empty();
+        if finishes {
+            if crate::git::Sequence::from_operations(&markers) != named {
+                return Err("That operation is no longer in progress. Wait for the refresh, then try again.".into());
+            }
+            if continues && unmerged {
+                return Err(gitcrab_core::commands::UNRESOLVED_CONFLICTS.into());
+            }
+        } else if unmerged || !markers.is_empty() {
+            return Err(crate::git::OPERATION_IN_PROGRESS.into());
         }
         resolved
     }
@@ -152,7 +169,12 @@ impl OperationRun for ReviewedOperation {
                 None,
             ),
             Operation::Push => (Some(git.resolve_commit("HEAD")?), None),
-            Operation::Stash | Operation::Undo | Operation::Redo => (None, None),
+            Operation::Stash
+            | Operation::Undo
+            | Operation::Redo
+            | Operation::Abort
+            | Operation::Continue { .. }
+            | Operation::Skip => (None, None),
             _ => {
                 let (id, summary) = match (checkout_ref.is_some(), branch_read, revision_read) {
                     (true, Some(branch_read), _) => branch_read?,
@@ -202,7 +224,11 @@ impl OperationRun for ReviewedOperation {
     /// so it needs no second revalidation.
     fn run_captured(&self, git: &Git) -> Result<Ran, WriteError> {
         let id = self.target_id.as_deref().unwrap_or_default();
-        let result = match self.op {
+        let sequence = || {
+            crate::git::Sequence::from_name(&self.target)
+                .ok_or_else(|| WriteError::from(gitcrab_core::commands::NO_SEQUENCE))
+        };
+        let result = match &self.op {
             Operation::Pull { .. } | Operation::Push => {
                 Err("Pull and Push run as network operations.".into())
             }
@@ -227,12 +253,17 @@ impl OperationRun for ReviewedOperation {
                             staging_dropped: !restored,
                         })
                     })
-                    .map_err(|error| operation_failure(git, error))
+                    .map_err(|error| operation_failure(git, error, &self.destination))
             }
+            Operation::Abort => sequence().and_then(|sequence| git.abort_sequence(sequence)),
+            Operation::Continue { message } => {
+                sequence().and_then(|sequence| git.continue_sequence(sequence, message.as_deref()))
+            }
+            Operation::Skip => sequence().and_then(|sequence| git.skip_sequence(sequence)),
         };
         result
             .map(|()| Ran::default())
-            .map_err(|error| operation_failure(git, error))
+            .map_err(|error| operation_failure(git, error, &self.destination))
     }
 
     /// Runs a reviewed Pull or Push after the same revalidation as other
@@ -262,7 +293,7 @@ impl OperationRun for ReviewedOperation {
             Operation::Pull { mode } => {
                 let outcome = git
                     .pull(network, mode, scope)
-                    .map_err(|error| operation_failure(git, error))?;
+                    .map_err(|error| operation_failure(git, error, &self.destination))?;
                 Ok((outcome.message.clone(), Some(outcome)))
             }
             Operation::Push => Ok((git.push(network, scope)?, None)),
@@ -321,17 +352,37 @@ fn operation_message(reviewed: &ReviewedOperation, head: &(String, String), ran:
         }
         Operation::PopStash if ran.staging_dropped => "Stash popped. The stash entry was removed. Its staged changes could not be restored on top of the current index, so all of its changes are now unstaged.".into(),
         Operation::PopStash => "Stash popped. The stash entry was removed.".into(),
-        Operation::Pull { .. } | Operation::Push | Operation::Undo | Operation::Redo => {
+        Operation::Pull { .. }
+        | Operation::Push
+        | Operation::Undo
+        | Operation::Redo
+        | Operation::Abort
+        | Operation::Continue { .. }
+        | Operation::Skip => {
             format!("{} completed", reviewed.op.label())
         }
     }
 }
 
-fn operation_failure(git: &Git, error: WriteError) -> WriteError {
+/// Classifies a failed Git write. It stopped with conflicts only when it left
+/// unmerged entries that the index reviewed `before` it did not already hold;
+/// Git refusing to run over existing conflicts is an ordinary failure.
+fn operation_failure(
+    git: &Git,
+    error: WriteError,
+    before: &crate::git::WriteIdentity,
+) -> WriteError {
     if error.kind != FailureKind::GitFailure {
         return error;
     }
-    match git.has_unmerged_entries() {
+    let introduced = git.unmerged_entries().map(|after| {
+        let after: Vec<&[u8]> = after
+            .split(|&byte| byte == 0)
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        !after.is_empty() && after != before.unmerged_entries()
+    });
+    match introduced {
         Ok(true) => WriteError {
             kind: FailureKind::Conflict,
             message: format!("Git left conflicts in the index. {}", error.message),
@@ -1044,9 +1095,18 @@ impl Session {
                 // The capture is this write's revalidation: it checks HEAD and
                 // the index against `destination` and resolves the target now.
                 let reviewed = ReviewedOperation::capture(g, op, target, destination)?;
-                let before = crate::journal::Before::capture(g, &reviewed);
-                let ran = reviewed.run_captured(g)?;
-                self.operation_done(g, &reviewed, before, ran)
+                if reviewed.op.finishes_sequence() {
+                    reviewed.run_captured(g)?;
+                    self.sequence_done(g, &reviewed)
+                } else {
+                    let before = crate::journal::Before::capture(g, &reviewed);
+                    let ran = reviewed.run_captured(g)?;
+                    self.operation_done(g, &reviewed, before, ran)
+                }
+            }
+            Action::Operation { reviewed } if reviewed.op.finishes_sequence() => {
+                reviewed.execute(g)?;
+                self.sequence_done(g, &reviewed)
             }
             Action::Operation { reviewed } => {
                 let before = crate::journal::Before::capture(g, &reviewed);
@@ -1155,6 +1215,38 @@ impl Session {
                 None => message,
             },
             committed_draft: None,
+        }
+    }
+
+    /// Words the result of Abort, Continue or Skip.
+    ///
+    /// None of them is recorded for Undo. Continue and Skip make new commits,
+    /// so like any new action they clear the redo stack. Abort returns to the
+    /// state the journal's entries were checked against before the operation
+    /// started, so the stacks stay as they are.
+    fn sequence_done(&self, g: &Git, reviewed: &ReviewedOperation) -> Reply {
+        let title = crate::git::Sequence::from_name(&reviewed.target)
+            .map_or("Operation", crate::git::Sequence::title);
+        if !matches!(reviewed.op, Operation::Abort) {
+            self.journal.lock().unwrap().clear_redo();
+        }
+        let finished = g
+            .operation_markers()
+            .is_ok_and(|markers| markers.is_empty());
+        let message = match (&reviewed.op, finished) {
+            (Operation::Abort, _) => format!("{title} aborted."),
+            (Operation::Skip, true) => format!("Commit skipped. {title} finished."),
+            (Operation::Skip, false) => format!("Commit skipped. The {} goes on.", reviewed.target),
+            (_, true) => format!("{title} finished."),
+            (_, false) => format!("{title} continued. Git stopped again."),
+        };
+        let committed_draft = match &reviewed.op {
+            Operation::Continue { message } => message.clone(),
+            _ => None,
+        };
+        Reply::Done {
+            message,
+            committed_draft,
         }
     }
 
@@ -2336,6 +2428,97 @@ mod tests {
             b"reviewed stash\n"
         );
         result.unwrap();
+    }
+
+    #[test]
+    fn a_stopped_merge_allows_only_its_own_steps_and_only_new_conflicts_count() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("conflict.txt", "base\n");
+        git.stage("conflict.txt").unwrap();
+        git.commit("base").unwrap();
+        git.create_branch("feature").unwrap();
+        git.checkout("feature").unwrap();
+        fixture.write("conflict.txt", "feature\n");
+        git.stage("conflict.txt").unwrap();
+        git.commit("feature").unwrap();
+        git.checkout("main").unwrap();
+        fixture.write("conflict.txt", "main\n");
+        git.stage("conflict.txt").unwrap();
+        git.commit("main").unwrap();
+        let clean = git.write_identity().unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let mut run = |op, target: &str| {
+            session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 1,
+                    action: Action::RunOperation {
+                        op,
+                        target: target.into(),
+                        destination: git.write_identity().unwrap(),
+                    },
+                })
+                .result
+        };
+        let failure = run(Operation::Merge, "feature").unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Conflict);
+
+        let refused = run(Operation::Stash, "").unwrap_err();
+        assert_eq!(refused.kind, FailureKind::Rejected);
+        assert_eq!(refused.message, crate::git::OPERATION_IN_PROGRESS);
+        let conflicted = git.write_identity().unwrap();
+        let error = git.stash_with_message("during merge").unwrap_err();
+        assert_eq!(
+            operation_failure(git, error, &conflicted).kind,
+            FailureKind::GitFailure
+        );
+        let error = WriteError::git("Git exited with 1.".into());
+        assert_eq!(
+            operation_failure(git, error, &clean).kind,
+            FailureKind::Conflict
+        );
+
+        let wrong = run(Operation::Abort, "rebase").unwrap_err();
+        assert!(wrong.message.contains("no longer in progress"));
+        let unresolved = run(Operation::Continue { message: None }, "merge").unwrap_err();
+        assert_eq!(
+            unresolved.message,
+            gitcrab_core::commands::UNRESOLVED_CONFLICTS
+        );
+        let Ok(Reply::Done { message, .. }) = run(Operation::Abort, "merge") else {
+            panic!("abort failed");
+        };
+        assert_eq!(message, "Merge aborted.");
+        assert_eq!(git.write_identity().unwrap(), clean);
+
+        assert!(run(Operation::Merge, "feature").is_err());
+        fixture.write("conflict.txt", "resolved\n");
+        git.mark_resolved("conflict.txt", false).unwrap();
+        let draft = "Merge feature by hand".to_owned();
+        let continued = run(
+            Operation::Continue {
+                message: Some(draft.clone()),
+            },
+            "merge",
+        );
+        let Ok(Reply::Done {
+            message,
+            committed_draft,
+        }) = continued
+        else {
+            panic!("continue failed: {continued:?}");
+        };
+        assert_eq!(message, "Merge finished.");
+        assert_eq!(committed_draft, Some(draft.clone()));
+        let merge = git.run(&["show", "-s", "--format=%P%n%s", "HEAD"]).unwrap();
+        let (parents, subject) = merge.trim().split_once('\n').unwrap();
+        assert_eq!(parents.split_whitespace().count(), 2);
+        assert_eq!(subject, draft);
     }
 
     #[test]

@@ -482,5 +482,7 @@ pub(crate) struct HistoryCache {
 
 pub(super) struct RepositoryMetadata {
     pub(super) operations: Vec<String>,
+    /// Git's prepared commit message for the operation in progress.
+    pub(super) message: Option<String>,
     pub(super) history_stamp: u64,
 }
