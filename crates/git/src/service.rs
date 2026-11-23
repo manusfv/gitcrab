@@ -123,8 +123,31 @@ impl OperationRun for ReviewedOperation {
                 revision_read,
             )
         });
-        let checkout_ref = match (branch, exists) {
+        let mut checkout_ref = match (branch, exists) {
             (Some(full), Some(exists)) => exists??.then_some(full),
+            _ => None,
+        };
+        let remote_branch = match op {
+            Operation::Checkout if checkout_ref.is_none() => git.remote_checkout(&target)?,
+            _ => None,
+        };
+        // A remote-tracking branch resolves to the commit of the ref the
+        // checkout actually uses, read again by its full name.
+        let (branch_read, revision_read) = match &remote_branch {
+            Some(remote) => {
+                let full = match remote.kind {
+                    RemoteCheckoutKind::SwitchTracking => format!("refs/heads/{}", remote.local),
+                    _ => remote.tracking.clone(),
+                };
+                if remote.kind != RemoteCheckoutKind::DetachNameTaken {
+                    checkout_ref = Some(format!("refs/heads/{}", remote.local));
+                }
+                (None, Some(read(&full)))
+            }
+            None => (branch_read, revision_read),
+        };
+        let merge_ref = match op {
+            Operation::Merge => git.branch_ref(&target)?,
             _ => None,
         };
         if matches!(op, Operation::Stash) && !git.has_tracked_changes()? {
@@ -171,6 +194,8 @@ impl OperationRun for ReviewedOperation {
             destination,
             target_id,
             checkout_ref,
+            remote_branch,
+            merge_ref,
             target_summary,
             network,
             journal: None,
@@ -184,7 +209,11 @@ impl OperationRun for ReviewedOperation {
             self.target.clone(),
             self.destination.clone(),
         )?;
-        if current.target_id != self.target_id || current.checkout_ref != self.checkout_ref {
+        if current.target_id != self.target_id
+            || current.checkout_ref != self.checkout_ref
+            || current.remote_branch != self.remote_branch
+            || current.merge_ref != self.merge_ref
+        {
             return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
         }
         self.run_captured(git)
@@ -204,7 +233,15 @@ impl OperationRun for ReviewedOperation {
             Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
                 git.create_branch_at(&self.target, id)
             }
-            Operation::Checkout => git.switch_to(self.checkout_ref.as_deref(), id),
+            Operation::Checkout => match &self.remote_branch {
+                Some(remote) if remote.kind == RemoteCheckoutKind::CreateTracking => {
+                    git.switch_create_tracking(&remote.local, &remote.tracking, id)
+                }
+                _ => git.switch_to(self.checkout_ref.as_deref(), id),
+            },
+            // A capture just before this resolved the name to `merge_ref` at
+            // `id`. Git words its message from the name as given.
+            Operation::Merge if self.merge_ref.is_some() => git.merge(&self.target),
             Operation::Merge => git.merge(id),
             Operation::CherryPick => git.cherry_pick(id),
             Operation::Revert => git.revert(id),
@@ -954,6 +991,7 @@ impl Session {
                 op,
                 target,
                 destination,
+                expected,
             } => {
                 if op.is_network() || op.journal_direction().is_some() {
                     return Err("Review this operation before running it.".into());
@@ -961,6 +999,15 @@ impl Session {
                 // The capture is this write's revalidation: it checks HEAD and
                 // the index against `destination` and resolves the target now.
                 let reviewed = ReviewedOperation::capture(g, op, target, destination)?;
+                // Switching to the branch that tracks a remote branch does not
+                // use the remote branch's commit, so its tip may move.
+                let switches = reviewed
+                    .remote_branch
+                    .as_ref()
+                    .is_some_and(|remote| remote.kind == RemoteCheckoutKind::SwitchTracking);
+                if expected.is_some() && !switches && reviewed.target_id != expected {
+                    return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
+                }
                 let before = crate::journal::Before::capture(g, &reviewed);
                 reviewed.run_captured(g)?;
                 self.operation_done(g, &reviewed, before)
@@ -1065,6 +1112,8 @@ impl Session {
         } else {
             "Operation completed"
         };
+        let remote_outcome = reviewed.remote_branch.as_ref().map(RemoteCheckout::outcome);
+        let message = remote_outcome.as_deref().unwrap_or(message);
         Reply::Done {
             message: match note {
                 Some(note) => format!("{}. {note}", message.trim_end_matches('.')),
@@ -1152,6 +1201,8 @@ mod tests {
             },
             target_id: Some("fedcba9876543210".into()),
             checkout_ref: checkout_ref.map(str::to_owned),
+            remote_branch: None,
+            merge_ref: None,
             target_summary: None,
             journal: None,
             network: None,
@@ -1800,6 +1851,7 @@ mod tests {
                         op,
                         target: target.into(),
                         destination,
+                        expected: None,
                     },
                 })
                 .result
@@ -1821,6 +1873,62 @@ mod tests {
         let current = git.write_identity().unwrap();
         assert!(run(Operation::Push, "", current.clone()).is_err());
         assert!(run(Operation::Undo, "", current).is_err());
+    }
+
+    #[test]
+    fn merging_a_branch_by_name_names_it_and_needs_it_where_it_was_chosen() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("tracked.txt", "base\n");
+        git.stage("tracked.txt").unwrap();
+        git.commit("base").unwrap();
+        git.create_branch("feature/clean").unwrap();
+        git.checkout("feature/clean").unwrap();
+        fixture.write("feature.txt", "feature\n");
+        git.stage("feature.txt").unwrap();
+        git.commit("feature").unwrap();
+        let chosen = git.resolve_commit("HEAD").unwrap();
+        git.checkout("main").unwrap();
+        fixture.write("main.txt", "main\n");
+        git.stage("main.txt").unwrap();
+        git.commit("main").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let mut merge = |expected: &str| {
+            session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 1,
+                    action: Action::RunOperation {
+                        op: Operation::Merge,
+                        target: "feature/clean".into(),
+                        destination: git.write_identity().unwrap(),
+                        expected: Some(expected.into()),
+                    },
+                })
+                .result
+        };
+        let other = Git::open(&git.path).unwrap();
+        other
+            .write(&["branch", "-f", "feature/clean", "main"])
+            .unwrap();
+        assert_eq!(
+            git.branch_ref("feature/clean").unwrap().as_deref(),
+            Some("refs/heads/feature/clean")
+        );
+        let moved = merge(&chosen).unwrap_err();
+        assert!(moved.message.contains("target moved"), "{}", moved.message);
+        other
+            .write(&["branch", "-f", "feature/clean", &chosen])
+            .unwrap();
+        assert!(merge(&chosen).is_ok());
+        assert_eq!(
+            git.run(&["log", "-1", "--format=%s"]).unwrap().trim(),
+            "Merge branch 'feature/clean'"
+        );
     }
 
     #[test]
@@ -2736,6 +2844,173 @@ mod tests {
             // Redo moved the entry back onto the undo stack.
             let status = session.journal.lock().unwrap().status(&local.git);
             assert_eq!(status.state(Direction::Redo), StepState::Empty);
+        }
+
+        fn checkout(session: &mut Session, target: &str) -> Result<String, String> {
+            let destination = session.repo.as_ref().unwrap().write_identity().unwrap();
+            match session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 2,
+                    action: Action::RunOperation {
+                        op: Operation::Checkout,
+                        target: target.into(),
+                        destination,
+                        expected: None,
+                    },
+                })
+                .result
+            {
+                Ok(Reply::Done { message, .. }) => Ok(message),
+                Ok(other) => Err(format!("unexpected reply {other:?}")),
+                Err(failure) => Err(failure.message),
+            }
+        }
+
+        fn journal_step(session: &Session, direction: crate::journal::Direction) {
+            let git = session.repo.as_ref().unwrap();
+            let mut journal = session.journal.lock().unwrap();
+            let reviewed = journal
+                .review(git, direction, git.write_identity().unwrap())
+                .unwrap();
+            journal.execute(git, &reviewed).unwrap();
+        }
+
+        fn head(git: &Git) -> (String, String) {
+            git.head_state().unwrap()
+        }
+
+        /// Publishes branch `name` from `other` and fetches it into `local`.
+        fn remote_branch(local: &Fixture, other: &Fixture, name: &str) -> String {
+            other.git.run(&["switch", "--quiet", "-c", name]).unwrap();
+            let tip = commit(other, &format!("{name}.txt"), "remote\n");
+            other
+                .git
+                .run(&["push", "--quiet", "-u", "origin", name])
+                .unwrap();
+            local.git.run(&["fetch", "--quiet"]).unwrap();
+            tip
+        }
+
+        #[test]
+        fn checking_out_a_tracked_remote_branch_switches_to_its_local_branch() {
+            use crate::journal::Direction;
+            let (local, _other) = connected();
+            let git = &local.git;
+            let main = git.resolve_commit("HEAD").unwrap();
+            git.run(&["switch", "--quiet", "-c", "topic"]).unwrap();
+            let topic = commit(&local, "topic.txt", "topic\n");
+            let mut session = session(git);
+            assert_eq!(
+                checkout(&mut session, "origin/main").unwrap(),
+                "Switched to main, which tracks origin/main."
+            );
+            assert_eq!(head(git), ("refs/heads/main".into(), main));
+            let status = session.journal.lock().unwrap().status(git);
+            assert_eq!(status.summary(Direction::Undo), Some("checkout of main"));
+            journal_step(&session, Direction::Undo);
+            assert_eq!(head(git), ("refs/heads/topic".into(), topic));
+        }
+
+        #[test]
+        fn checking_out_an_untracked_remote_branch_creates_a_tracking_branch() {
+            use crate::journal::{Blocker, Direction, StepState};
+            let (local, other) = connected();
+            let git = &local.git;
+            let main = git.resolve_commit("HEAD").unwrap();
+            let tip = remote_branch(&local, &other, "feature");
+            let mut session = session(git);
+            assert_eq!(
+                checkout(&mut session, "origin/feature").unwrap(),
+                "Created feature tracking origin/feature and switched to it."
+            );
+            assert_eq!(head(git), ("refs/heads/feature".into(), tip.clone()));
+            assert_eq!(
+                git.upstream_of("refs/heads/feature").unwrap().as_deref(),
+                Some("refs/remotes/origin/feature")
+            );
+            let status = session.journal.lock().unwrap().status(git);
+            assert_eq!(
+                status.summary(Direction::Undo),
+                Some("checkout of origin/feature as new branch feature")
+            );
+
+            journal_step(&session, Direction::Undo);
+            assert_eq!(head(git), ("refs/heads/main".into(), main.clone()));
+            assert_eq!(git.ref_commit("refs/heads/feature").unwrap(), None);
+            journal_step(&session, Direction::Redo);
+            assert_eq!(head(git), ("refs/heads/feature".into(), tip.clone()));
+            assert_eq!(
+                git.upstream_of("refs/heads/feature").unwrap().as_deref(),
+                Some("refs/remotes/origin/feature")
+            );
+
+            // The new branch moved, so deleting it could lose a commit.
+            git.write(&["commit", "--quiet", "--allow-empty", "-m", "more"])
+                .unwrap();
+            let status = |session: &Session| session.journal.lock().unwrap().status(git);
+            assert_eq!(
+                status(&session).state(Direction::Undo),
+                StepState::Blocked(Blocker::HeadMoved)
+            );
+            git.write(&["reset", "--quiet", "--hard", &tip]).unwrap();
+            // The branch to return to moved.
+            git.write(&["branch", "-f", "main", &tip]).unwrap();
+            assert_eq!(
+                status(&session).state(Direction::Undo),
+                StepState::Blocked(Blocker::BranchMoved)
+            );
+            git.write(&["branch", "-f", "main", &main]).unwrap();
+            assert_eq!(status(&session).state(Direction::Undo), StepState::Ready);
+
+            // A full remote-tracking ref name resolves the same way.
+            journal_step(&session, Direction::Undo);
+            assert!(checkout(&mut session, "refs/remotes/origin/feature")
+                .unwrap()
+                .starts_with("Created feature tracking origin/feature"));
+            assert_eq!(head(git), ("refs/heads/feature".into(), tip));
+        }
+
+        #[test]
+        fn redo_of_a_tracking_checkout_needs_the_branch_name_free() {
+            use crate::journal::{Blocker, Direction, StepState};
+            let (local, other) = connected();
+            let git = &local.git;
+            let tip = remote_branch(&local, &other, "feature");
+            let mut session = session(git);
+            checkout(&mut session, "origin/feature").unwrap();
+            journal_step(&session, Direction::Undo);
+            git.write(&["branch", "feature", &tip]).unwrap();
+            assert_eq!(
+                session
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .status(git)
+                    .state(Direction::Redo),
+                StepState::Blocked(Blocker::BranchExists)
+            );
+        }
+
+        #[test]
+        fn a_remote_branch_whose_name_is_taken_locally_still_detaches() {
+            let (local, other) = connected();
+            let git = &local.git;
+            let tip = remote_branch(&local, &other, "feature");
+            git.write(&["branch", "feature"]).unwrap();
+            let mut session = session(git);
+            assert_eq!(
+                checkout(&mut session, "origin/feature").unwrap(),
+                "Checked out origin/feature in detached HEAD, because local branch feature already exists and does not track it."
+            );
+            assert_eq!(head(git), (String::new(), tip));
+            // A commit ID with no branch detaches as before.
+            let main = git.resolve_commit("main").unwrap();
+            assert_eq!(
+                checkout(&mut session, &main).unwrap(),
+                "Operation completed"
+            );
+            assert_eq!(head(git), (String::new(), main));
         }
 
         #[test]

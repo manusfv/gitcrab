@@ -1721,6 +1721,8 @@ impl GitCrab {
         let view = cx.entity();
         let parents = c.parents.len();
         let stash = c.stash;
+        let branch =
+            gitcrab_core::presentation::commit_branch(snap, &c.id, self.state.previewed_ref());
         el.context_menu(move |mut menu, w, cx| {
             let sha = target.clone();
             menu = menu.item(components::menu_item("Copy commit SHA", true).on_click(
@@ -1748,12 +1750,18 @@ impl GitCrab {
                 Command::Revert,
             ] {
                 let view = view.clone();
-                let target = target.clone();
+                // Checkout and Merge name a branch at the commit when there is
+                // one, so Git switches to it and names it in merge messages.
+                let (target, name) = match (command, &branch) {
+                    (Command::Checkout | Command::Merge, Some(branch)) => {
+                        (branch.clone(), branch.clone())
+                    }
+                    _ => (target.clone(), short_id(&target).to_owned()),
+                };
                 let availability = command.availability_for_commit(&commands, parents);
-                let short = short_id(&target);
                 let label = match availability.reason() {
-                    Some(reason) => format!("{} {short} — {reason}", command.label()),
-                    None => format!("{} {short}", command.label()),
+                    Some(reason) => format!("{} {name} — {reason}", command.label()),
+                    None => format!("{} {name}", command.label()),
                 };
                 menu = menu.item(
                     components::menu_item(label, availability.enabled()).on_click(

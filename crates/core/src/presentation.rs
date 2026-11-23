@@ -475,6 +475,59 @@ fn resolve_decoration(snapshot: &crate::git::RepoSnapshot, label: &str) -> Decor
     }
 }
 
+/// The branch that Checkout and Merge of commit `id` name instead of its ID,
+/// so Git switches to a branch rather than detaching HEAD, and writes
+/// `Merge branch 'x'` rather than `Merge commit '1234…'`.
+///
+/// `previewed` is the reference the sidebar selected, as
+/// [`crate::git::RepoSnapshot::loaded_ref_tip`] names it; it wins while it
+/// points at `id`. Otherwise a branch decorating the commit is used: a local
+/// branch that is not checked out, then the checked-out one, then a
+/// remote-tracking branch. `None` when no branch points at the commit.
+pub fn commit_branch(
+    snapshot: &crate::git::RepoSnapshot,
+    id: &str,
+    previewed: Option<(crate::git::ReferenceKind, &str)>,
+) -> Option<String> {
+    use crate::git::ReferenceKind;
+    let remote_label = |full: &str| {
+        snapshot
+            .remote_refs
+            .iter()
+            .find(|remote| remote.full_name == full)
+            .map(|remote| remote.label.clone())
+            .filter(|label| !label.ends_with("/HEAD"))
+    };
+    if let Some((kind, name)) = previewed {
+        if snapshot.loaded_ref_tip(kind, name) == Some(id) {
+            match kind {
+                ReferenceKind::LocalBranch => return Some(name.to_owned()),
+                ReferenceKind::Remote => {
+                    if let Some(label) = remote_label(name) {
+                        return Some(label);
+                    }
+                }
+                ReferenceKind::Tag => {}
+            }
+        }
+    }
+    let commit = snapshot.commits.iter().find(|commit| commit.id == id)?;
+    let decorations = resolve_decorations(snapshot, &commit.refs);
+    let rank = |decoration: &Decoration| match (decoration.kind, &decoration.target) {
+        (DecorationKind::Branch, Some((ReferenceKind::LocalBranch, _))) => Some(0),
+        (DecorationKind::HeadBranch, _) => Some(1),
+        (DecorationKind::Branch, Some((ReferenceKind::Remote, full))) => {
+            remote_label(full).map(|_| 2)
+        }
+        _ => None,
+    };
+    decorations
+        .iter()
+        .filter_map(|decoration| Some((rank(decoration)?, decoration)))
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, decoration)| decoration.name.clone())
+}
+
 /// Summary length Git tools display without truncating. Longer summaries are
 /// still valid.
 pub const SUMMARY_RECOMMENDED_CHARS: usize = 72;
@@ -710,6 +763,63 @@ mod tests {
         );
         assert_eq!(resolved[3].target, None);
         assert_eq!(resolved[3].label(), "Branch gone");
+    }
+
+    #[test]
+    fn commit_actions_name_a_branch_preferring_local_ones() {
+        use crate::git::{Commit, LocalBranch, ReferenceKind, ReferenceTip, RepoSnapshot};
+        let remote = |label: &str| ReferenceTip {
+            label: label.into(),
+            full_name: format!("refs/remotes/{label}"),
+            tip: "c1".into(),
+        };
+        let commit = |id: &str, refs: &[&str]| Commit {
+            id: id.into(),
+            refs: refs.iter().map(|r| r.to_string()).collect(),
+            ..Default::default()
+        };
+        let snapshot = RepoSnapshot {
+            commits: vec![
+                commit("c1", &["origin/HEAD", "origin/main", "feature/clean"]),
+                commit("c2", &["origin/HEAD", "origin/topic"]),
+                commit("c3", &["v1"]),
+            ],
+            branches: vec![LocalBranch {
+                name: "feature/clean".into(),
+                tip: "c1".into(),
+            }],
+            remote_refs: vec![remote("origin/HEAD"), remote("origin/main"), {
+                let mut topic = remote("origin/topic");
+                topic.tip = "c2".into();
+                topic
+            }],
+            tags: vec![ReferenceTip {
+                label: "v1".into(),
+                full_name: "refs/tags/v1".into(),
+                tip: "c3".into(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            commit_branch(&snapshot, "c1", None).as_deref(),
+            Some("feature/clean")
+        );
+        assert_eq!(
+            commit_branch(&snapshot, "c2", None).as_deref(),
+            Some("origin/topic")
+        );
+        assert_eq!(commit_branch(&snapshot, "c3", None), None);
+        assert_eq!(commit_branch(&snapshot, "missing", None), None);
+        // The reference selected in the sidebar wins while it is at the commit.
+        let selected = Some((ReferenceKind::Remote, "refs/remotes/origin/main"));
+        assert_eq!(
+            commit_branch(&snapshot, "c1", selected).as_deref(),
+            Some("origin/main")
+        );
+        assert_eq!(
+            commit_branch(&snapshot, "c2", selected).as_deref(),
+            Some("origin/topic")
+        );
     }
 
     #[test]

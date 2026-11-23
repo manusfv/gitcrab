@@ -96,6 +96,10 @@ pub enum Action {
         op: Operation,
         target: String,
         destination: crate::git::WriteIdentity,
+        /// The commit a branch `target` pointed at when the user chose it.
+        /// The write is refused if the branch has moved since.
+        #[serde(default)]
+        expected: Option<String>,
     },
     /// Fetches every remote with pruning. Runs off the worker and can be cancelled.
     Fetch,
@@ -250,6 +254,18 @@ pub struct ReviewedOperation {
     pub target_id: Option<String>,
     /// Full local branch ref for an attached checkout.
     pub checkout_ref: Option<String>,
+    /// The remote-tracking branch (`refs/remotes/origin/main`) a Checkout of
+    /// it resolved to, kept only when the checkout creates `checkout_ref`
+    /// there with it as the upstream, or switches to a local branch that
+    /// already tracks it.
+    #[serde(default)]
+    pub remote_branch: Option<RemoteCheckout>,
+    /// The full branch ref a Merge target resolved through
+    /// (`refs/heads/feature`, `refs/remotes/origin/main`). Such a target is
+    /// merged by its name, so Git's message names the branch. `None` for a
+    /// commit ID.
+    #[serde(default)]
+    pub merge_ref: Option<String>,
     /// Subject and committer date of the resolved target, for people to verify.
     #[serde(default)]
     pub target_summary: Option<crate::git::CommitSummary>,
@@ -259,6 +275,56 @@ pub struct ReviewedOperation {
     /// The journal step an Undo or Redo was reviewed against.
     #[serde(default)]
     pub journal: Option<crate::journal::Step>,
+}
+
+/// What a Checkout of a remote-tracking branch does instead of detaching
+/// HEAD at its tip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteCheckoutKind {
+    /// Switch to the local branch whose upstream it is.
+    SwitchTracking,
+    /// Create a local branch of the same name at its tip, with it as the
+    /// upstream, and switch to it.
+    CreateTracking,
+    /// A local branch of the same name tracks something else, so HEAD
+    /// detaches at the remote branch's tip.
+    DetachNameTaken,
+}
+
+/// How a Checkout of a remote-tracking branch resolved.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteCheckout {
+    /// Full remote-tracking ref, such as `refs/remotes/origin/main`.
+    pub tracking: String,
+    /// The local branch involved: the one switched to, created, or whose
+    /// name is taken.
+    pub local: String,
+    pub kind: RemoteCheckoutKind,
+}
+
+impl RemoteCheckout {
+    /// The remote-tracking branch's short name, such as `origin/main`.
+    pub fn remote_name(&self) -> &str {
+        self.tracking
+            .strip_prefix("refs/remotes/")
+            .unwrap_or(&self.tracking)
+    }
+
+    /// The result message for the status bar.
+    pub fn outcome(&self) -> String {
+        let (local, remote) = (&self.local, self.remote_name());
+        match self.kind {
+            RemoteCheckoutKind::SwitchTracking => {
+                format!("Switched to {local}, which tracks {remote}.")
+            }
+            RemoteCheckoutKind::CreateTracking => {
+                format!("Created {local} tracking {remote} and switched to it.")
+            }
+            RemoteCheckoutKind::DetachNameTaken => format!(
+                "Checked out {remote} in detached HEAD, because local branch {local} already exists and does not track it."
+            ),
+        }
+    }
 }
 
 /// Explains why Cherry-pick and Revert are unavailable for merge commits.
@@ -304,6 +370,18 @@ impl ReviewedOperation {
         };
         match self.op {
             Operation::Checkout => match &self.checkout_ref {
+                Some(branch)
+                    if self
+                        .remote_branch
+                        .as_ref()
+                        .is_some_and(|r| r.kind == RemoteCheckoutKind::CreateTracking) =>
+                {
+                    format!(
+                        "Create branch {} at {id} tracking {}, then switch the working tree from {here} to it.",
+                        branch.trim_start_matches("refs/heads/"),
+                        self.remote_branch.as_ref().map_or("", RemoteCheckout::remote_name),
+                    )
+                }
                 Some(branch) => format!(
                     "Switch the working tree from {here} to branch {} ({id}).",
                     branch.trim_start_matches("refs/heads/")

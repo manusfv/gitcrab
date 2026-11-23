@@ -1768,12 +1768,15 @@ impl GitCrab {
             }
             _ => return command.describe(context),
         };
-        let summary = self
-            .state
-            .snapshot
-            .as_ref()
-            .and_then(|s| s.journal.summary(direction));
-        command.describe_with_summary(context, summary)
+        let journal = self.state.snapshot.as_ref().map(|s| &s.journal);
+        let text =
+            command.describe_with_summary(context, journal.and_then(|j| j.summary(direction)));
+        match journal.and_then(|j| j.published(direction)) {
+            Some(remote) if command.availability(context).enabled() => {
+                format!("{text}. {}", gitcrab_core::journal::published_note(remote))
+            }
+            _ => text,
+        }
     }
 
     /// Runs Undo or Redo from its shortcut. A focused text field keeps its
