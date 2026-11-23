@@ -311,6 +311,8 @@ actions!(
     gitcrab,
     [
         Open,
+        CloneRepository,
+        CreateRepository,
         Refresh,
         Back,
         Next,
@@ -2513,15 +2515,38 @@ impl GitCrab {
                         "Choose a local Git repository to browse history and review changes.",
                     ),
                 )
-                .child(
-                    Button::new("browse-repository")
-                        .primary()
-                        .tab_stop(true)
-                        .icon(icon("folder"))
-                        .label("Browse…")
+                .child({
+                    let start = |id: &'static str, glyph: &'static str, label: &'static str| {
+                        components::style(
+                            Button::new(id)
+                                .tab_stop(true)
+                                .icon(components::label_icon(glyph))
+                                .label(label),
+                            components::ButtonKind::Secondary,
+                            ControlSize::Regular,
+                            cx,
+                        )
                         .set_disabled(self.settings_open)
-                        .on_click(|_, w, cx| w.dispatch_action(Box::new(Open), cx)),
-                )
+                    };
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            start("open-repository", "folder", "Open")
+                                .on_click(|_, w, cx| w.dispatch_action(Box::new(Open), cx)),
+                        )
+                        .child(
+                            start("clone-repository", "remote", "Clone").on_click(|_, w, cx| {
+                                w.dispatch_action(Box::new(CloneRepository), cx)
+                            }),
+                        )
+                        .child(
+                            start("create-repository", "plus", "Create").on_click(|_, w, cx| {
+                                w.dispatch_action(Box::new(CreateRepository), cx)
+                            }),
+                        )
+                })
                 .when(!recent.is_empty(), |el| {
                     el.child(
                         div()
@@ -2977,20 +3002,24 @@ impl Render for GitCrab {
                 )
             })
             .child({
-                // Index 0 is "Browse", the rest follow `recent`.
+                // Open, Clone and Create come first; the rest follow `recent`.
+                const STARTS: usize = 3;
                 let choices = recent
                     .iter()
                     .map(|(path, _)| path.clone())
                     .collect::<Vec<_>>();
                 let action_focus = menu_focus.clone();
-                let entries = std::iter::once(
-                    PickerItem::new("Browse for a repository…")
+                let entries = [
+                    PickerItem::new("Open repository…")
                         .icon("folder")
                         .when_some(components::shortcut_text(&Open, window), |item, key| {
                             item.note(key)
                         })
                         .into(),
-                )
+                    PickerItem::new("Clone repository…").icon("remote").into(),
+                    PickerItem::new("Create repository…").icon("plus").into(),
+                ]
+                .into_iter()
                 .chain((!recent.is_empty()).then(|| PickerEntry::Heading("Recent".into())))
                 .chain(recent.iter().map(|(path, label)| {
                     PickerItem::new(label.suffix.clone())
@@ -3016,8 +3045,12 @@ impl Render for GitCrab {
                     // Dispatch from this view's own focus node, as the old menu's
                     // action context did, so it does not depend on where focus
                     // happens to be once the list has closed.
-                    move |index, window, cx| match index.checked_sub(1) {
-                        None => action_focus.dispatch_action(&Open, window, cx),
+                    move |index, window, cx| match index.checked_sub(STARTS) {
+                        None => match index {
+                            0 => action_focus.dispatch_action(&Open, window, cx),
+                            1 => action_focus.dispatch_action(&CloneRepository, window, cx),
+                            _ => action_focus.dispatch_action(&CreateRepository, window, cx),
+                        },
                         Some(recent) => {
                             if let Some(path) = choices.get(recent) {
                                 action_focus.dispatch_action(

@@ -61,6 +61,19 @@ impl GitBackend for Backend {
         RepositoryLocation::discover(path)
     }
 
+    fn init(&self, path: &Path, branch: &str) -> Result<(), String> {
+        git::setup::init(path, branch)
+    }
+
+    fn clone_repository(
+        &self,
+        url: &str,
+        destination: &Path,
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
+        git::setup::clone(url, destination, cancelled)
+    }
+
     fn ignore_check(&self, location: &RepositoryLocation) -> Option<Box<dyn IgnoreCheck>> {
         git::Git::open_confirmed(location.clone(), None)
             .ok()

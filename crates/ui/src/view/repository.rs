@@ -148,6 +148,25 @@ impl GitCrab {
         }
     }
 
+    /// Opens a repository GitCrab just created or cloned. Its configuration
+    /// and metadata come from the user's own Git, not from anyone else, so it
+    /// is trusted without asking.
+    pub(crate) fn open_created(
+        &mut self,
+        location: RepositoryLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.awaiting_trust || self.state.busy {
+            return;
+        }
+        match crate::preferences::remember_trust(&location, cx) {
+            Ok(result) => self.observe_persistence(result, "repository trust", cx),
+            Err(error) => self.persistence_error("repository trust", error),
+        }
+        self.open_trusted(location, window, cx);
+    }
+
     fn open_trusted(
         &mut self,
         location: RepositoryLocation,
