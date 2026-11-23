@@ -425,33 +425,79 @@ impl RenderOnce for ModalFooter {
 /// What the dialog acts on, such as a file or repository path, in code type
 /// so it can be checked before reading the rest. `detail` is a second,
 /// quieter line such as the containing repository.
-pub fn subject(title: impl Into<SharedString>, detail: Option<SharedString>) -> Div {
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap(scaled(2.))
-        .px(scaled(NOTE_PADDING_X))
-        .py(scaled(NOTE_PADDING_Y))
-        .rounded(px(NOTE_RADIUS))
-        .bg_role(Role::SurfaceChrome)
-        .border_1()
-        .border_role(Role::BorderDivider)
-        .font_family(CODE_FONT)
-        .child(
-            div()
-                .text_size(scaled(NOTE_TEXT_SIZE))
-                .text_role(Role::TextDefault)
-                .child(title.into()),
-        )
-        .when_some(detail, |el, detail| {
-            el.child(
+pub fn subject(title: impl Into<SharedString>, detail: Option<SharedString>) -> Subject {
+    Subject {
+        title: title.into(),
+        detail,
+    }
+}
+
+/// See [`subject`]. Like a code block, each line stays whole: a line wider
+/// than the box scrolls sideways under a slim scrollbar instead of wrapping,
+/// so a path is never broken at an arbitrary character.
+#[derive(IntoElement)]
+pub struct Subject {
+    title: SharedString,
+    detail: Option<SharedString>,
+}
+
+impl RenderOnce for Subject {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let id = SharedString::from(format!("modal-subject-{}", self.title));
+        let scroll = window
+            .use_keyed_state(id.clone(), cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let overflowing = super::layout::overflows_horizontally(&scroll);
+        super::layout::track_horizontal_overflow(div(), &scroll, overflowing)
+            .relative()
+            .w_full()
+            .px(scaled(NOTE_PADDING_X))
+            .pt(scaled(NOTE_PADDING_Y))
+            // Room for the scrollbar under the last line while it is shown.
+            .pb(scaled(
+                NOTE_PADDING_Y
+                    + if overflowing {
+                        f32::from(super::layout::SCROLLBAR_GUTTER)
+                    } else {
+                        0.
+                    },
+            ))
+            .rounded(px(NOTE_RADIUS))
+            .bg_role(Role::SurfaceChrome)
+            .border_1()
+            .border_role(Role::BorderDivider)
+            .font_family(CODE_FONT)
+            .child(
                 div()
-                    .text_size(scaled(NOTE_DETAIL_SIZE))
-                    .text_role(Role::TextMuted)
-                    .child(detail),
+                    .id(ElementId::Name(id.clone()))
+                    .w_full()
+                    .overflow_x_scroll()
+                    .track_scroll(&scroll)
+                    .flex()
+                    .flex_col()
+                    // Lines take their text's width, so a long one overflows
+                    // the scroll region instead of its own clipped box.
+                    .items_start()
+                    .gap(scaled(2.))
+                    .whitespace_nowrap()
+                    .child(
+                        div()
+                            .text_size(scaled(NOTE_TEXT_SIZE))
+                            .text_role(Role::TextDefault)
+                            .child(self.title),
+                    )
+                    .when_some(self.detail, |el, detail| {
+                        el.child(
+                            div()
+                                .text_size(scaled(NOTE_DETAIL_SIZE))
+                                .text_role(Role::TextMuted)
+                                .child(detail),
+                        )
+                    }),
             )
-        })
+            .child(super::layout::horizontal_scrollbar_overlay(id, &scroll))
+    }
 }
 
 /// Explanatory body text.
