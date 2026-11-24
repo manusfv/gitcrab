@@ -2,10 +2,17 @@
 use super::buttons::ButtonExt as _;
 use crate::theme::Role;
 use crate::theme::*;
-use gpui::component::{button::Button, tooltip::Tooltip, Sizable};
+use gpui::component::{
+    button::Button,
+    menu::{ContextMenuExt as _, PopupMenu},
+    tooltip::Tooltip,
+    FocusableExt as _, Sizable,
+};
 use gpui::{prelude::*, *};
+use std::rc::Rc;
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
 /// One row of a list.
 ///
@@ -42,6 +49,7 @@ pub struct ListRow {
     group: Option<SharedString>,
     focus: Option<FocusHandle>,
     on_click: Option<ClickHandler>,
+    menu: Option<MenuBuilder>,
     style: StyleRefinement,
 }
 
@@ -69,6 +77,7 @@ impl ListRow {
             group: None,
             focus: None,
             on_click: None,
+            menu: None,
             style: StyleRefinement::default(),
         }
     }
@@ -188,6 +197,15 @@ impl ListRow {
         self.on_click = Some(Box::new(handler));
         self
     }
+    /// Opens a context menu on right-click. The row keeps its hover fill
+    /// while the menu is open.
+    pub fn context_menu(
+        mut self,
+        builder: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> Self {
+        self.menu = Some(Rc::new(builder));
+        self
+    }
 }
 
 impl Styled for ListRow {
@@ -197,7 +215,16 @@ impl Styled for ListRow {
 }
 
 impl RenderOnce for ListRow {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let row_id = SharedString::from(format!("list-row-{}", self.id));
+        let menu_open = self.menu.as_ref().map(|_| {
+            window.use_keyed_state(
+                SharedString::from(format!("{row_id}-menu-open")),
+                cx,
+                |_, _| false,
+            )
+        });
+        let held = !self.disabled && menu_open.as_ref().is_some_and(|open| *open.read(cx));
         let fill = if self.highlighted {
             Some(Role::ActionAccentTintPressed)
         } else if self.selected {
@@ -229,6 +256,9 @@ impl RenderOnce for ListRow {
             .chain(self.trailing);
         let target = if self.focusable {
             super::buttons::without_interaction_fill(Button::new(self.id), foreground, cx)
+                // The library rings a button focused by a click too; the
+                // ring is for keyboard focus only.
+                .focus_ring(window.last_input_was_keyboard())
                 .small()
                 .tab_stop(self.tab_stop && !self.disabled)
                 .set_disabled(self.disabled)
@@ -277,7 +307,8 @@ impl RenderOnce for ListRow {
                 .into_any_element()
         };
 
-        div()
+        let row = div()
+            .id(ElementId::Name(row_id))
             .when_some(self.group, |row, group| row.group(group))
             .when_some(self.focus, |row, focus| row.track_focus(&focus))
             .w_full()
@@ -299,7 +330,31 @@ impl RenderOnce for ListRow {
             .children(self.start)
             .child(target)
             .children(self.end)
-            .map(|row| super::apply_style(row, &self.style))
+            .when(held, |row| {
+                row.when_some(hover, |row, hover| row.bg_role(hover))
+            })
+            .map(|row| super::apply_style(row, &self.style));
+        match (self.menu, menu_open) {
+            (Some(builder), Some(open)) => row
+                .context_menu(move |menu, w, cx| {
+                    super::menu::track_open_menu(w, cx);
+                    open.update(cx, |open, cx| {
+                        *open = true;
+                        cx.notify();
+                    });
+                    let closed = open.clone();
+                    cx.subscribe_self(move |_, _: &DismissEvent, cx| {
+                        closed.update(cx, |open, cx| {
+                            *open = false;
+                            cx.notify();
+                        })
+                    })
+                    .detach();
+                    builder(menu, w, cx)
+                })
+                .into_any_element(),
+            _ => row.into_any_element(),
+        }
     }
 }
 
