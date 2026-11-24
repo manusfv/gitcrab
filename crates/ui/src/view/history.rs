@@ -151,6 +151,10 @@ pub(super) struct HistoryHover {
     highlight: Option<RefHighlight>,
     /// Waits out [`REF_DIM_DELAY`] and runs the fade; dropping it cancels both.
     dim_task: Option<Task<()>>,
+    /// Commit row whose context menu is open. It keeps the hover look, and
+    /// the other rows take no hover or pointer until the menu closes.
+    menu_row: Option<usize>,
+    menu_dismissed: Option<Subscription>,
 }
 
 /// The rows on a hovered reference's history.
@@ -180,7 +184,10 @@ impl HistoryHover {
     /// its references. The references column (and the
     /// list it expands into) is a zone of its own that does not hover the row.
     fn row_hovered(&self, row: usize) -> bool {
-        self.row == Some(row) && !self.refs_open(row)
+        match self.menu_row {
+            Some(menu_row) => menu_row == row,
+            None => self.row == Some(row) && !self.refs_open(row),
+        }
     }
 
     /// How far `row` has faded for being off the hovered reference's history.
@@ -512,6 +519,17 @@ impl GitCrab {
             }
             None => self.activate_commit(id, window, cx),
         }
+    }
+
+    /// Holds `row` as the one with an open context menu until `menu` is dismissed.
+    fn hold_row_menu(&mut self, row: usize, menu: &Entity<PopupMenu>, cx: &mut Context<Self>) {
+        self.history_hover.menu_row = Some(row);
+        self.history_hover.menu_dismissed =
+            Some(cx.subscribe(menu, |v, _, _: &DismissEvent, cx| {
+                v.history_hover.menu_row = None;
+                cx.notify();
+            }));
+        cx.notify();
     }
 
     fn hover_history_row(&mut self, row: usize, hovered: bool, cx: &mut Context<Self>) {
@@ -922,6 +940,15 @@ impl GitCrab {
                                     Self::columns_menu(weak.clone(), menu, w, cx)
                                 }),
                             )
+                    })
+                    .when(self.history_hover.menu_row.is_some(), |history| {
+                        history.child(
+                            div()
+                                .id("history-menu-shield")
+                                .absolute()
+                                .inset_0()
+                                .occlude(),
+                        )
                     }),
             )
             .when(self.state.limit == HISTORY_MAX && count == HISTORY_MAX, |e| {
@@ -1724,6 +1751,8 @@ impl GitCrab {
         let branch =
             gitcrab_core::presentation::commit_branch(snap, &c.id, self.state.previewed_ref());
         el.context_menu(move |mut menu, w, cx| {
+            let popup = cx.entity();
+            view.update(cx, |v, cx| v.hold_row_menu(i, &popup, cx));
             let sha = target.clone();
             menu = menu.item(components::menu_item("Copy commit SHA", true).on_click(
                 move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sha.clone())),
