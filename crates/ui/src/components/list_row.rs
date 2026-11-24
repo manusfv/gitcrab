@@ -334,6 +334,7 @@ impl RenderOnce for ListRow {
         match (self.menu, menu_open) {
             (Some(builder), Some(open)) => row
                 .context_menu(move |menu, w, cx| {
+                    super::menu::track_open_menu(w, cx);
                     open.update(cx, |open, cx| {
                         *open = true;
                         cx.notify();

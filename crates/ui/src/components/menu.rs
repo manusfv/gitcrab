@@ -1,6 +1,50 @@
 //! Menu entries.
-use gpui::component::menu::PopupMenuItem;
+use gpui::component::menu::{PopupMenu, PopupMenuItem};
 use gpui::{prelude::*, *};
+
+/// The context menu that is open, if any.
+#[derive(Default)]
+struct OpenMenu(Option<WeakEntity<PopupMenu>>);
+
+impl Global for OpenMenu {}
+
+/// Records the menu being built as open until it is dismissed, so
+/// [`menu_shield`] covers the window under it. Call it from a context menu
+/// builder.
+pub fn track_open_menu(window: &mut Window, cx: &mut Context<PopupMenu>) {
+    cx.set_global(OpenMenu(Some(cx.weak_entity())));
+    window.refresh();
+    cx.subscribe_self(|_, _: &DismissEvent, cx| {
+        let menu = cx.weak_entity();
+        if cx
+            .try_global::<OpenMenu>()
+            .and_then(|open| open.0.as_ref())
+            .is_some_and(|open| *open == menu)
+        {
+            cx.set_global(OpenMenu(None));
+            cx.refresh_windows();
+        }
+    })
+    .detach();
+}
+
+/// Whether a context menu is open. A menu dropped without a dismissal no
+/// longer counts.
+pub fn menu_open(cx: &App) -> bool {
+    cx.try_global::<OpenMenu>()
+        .and_then(|open| open.0.as_ref())
+        .is_some_and(|menu| menu.upgrade().is_some())
+}
+
+/// Covers the window while a context menu is open, so nothing under the
+/// menu takes hover or the pointer, and a click outside only closes it.
+pub fn menu_shield() -> Stateful<Div> {
+    div()
+        .id("context-menu-shield")
+        .absolute()
+        .inset_0()
+        .occlude()
+}
 
 /// A popup menu entry whose row shows the pointer cursor while it is enabled.
 ///

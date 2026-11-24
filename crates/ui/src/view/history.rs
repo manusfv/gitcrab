@@ -1751,6 +1751,7 @@ impl GitCrab {
         let branch =
             gitcrab_core::presentation::commit_branch(snap, &c.id, self.state.previewed_ref());
         el.context_menu(move |mut menu, w, cx| {
+            components::menu::track_open_menu(w, cx);
             let popup = cx.entity();
             view.update(cx, |v, cx| v.hold_row_menu(i, &popup, cx));
             let sha = target.clone();

@@ -103,8 +103,8 @@ const TAB_PICKER_WIDTH: f32 = 280.;
 
 /// A tab in the strip. The active tab takes the toolbar's surface and has no
 /// bottom edge, so it reads as part of the content below; the others sit on
-/// the strip and only light up on hover.
-fn tab_chrome(selected: bool, group: SharedString) -> Div {
+/// the strip and only light up on hover, or while their context menu is open.
+fn tab_chrome(selected: bool, held: bool, group: SharedString) -> Div {
     div()
         .relative()
         .flex_none()
@@ -133,6 +133,10 @@ fn tab_chrome(selected: bool, group: SharedString) -> Div {
                     .border_b_1()
                     .hover(|s| {
                         s.bg_role(Role::InteractionHover)
+                            .text_role(Role::TextSecondary)
+                    })
+                    .when(held, |tab| {
+                        tab.bg_role(Role::InteractionHover)
                             .text_role(Role::TextSecondary)
                     })
             }
@@ -223,6 +227,8 @@ pub struct Workspace {
     tab_drag_start: Option<(EntityId, Pixels)>,
     /// One keyboard focus stop per tab, kept across renders.
     tab_focus: std::collections::HashMap<EntityId, FocusHandle>,
+    /// The tab whose context menu is open. It keeps its hover look.
+    menu_tab: Option<(EntityId, Subscription)>,
     /// Redraws the update notice when a check finishes.
     _updates: Subscription,
 }
@@ -406,6 +412,7 @@ impl Workspace {
             tab_drag: None,
             tab_drag_start: None,
             tab_focus: Default::default(),
+            menu_tab: None,
             _updates: cx.observe_global::<crate::updates::Updates>(|_, cx| cx.notify()),
         }
     }
@@ -561,7 +568,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let workspace = cx.entity();
-        move |menu, _, cx| {
+        move |menu, w, cx| {
+            components::menu::track_open_menu(w, cx);
+            let popup = cx.entity();
+            workspace.update(cx, |v, cx| {
+                let dismissed = cx.subscribe(&popup, |v, _, _: &DismissEvent, cx| {
+                    v.menu_tab = None;
+                    cx.notify();
+                });
+                v.menu_tab = Some((tab_id, dismissed));
+                cx.notify();
+            });
             let v = workspace.read(cx);
             let Some(index) = v.tabs.iter().position(|tab| tab.entity_id() == tab_id) else {
                 return menu;
@@ -1226,125 +1243,124 @@ impl Render for Workspace {
             // The name, close mark and padding form one tab: it takes the
             // focus, drags and clicks as a whole, like a browser tab.
             strip = strip.child(components::rail::item(
-                tab_chrome(selected, group.clone())
-                    .id(("repository-tab", tab_id))
-                    .track_focus(&focus)
-                    .when(
-                        focus.is_focused(window) && window.last_input_was_keyboard(),
-                        |el| {
-                            el.child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .border_1()
-                                    .border_role(Role::InteractionFocus),
-                            )
-                        },
-                    )
-                    .tooltip({
-                        let tooltip = tooltip.clone();
-                        move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx)
-                    })
-                    .on_click(cx.listener(move |v, _, w, cx| {
-                        if !cx.has_active_drag() && !v.blocked(w, cx) {
+                tab_chrome(
+                    selected,
+                    self.menu_tab.as_ref().is_some_and(|(id, _)| *id == tab_id),
+                    group.clone(),
+                )
+                .id(("repository-tab", tab_id))
+                .track_focus(&focus)
+                .when(
+                    focus.is_focused(window) && window.last_input_was_keyboard(),
+                    |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .border_1()
+                                .border_role(Role::InteractionFocus),
+                        )
+                    },
+                )
+                .tooltip({
+                    let tooltip = tooltip.clone();
+                    move |w, cx| Tooltip::new(tooltip.clone()).build(w, cx)
+                })
+                .on_click(cx.listener(move |v, _, w, cx| {
+                    if !cx.has_active_drag() && !v.blocked(w, cx) {
+                        v.activate(index, w, cx);
+                    }
+                }))
+                .on_key_down(cx.listener(move |v, event: &KeyDownEvent, w, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        && !event.keystroke.modifiers.modified()
+                    {
+                        cx.stop_propagation();
+                        if !v.blocked(w, cx) {
                             v.activate(index, w, cx);
                         }
-                    }))
-                    .on_key_down(cx.listener(move |v, event: &KeyDownEvent, w, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            && !event.keystroke.modifiers.modified()
-                        {
+                    }
+                }))
+                .when(!blocked, |el| {
+                    el.cursor_grab().active(|el| el.cursor_grabbing())
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |v, event: &MouseDownEvent, _, _| {
+                        v.tab_drag_start = Some((tab_id, event.position.x));
+                    }),
+                )
+                .when(!blocked, |el| {
+                    let weak = cx.weak_entity();
+                    let bounds = drop_bounds.clone();
+                    el.on_drag(
+                        DraggedTab {
+                            workspace: workspace_id,
+                            tab: tab_id,
+                        },
+                        move |drag, _, w, cx| {
+                            let _ = weak.update(cx, |v, cx| {
+                                let pointer = v
+                                    .tab_drag_start
+                                    .filter(|(id, _)| *id == tab_id)
+                                    .map(|(_, x)| x)
+                                    .unwrap_or(w.mouse_position().x);
+                                v.tab_drag =
+                                    RailDrag::new(&bounds.borrow(), tab_id, pointer, TAB_DRAG_GAP);
+                                v.move_tab_drag(w.mouse_position().x, cx);
+                            });
                             cx.stop_propagation();
-                            if !v.blocked(w, cx) {
-                                v.activate(index, w, cx);
-                            }
+                            cx.new(|_| drag.clone())
+                        },
+                    )
+                })
+                // Middle click closes the tab, as in browsers and editors,
+                // without focusing it first.
+                .capture_any_mouse_down(|event, window, _| {
+                    if event.button == MouseButton::Middle {
+                        window.prevent_default();
+                    }
+                })
+                .on_mouse_up(
+                    MouseButton::Middle,
+                    cx.listener(move |v, _, w, cx| {
+                        if !cx.has_active_drag() {
+                            v.close(index, w, cx);
                         }
-                    }))
-                    .when(!blocked, |el| {
-                        el.cursor_grab().active(|el| el.cursor_grabbing())
-                    })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |v, event: &MouseDownEvent, _, _| {
-                            v.tab_drag_start = Some((tab_id, event.position.x));
-                        }),
+                    }),
+                )
+                .child({
+                    let drop_bounds = drop_bounds.clone();
+                    canvas(
+                        move |bounds, _, _| {
+                            drop_bounds.borrow_mut()[index].1 = bounds;
+                        },
+                        |_, _, _, _| {},
                     )
-                    .when(!blocked, |el| {
-                        let weak = cx.weak_entity();
-                        let bounds = drop_bounds.clone();
-                        el.on_drag(
-                            DraggedTab {
-                                workspace: workspace_id,
-                                tab: tab_id,
-                            },
-                            move |drag, _, w, cx| {
-                                let _ = weak.update(cx, |v, cx| {
-                                    let pointer = v
-                                        .tab_drag_start
-                                        .filter(|(id, _)| *id == tab_id)
-                                        .map(|(_, x)| x)
-                                        .unwrap_or(w.mouse_position().x);
-                                    v.tab_drag = RailDrag::new(
-                                        &bounds.borrow(),
-                                        tab_id,
-                                        pointer,
-                                        TAB_DRAG_GAP,
-                                    );
-                                    v.move_tab_drag(w.mouse_position().x, cx);
-                                });
-                                cx.stop_propagation();
-                                cx.new(|_| drag.clone())
-                            },
-                        )
-                    })
-                    // Middle click closes the tab, as in browsers and editors,
-                    // without focusing it first.
-                    .capture_any_mouse_down(|event, window, _| {
-                        if event.button == MouseButton::Middle {
-                            window.prevent_default();
+                    .absolute()
+                    .size_full()
+                })
+                .child(
+                    tab_label(label.clone()).when(blocked, |el| el.text_role(Role::TextDisabled)),
+                )
+                .child(
+                    tab_close(
+                        ("close-repository-tab", tab_id),
+                        group,
+                        closable,
+                        selected,
+                        unread,
+                    )
+                    .on_click(cx.listener(move |v, _, w, cx| {
+                        // The close mark acts alone; the tab's own
+                        // click would select a tab that is closing.
+                        cx.stop_propagation();
+                        if !cx.has_active_drag() {
+                            v.close(index, w, cx);
                         }
-                    })
-                    .on_mouse_up(
-                        MouseButton::Middle,
-                        cx.listener(move |v, _, w, cx| {
-                            if !cx.has_active_drag() {
-                                v.close(index, w, cx);
-                            }
-                        }),
-                    )
-                    .child({
-                        let drop_bounds = drop_bounds.clone();
-                        canvas(
-                            move |bounds, _, _| {
-                                drop_bounds.borrow_mut()[index].1 = bounds;
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .size_full()
-                    })
-                    .child(
-                        tab_label(label.clone())
-                            .when(blocked, |el| el.text_role(Role::TextDisabled)),
-                    )
-                    .child(
-                        tab_close(
-                            ("close-repository-tab", tab_id),
-                            group,
-                            closable,
-                            selected,
-                            unread,
-                        )
-                        .on_click(cx.listener(move |v, _, w, cx| {
-                            // The close mark acts alone; the tab's own
-                            // click would select a tab that is closing.
-                            cx.stop_propagation();
-                            if !cx.has_active_drag() {
-                                v.close(index, w, cx);
-                            }
-                        })),
-                    )
-                    .context_menu(self.tab_menu(tab_id, cx)),
+                    })),
+                )
+                .context_menu(self.tab_menu(tab_id, cx)),
                 self.tab_drag.as_ref(),
                 tab_id,
                 now,
@@ -1527,6 +1543,9 @@ impl Render for Workspace {
                     .min_h_0()
                     .child(active),
             )
+            .when(components::menu::menu_open(cx), |el| {
+                el.child(components::menu::menu_shield())
+            })
     }
 }
 

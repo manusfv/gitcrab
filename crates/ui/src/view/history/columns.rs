@@ -51,9 +51,10 @@ impl GitCrab {
     pub(super) fn columns_menu(
         weak: WeakEntity<Self>,
         mut menu: PopupMenu,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
+        components::menu::track_open_menu(window, cx);
         let Some(view) = weak.upgrade() else {
             return menu;
         };
