@@ -1756,18 +1756,15 @@ impl GitCrab {
                     }
                     _ => (target.clone(), short_id(&target).to_owned()),
                 };
-                let availability = command.availability_for_commit(&commands, parents);
-                let label = match availability.reason() {
-                    Some(reason) => format!("{} {name} — {reason}", command.label()),
-                    None => format!("{} {name}", command.label()),
-                };
-                menu = menu.item(
-                    components::menu_item(label, availability.enabled()).on_click(
-                        move |_, w, cx| {
-                            view.update(cx, |v, cx| v.run_command(command, target.clone(), w, cx))
-                        },
-                    ),
-                );
+                let enabled = command
+                    .availability_for_commit(&commands, parents)
+                    .enabled();
+                let label = format!("{} {name}", command.label());
+                menu = menu.item(components::menu_item(label, enabled).on_click(
+                    move |_, w, cx| {
+                        view.update(cx, |v, cx| v.run_command(command, target.clone(), w, cx))
+                    },
+                ));
             }
             menu
         })
