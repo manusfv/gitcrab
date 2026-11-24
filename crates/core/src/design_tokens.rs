@@ -104,7 +104,7 @@ pub const DARK: [u32; 67] = [
     0x422c35, // action.unstage.bg
     0xffa4ad, // action.discard.fg
     0x422c35, // action.discard.bg
-    0x222222, // interaction.hover
+    0x2c2c2c, // interaction.hover
     0x343434, // interaction.pressed
     0x1f2d52, // interaction.selected
     0xa9bfff, // interaction.focus
