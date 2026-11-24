@@ -603,7 +603,7 @@ impl Git {
         {
             return Ok(None);
         }
-        let in_remotes = tracking.trim_start_matches("refs/remotes/");
+        let in_remotes = gitcrab_core::presentation::short_ref(&tracking);
         // Remote names may contain slashes, so the longest configured remote
         // that prefixes the ref decides where the branch name starts.
         let name = remotes
@@ -694,6 +694,34 @@ impl Git {
     pub fn merge(&self, target: &str) -> Result<(), WriteError> {
         validate_revision(target)?;
         self.write(&["merge", "--no-edit", "--", target])
+            .map(|_| ())
+    }
+
+    /// Merges commit `id`, the reviewed tip of branch `full_ref`, with the
+    /// message Git writes when merging that branch by name. Merging the ID
+    /// keeps a branch that moved since the review from bringing in more.
+    pub(crate) fn merge_branch_at(&self, full_ref: &str, id: &str) -> Result<(), WriteError> {
+        validate_revision(full_ref)?;
+        validate_revision(id)?;
+        let name = gitcrab_core::presentation::short_ref(full_ref);
+        let source = if full_ref.starts_with("refs/heads/") {
+            format!("branch '{name}'")
+        } else {
+            format!("remote-tracking branch '{name}'")
+        };
+        let input = format!("{id}\t\t{source} of .\n");
+        let output = capture(
+            self.read_command(&["fmt-merge-msg"])?,
+            Some(input.as_bytes()),
+            0,
+            None,
+        )
+        .map_err(WriteError::inspect)?;
+        if !output.status.success() {
+            return Err(WriteError::inspect(Self::failed_output(&output)));
+        }
+        let message = String::from_utf8_lossy(&output.stdout);
+        self.write(&["merge", "--no-edit", "-m", message.trim_end(), "--", id])
             .map(|_| ())
     }
     /// Cherry-picks the target onto the current checkout.

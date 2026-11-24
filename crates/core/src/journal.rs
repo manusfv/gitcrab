@@ -293,7 +293,7 @@ impl Step {
                 id,
             } => {
                 let from = place(from_ref, from_id);
-                let upstream = upstream.strip_prefix("refs/remotes/").unwrap_or(upstream);
+                let upstream = crate::presentation::short_ref(upstream);
                 if undo {
                     format!("Switch the working tree from {name} back to {from}, then delete branch {name}, which still points at {} where it was created from {upstream}. Git's normal checks for local changes apply: if switching would overwrite them, nothing changes. Redo creates the branch again.", short(id))
                 } else {

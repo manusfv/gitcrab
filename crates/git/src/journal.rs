@@ -365,7 +365,7 @@ impl Journal {
         if let Some(blocker) = check(git, &step.entry.change, step.direction)? {
             return Err(blocker.reason().into());
         }
-        let change = perform(git, &step.entry.change, step.direction)?;
+        let (change, staging_dropped) = perform(git, &step.entry.change, step.direction)?;
         let entry = Entry {
             summary: step.entry.summary.clone(),
             change,
@@ -380,7 +380,12 @@ impl Journal {
                 self.undo.push(entry);
             }
         }
-        Ok(format!("{} {}.", step.direction.verb(), step.entry.summary))
+        let done = format!("{} {}.", step.direction.verb(), step.entry.summary);
+        Ok(if staging_dropped {
+            format!("{done} {}", crate::git::POP_STAGING_DROPPED)
+        } else {
+            done
+        })
     }
 }
 
@@ -502,10 +507,9 @@ fn published(git: &Git, change: &Change, direction: Direction) -> Result<Option<
     }
     let remotes = remotes?;
     let upstream = upstream?.filter(|upstream| remotes.contains(upstream));
-    Ok(upstream.or_else(|| remotes.into_iter().next()).map(|full| {
-        full.strip_prefix("refs/remotes/")
-            .map_or(full.clone(), str::to_owned)
-    }))
+    Ok(upstream
+        .or_else(|| remotes.into_iter().next())
+        .map(|full| gitcrab_core::presentation::short_ref(&full).to_owned()))
 }
 
 fn check_change(git: &Git, change: &Change, undo: bool) -> Result<Option<Blocker>, String> {
@@ -765,8 +769,9 @@ fn verify_head(git: &Git, head_ref: &str, id: &str) -> Result<(), WriteError> {
     Ok(())
 }
 
-/// Runs a checked step and returns the change to file on the other stack.
-fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, WriteError> {
+/// Runs a checked step and returns the change to file on the other stack,
+/// and whether a redone pop had to apply its staged changes unstaged.
+fn perform(git: &Git, change: &Change, direction: Direction) -> Result<(Change, bool), WriteError> {
     let undo = direction == Direction::Undo;
     match change {
         Change::Commit {
@@ -803,7 +808,7 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
             if !undo {
                 git.switch_create_tracking(name, upstream, id)?;
                 verify_head(git, &full, id)?;
-                return Ok(change.clone());
+                return Ok((change.clone(), false));
             }
             git.switch_to(Some(from_ref), from_id)?;
             verify_head(git, from_ref, from_id)?;
@@ -860,11 +865,14 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
                 let after = git.ref_commit("refs/stash").map_err(WriteError::inspect)?;
                 match after {
                     Some(stash) if Some(&stash) != before.as_ref() => {
-                        return Ok(Change::Stash {
-                            head: head.clone(),
-                            stash,
-                            message: message.clone(),
-                        })
+                        return Ok((
+                            Change::Stash {
+                                head: head.clone(),
+                                stash,
+                                message: message.clone(),
+                            },
+                            false,
+                        ))
                     }
                     _ => {
                         return Err(WriteError::inspect(
@@ -898,16 +906,19 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
                     git.reset_tracked_to_head()?;
                 }
             } else {
-                git.stash_apply_with_index(stash)?;
+                let restored = git.stash_apply_with_index(stash)?;
                 git.drop_stash_object(stash)?;
                 let result = git.capture_tracked_state()?;
-                return Ok(Change::PopStash {
-                    head: head.clone(),
-                    stash: stash.clone(),
-                    subject: subject.clone(),
-                    result,
-                    restorable: true,
-                });
+                return Ok((
+                    Change::PopStash {
+                        head: head.clone(),
+                        stash: stash.clone(),
+                        subject: subject.clone(),
+                        result,
+                        restorable: true,
+                    },
+                    !restored,
+                ));
             }
         }
         Change::BranchMoved {
@@ -921,7 +932,7 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
             verify_head(git, head_ref, target)?;
         }
     }
-    Ok(change.clone())
+    Ok((change.clone(), false))
 }
 
 #[cfg(test)]
@@ -1526,8 +1537,6 @@ mod tests {
             assert_eq!(published(&journal, git, Direction::Redo), None);
             step(&mut journal, git, Direction::Redo).unwrap();
 
-            // Merging someone's published branch publishes nothing: only the
-            // merged-in commits are on a remote, not the merge itself.
             other
                 .git
                 .run(&["switch", "--quiet", "-c", "feature"])

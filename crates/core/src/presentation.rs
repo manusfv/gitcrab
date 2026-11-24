@@ -23,6 +23,15 @@ pub fn display_location(path: &std::path::Path) -> String {
     display_path(&path.display().to_string())
 }
 
+/// A full branch or tag ref (`refs/remotes/origin/main`) as Git shortens it
+/// (`origin/main`). Any other name is returned as it is.
+pub fn short_ref(full: &str) -> &str {
+    ["refs/heads/", "refs/remotes/", "refs/tags/"]
+        .iter()
+        .find_map(|prefix| full.strip_prefix(prefix))
+        .unwrap_or(full)
+}
+
 /// Characters of an object id shown where a commit is named in passing.
 pub const SHORT_ID_LEN: usize = 8;
 
@@ -815,7 +824,6 @@ mod tests {
         );
         assert_eq!(commit_branch(&snapshot, "c3", None), None);
         assert_eq!(commit_branch(&snapshot, "missing", None), None);
-        // The reference selected in the sidebar wins while it is at the commit.
         let selected = Some((ReferenceKind::Remote, "refs/remotes/origin/main"));
         assert_eq!(
             commit_branch(&snapshot, "c1", selected).as_deref(),

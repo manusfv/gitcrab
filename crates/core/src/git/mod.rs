@@ -103,6 +103,16 @@ pub const OPERATION_MARKERS: &[(&str, &str)] = &[
     ("sequencer", "sequencer"),
 ];
 
+/// Explains why a reviewed write was refused because its target changed.
+pub const TARGET_MOVED: &str =
+    "The target moved since the repository was last read. Wait for the refresh, then try again.";
+
+/// What to do after a checkout leaves HEAD detached, where commits are blocked.
+pub const DETACHED_ADVICE: &str = "Create a branch before committing.";
+
+/// Explains that a popped stash's changes all came back unstaged.
+pub const POP_STAGING_DROPPED: &str = "Its staged changes could not be restored on top of the current index, so all of its changes are now unstaged.";
+
 /// Explains why a write is unavailable while Git has stopped part-way.
 pub const OPERATION_IN_PROGRESS: &str = "A merge, rebase, cherry-pick or revert is in progress, or the index has conflicts. Finish or abort it first.";
 
@@ -164,6 +174,16 @@ impl Sequence {
     /// A rebase keeps each commit's own message.
     pub fn takes_message(self) -> bool {
         self != Self::Rebase
+    }
+
+    /// What Continue does, worded to follow "Continue".
+    pub fn continue_effect(self) -> &'static str {
+        match self {
+            Self::Merge => "commits the merge with the message in the commit box",
+            Self::CherryPick => "commits the cherry-pick with the message in the commit box",
+            Self::Revert => "commits the revert with the message in the commit box",
+            Self::Rebase => "commits the resolution and goes on with the next commit",
+        }
     }
 }
 

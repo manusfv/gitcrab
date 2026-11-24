@@ -873,11 +873,7 @@ impl GitCrab {
                     cx.listener(move |v, _, w, cx| v.run_command(command, String::new(), w, cx)),
                 )
         };
-        let continue_tip = match sequence {
-            Sequence::Merge => "Commit the merge with the message in the commit box".to_owned(),
-            Sequence::Rebase => "Commit the resolution and go on with the next commit".into(),
-            _ => format!("Commit the {name} with the message in the commit box"),
-        };
+        let continue_tip = format!("Continue {}", sequence.continue_effect());
         div()
             .pt_1()
             .flex()
@@ -1336,9 +1332,7 @@ impl GitCrab {
         };
         let short_head = short_id(&snapshot.head_id);
         let sequence = snapshot.sequence();
-        // Whether the draft differs from Git's prepared message, when the
-        // operation in progress commits with one.
-        let git_message = snapshot
+        let draft_differs_from_git = snapshot
             .operation_message
             .as_ref()
             .filter(|_| sequence.is_some_and(Sequence::takes_message))
@@ -1384,8 +1378,8 @@ impl GitCrab {
                         )),
                 )
             })
-            .when_some(git_message, |el, differs| {
-                let name = sequence.map_or("operation", Sequence::name);
+            .when_some(draft_differs_from_git, |el, differs| {
+                let effect = sequence.map_or("", Sequence::continue_effect);
                 el.child(
                     div()
                         .mx(scaled(INSPECTOR_INSET))
@@ -1399,7 +1393,7 @@ impl GitCrab {
                                 .flex_1()
                                 .text_size(scaled(TEXT_SIZE_SMALL))
                                 .text_role(Role::TextSecondary)
-                                .child(format!("Continue commits the {name} with this message.")),
+                                .child(format!("Continue {effect}.")),
                         )
                         .when(differs, |row| {
                             row.child(

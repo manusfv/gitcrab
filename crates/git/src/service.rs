@@ -244,7 +244,7 @@ impl OperationRun for ReviewedOperation {
             || current.remote_branch != self.remote_branch
             || current.merge_ref != self.merge_ref
         {
-            return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
+            return Err(crate::git::TARGET_MOVED.into());
         }
         self.run_captured(git)
     }
@@ -273,10 +273,10 @@ impl OperationRun for ReviewedOperation {
                 }
                 _ => git.switch_to(self.checkout_ref.as_deref(), id),
             },
-            // A capture just before this resolved the name to `merge_ref` at
-            // `id`. Git words its message from the name as given.
-            Operation::Merge if self.merge_ref.is_some() => git.merge(&self.target),
-            Operation::Merge => git.merge(id),
+            Operation::Merge => match &self.merge_ref {
+                Some(full_ref) => git.merge_branch_at(full_ref, id),
+                None => git.merge(id),
+            },
             Operation::CherryPick => git.cherry_pick(id),
             Operation::Revert => git.revert(id),
             Operation::Stash => git.stash_with_message(&self.target),
@@ -320,7 +320,7 @@ impl OperationRun for ReviewedOperation {
             self.destination.clone(),
         )?;
         if current.target_id != self.target_id || current.network != self.network {
-            return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
+            return Err(crate::git::TARGET_MOVED.into());
         }
         let network = self
             .network
@@ -347,34 +347,29 @@ fn operation_message(reviewed: &ReviewedOperation, head: &(String, String), ran:
     let (symbolic, head_id) = head;
     let id = reviewed.target_id.as_deref().unwrap_or_default();
     let target = reviewed.target.trim();
-    // A target typed as an object ID reads better shortened; a name stays.
     let label = if target.is_empty() || id.starts_with(target) {
-        short_id(id).to_owned()
+        short_id(id)
     } else {
-        ["refs/heads/", "refs/remotes/", "refs/tags/"]
-            .iter()
-            .find_map(|prefix| target.strip_prefix(prefix))
-            .unwrap_or(target)
-            .to_owned()
+        gitcrab_core::presentation::short_ref(target)
     };
     let branch = symbolic.strip_prefix("refs/heads/");
     let here = branch.map_or_else(|| "detached HEAD".to_owned(), str::to_owned);
     match reviewed.op {
         Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
-            if branch == Some(target) {
-                format!("Created branch {target} and switched to it")
-            } else {
-                format!("Created branch {target} at {}", short_id(id))
-            }
+            format!("Created branch {target} at {}", short_id(id))
         }
         Operation::Checkout => match branch {
             Some(branch) => format!("Checked out {branch}"),
-            None if label == short_id(head_id) => format!(
-                "HEAD is detached at {label}. Create a branch before committing."
-            ),
+            None if label == short_id(head_id) => {
+                format!(
+                    "HEAD is detached at {label}. {}",
+                    crate::git::DETACHED_ADVICE
+                )
+            }
             None => format!(
-                "Checked out {label}. HEAD is detached at {}. Create a branch before committing.",
-                short_id(head_id)
+                "Checked out {label}. HEAD is detached at {}. {}",
+                short_id(head_id),
+                crate::git::DETACHED_ADVICE
             ),
         },
         Operation::Merge if *head_id == reviewed.destination.head => {
@@ -387,8 +382,14 @@ fn operation_message(reviewed: &ReviewedOperation, head: &(String, String), ran:
         Operation::Stash => {
             "Stashed changes to tracked files; untracked files stay in the working tree".into()
         }
-        Operation::PopStash if ran.staging_dropped => "Stash popped. The stash entry was removed. Its staged changes could not be restored on top of the current index, so all of its changes are now unstaged.".into(),
-        Operation::PopStash => "Stash popped. The stash entry was removed.".into(),
+        Operation::PopStash => {
+            let popped = "Stash popped. The stash entry was removed.";
+            if ran.staging_dropped {
+                format!("{popped} {}", crate::git::POP_STAGING_DROPPED)
+            } else {
+                popped.to_owned()
+            }
+        }
         Operation::Pull { .. }
         | Operation::Push
         | Operation::Undo
@@ -1140,7 +1141,7 @@ impl Session {
                     .as_ref()
                     .is_some_and(|remote| remote.kind == RemoteCheckoutKind::SwitchTracking);
                 if expected.is_some() && !switches && reviewed.target_id != expected {
-                    return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
+                    return Err(crate::git::TARGET_MOVED.into());
                 }
                 if reviewed.op.finishes_sequence() {
                     reviewed.run_captured(g)?;
@@ -3461,7 +3462,7 @@ mod tests {
             let mut session = session(git);
             assert_eq!(
                 checkout(&mut session, "origin/feature").unwrap(),
-                "Checked out origin/feature in detached HEAD, because local branch feature already exists and does not track it."
+                "Checked out origin/feature in detached HEAD, because local branch feature already exists and does not track it. Create a branch before committing."
             );
             assert_eq!(head(git), (String::new(), tip));
             let main = git.resolve_commit("main").unwrap();

@@ -319,9 +319,7 @@ pub struct RemoteCheckout {
 impl RemoteCheckout {
     /// The remote-tracking branch's short name, such as `origin/main`.
     pub fn remote_name(&self) -> &str {
-        self.tracking
-            .strip_prefix("refs/remotes/")
-            .unwrap_or(&self.tracking)
+        crate::presentation::short_ref(&self.tracking)
     }
 
     /// The result message for the status bar.
@@ -335,7 +333,8 @@ impl RemoteCheckout {
                 format!("Created {local} tracking {remote} and switched to it.")
             }
             RemoteCheckoutKind::DetachNameTaken => format!(
-                "Checked out {remote} in detached HEAD, because local branch {local} already exists and does not track it."
+                "Checked out {remote} in detached HEAD, because local branch {local} already exists and does not track it. {}",
+                crate::git::DETACHED_ADVICE
             ),
         }
     }

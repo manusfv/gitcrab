@@ -1750,8 +1750,6 @@ impl GitCrab {
                 Command::Revert,
             ] {
                 let view = view.clone();
-                // Checkout and Merge name a branch at the commit when there is
-                // one, so Git switches to it and names it in merge messages.
                 let (target, name) = match (command, &branch) {
                     (Command::Checkout | Command::Merge, Some(branch)) => {
                         (branch.clone(), branch.clone())

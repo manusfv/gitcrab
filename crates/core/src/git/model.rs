@@ -569,18 +569,14 @@ impl RepoSnapshot {
             return "Finish or abort the operation in a terminal, then refresh GitCrab.".into();
         };
         let name = sequence.name();
-        let continuation = match sequence {
-            Sequence::Merge => {
-                "Continue commits the merge with the message in the commit box".to_owned()
-            }
-            Sequence::Rebase => "Continue goes on with the next commit, Skip drops this one".into(),
-            Sequence::CherryPick => "Continue commits the result with the message in the commit box, Skip drops this commit".into(),
-            Sequence::Revert => {
-                "Continue commits the result with the message in the commit box".into()
-            }
+        let skip = if sequence.can_skip() {
+            ", Skip drops this commit"
+        } else {
+            ""
         };
         format!(
-            "Edit each conflicted file and mark it resolved. Then {continuation}, or Abort returns to the state before the {name}."
+            "Edit each conflicted file and mark it resolved. Then Continue {}{skip}, or Abort returns to the state before the {name}.",
+            sequence.continue_effect()
         )
     }
 
