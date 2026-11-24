@@ -18,6 +18,20 @@ pub fn display_path(path: &str) -> String {
     }
 }
 
+/// [`display_path`] for a filesystem path that may not be valid Unicode.
+pub fn display_location(path: &std::path::Path) -> String {
+    display_path(&path.display().to_string())
+}
+
+/// A full branch or tag ref (`refs/remotes/origin/main`) as Git shortens it
+/// (`origin/main`). Any other name is returned as it is.
+pub fn short_ref(full: &str) -> &str {
+    ["refs/heads/", "refs/remotes/", "refs/tags/"]
+        .iter()
+        .find_map(|prefix| full.strip_prefix(prefix))
+        .unwrap_or(full)
+}
+
 /// Characters of an object id shown where a commit is named in passing.
 pub const SHORT_ID_LEN: usize = 8;
 
@@ -475,6 +489,59 @@ fn resolve_decoration(snapshot: &crate::git::RepoSnapshot, label: &str) -> Decor
     }
 }
 
+/// The branch that Checkout and Merge of commit `id` name instead of its ID,
+/// so Git switches to a branch rather than detaching HEAD, and writes
+/// `Merge branch 'x'` rather than `Merge commit '1234…'`.
+///
+/// `previewed` is the reference the sidebar selected, as
+/// [`crate::git::RepoSnapshot::loaded_ref_tip`] names it; it wins while it
+/// points at `id`. Otherwise a branch decorating the commit is used: a local
+/// branch that is not checked out, then the checked-out one, then a
+/// remote-tracking branch. `None` when no branch points at the commit.
+pub fn commit_branch(
+    snapshot: &crate::git::RepoSnapshot,
+    id: &str,
+    previewed: Option<(crate::git::ReferenceKind, &str)>,
+) -> Option<String> {
+    use crate::git::ReferenceKind;
+    let remote_label = |full: &str| {
+        snapshot
+            .remote_refs
+            .iter()
+            .find(|remote| remote.full_name == full)
+            .map(|remote| remote.label.clone())
+            .filter(|label| !label.ends_with("/HEAD"))
+    };
+    if let Some((kind, name)) = previewed {
+        if snapshot.loaded_ref_tip(kind, name) == Some(id) {
+            match kind {
+                ReferenceKind::LocalBranch => return Some(name.to_owned()),
+                ReferenceKind::Remote => {
+                    if let Some(label) = remote_label(name) {
+                        return Some(label);
+                    }
+                }
+                ReferenceKind::Tag => {}
+            }
+        }
+    }
+    let commit = snapshot.commits.iter().find(|commit| commit.id == id)?;
+    let decorations = resolve_decorations(snapshot, &commit.refs);
+    let rank = |decoration: &Decoration| match (decoration.kind, &decoration.target) {
+        (DecorationKind::Branch, Some((ReferenceKind::LocalBranch, _))) => Some(0),
+        (DecorationKind::HeadBranch, _) => Some(1),
+        (DecorationKind::Branch, Some((ReferenceKind::Remote, full))) => {
+            remote_label(full).map(|_| 2)
+        }
+        _ => None,
+    };
+    decorations
+        .iter()
+        .filter_map(|decoration| Some((rank(decoration)?, decoration)))
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, decoration)| decoration.name.clone())
+}
+
 /// Summary length Git tools display without truncating. Longer summaries are
 /// still valid.
 pub const SUMMARY_RECOMMENDED_CHARS: usize = 72;
@@ -713,6 +780,62 @@ mod tests {
     }
 
     #[test]
+    fn commit_actions_name_a_branch_preferring_local_ones() {
+        use crate::git::{Commit, LocalBranch, ReferenceKind, ReferenceTip, RepoSnapshot};
+        let remote = |label: &str| ReferenceTip {
+            label: label.into(),
+            full_name: format!("refs/remotes/{label}"),
+            tip: "c1".into(),
+        };
+        let commit = |id: &str, refs: &[&str]| Commit {
+            id: id.into(),
+            refs: refs.iter().map(|r| r.to_string()).collect(),
+            ..Default::default()
+        };
+        let snapshot = RepoSnapshot {
+            commits: vec![
+                commit("c1", &["origin/HEAD", "origin/main", "feature/clean"]),
+                commit("c2", &["origin/HEAD", "origin/topic"]),
+                commit("c3", &["v1"]),
+            ],
+            branches: vec![LocalBranch {
+                name: "feature/clean".into(),
+                tip: "c1".into(),
+            }],
+            remote_refs: vec![remote("origin/HEAD"), remote("origin/main"), {
+                let mut topic = remote("origin/topic");
+                topic.tip = "c2".into();
+                topic
+            }],
+            tags: vec![ReferenceTip {
+                label: "v1".into(),
+                full_name: "refs/tags/v1".into(),
+                tip: "c3".into(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            commit_branch(&snapshot, "c1", None).as_deref(),
+            Some("feature/clean")
+        );
+        assert_eq!(
+            commit_branch(&snapshot, "c2", None).as_deref(),
+            Some("origin/topic")
+        );
+        assert_eq!(commit_branch(&snapshot, "c3", None), None);
+        assert_eq!(commit_branch(&snapshot, "missing", None), None);
+        let selected = Some((ReferenceKind::Remote, "refs/remotes/origin/main"));
+        assert_eq!(
+            commit_branch(&snapshot, "c1", selected).as_deref(),
+            Some("origin/main")
+        );
+        assert_eq!(
+            commit_branch(&snapshot, "c2", selected).as_deref(),
+            Some("origin/topic")
+        );
+    }
+
+    #[test]
     fn split_falls_back_when_a_side_cannot_show_its_lines() {
         // 7.8 px characters at 12 px code size, 70 px of gutter per side.
         assert!(split_fits(1400., 60, 7.8, 70.));
@@ -751,6 +874,10 @@ mod tests {
             r"\\host\share\repo"
         );
         assert_eq!(display_path("/home/me/repo"), "/home/me/repo");
+        assert_eq!(
+            display_location(std::path::Path::new(r"\\?\C:\src\gitcrab\.git")),
+            r"C:\src\gitcrab\.git"
+        );
     }
 
     #[test]

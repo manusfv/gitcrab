@@ -20,6 +20,12 @@ pub enum Command {
     Fetch,
     Pull,
     Push,
+    /// Abandons the merge, rebase, cherry-pick or revert in progress.
+    Abort,
+    /// Concludes the step Git stopped at and goes on.
+    Continue,
+    /// Drops the commit a rebase or cherry-pick stopped at and goes on.
+    Skip,
 }
 
 /// The repository state that decides whether commands can run.
@@ -54,6 +60,14 @@ pub struct CommandContext {
     pub ahead: usize,
     /// Upstream commits the branch lacks, as last fetched.
     pub behind: usize,
+    /// Git stopped part-way (an operation marker exists) or the index has
+    /// unmerged entries. Only Abort, Continue and Skip write then.
+    pub in_progress: bool,
+    /// The operation Abort, Continue and Skip act on. A conflicted stash
+    /// apply has unmerged entries but none.
+    pub sequence: Option<crate::git::Sequence>,
+    /// Unmerged paths in the index.
+    pub conflicts: usize,
 }
 
 /// Whether a command can run, with the reason when it cannot.
@@ -85,6 +99,12 @@ pub const NO_UPSTREAM: &str = "The current branch has no upstream on a remote. P
 /// Explains why Push cannot choose a remote by itself.
 pub const AMBIGUOUS_PUSH_REMOTE: &str =
     "The current branch has no upstream and there are several remotes, none named origin. Push it once from a terminal with `git push -u <remote> <branch>`.";
+/// Explains why Abort, Continue and Skip are unavailable.
+pub const NO_SEQUENCE: &str = "No merge, rebase, cherry-pick or revert is in progress.";
+/// Explains why Skip is unavailable for a merge or revert.
+pub const SKIP_UNSUPPORTED: &str = "Only a rebase or cherry-pick can skip a commit.";
+/// Explains why Continue is unavailable while conflicts remain.
+pub const UNRESOLVED_CONFLICTS: &str = "Resolve every conflicted file and mark it resolved first.";
 
 impl Command {
     /// Commands in the toolbar action group, in order. Every one is always
@@ -115,7 +135,16 @@ impl Command {
             Self::Fetch => "Fetch",
             Self::Pull => "Pull",
             Self::Push => "Push",
+            Self::Abort => "Abort",
+            Self::Continue => "Continue",
+            Self::Skip => "Skip",
         }
+    }
+
+    /// Whether the command finishes or abandons the operation Git stopped
+    /// part-way, the only writes available until then.
+    pub fn finishes_sequence(self) -> bool {
+        matches!(self, Self::Abort | Self::Continue | Self::Skip)
     }
 
     /// Menu label, with an ellipsis for commands that ask for input first.
@@ -134,6 +163,9 @@ impl Command {
             Self::Fetch => "Fetch",
             Self::Pull => "Pull",
             Self::Push => "Push",
+            Self::Abort => "Abort",
+            Self::Continue => "Continue",
+            Self::Skip => "Skip commit",
         }
     }
 
@@ -169,6 +201,21 @@ impl Command {
         }
         if !cx.reviewable {
             return Disabled("Refresh the repository before reviewing an operation.");
+        }
+        if self.finishes_sequence() {
+            let Some(sequence) = cx.sequence else {
+                return Disabled(NO_SEQUENCE);
+            };
+            if self == Self::Skip && !sequence.can_skip() {
+                return Disabled(SKIP_UNSUPPORTED);
+            }
+            if self == Self::Continue && cx.conflicts > 0 {
+                return Disabled(UNRESOLVED_CONFLICTS);
+            }
+            return Availability::Enabled;
+        }
+        if cx.in_progress {
+            return Disabled(crate::git::OPERATION_IN_PROGRESS);
         }
         if self == Self::PopStash && cx.stash_count == 0 {
             return Disabled("There are no stashes to apply.");
@@ -560,6 +607,86 @@ mod tests {
             Command::Fetch.availability(&modal).reason(),
             Some("Close the open dialog first.")
         );
+    }
+
+    #[test]
+    fn an_operation_in_progress_disables_every_write_but_its_own_steps() {
+        use crate::git::{Sequence, OPERATION_IN_PROGRESS};
+        let merge = CommandContext {
+            in_progress: true,
+            sequence: Some(Sequence::Merge),
+            conflicts: 1,
+            undo: crate::journal::StepState::Ready,
+            ..tracking()
+        };
+        for command in [
+            Command::Undo,
+            Command::Redo,
+            Command::CreateBranch,
+            Command::Checkout,
+            Command::Merge,
+            Command::CherryPick,
+            Command::Revert,
+            Command::Stash,
+            Command::PopStash,
+            Command::Pull,
+            Command::Push,
+        ] {
+            assert_eq!(
+                command.availability(&merge).reason(),
+                Some(OPERATION_IN_PROGRESS),
+                "{command:?}"
+            );
+        }
+        assert_eq!(
+            Command::Merge.availability_for_commit(&merge, 1).reason(),
+            Some(OPERATION_IN_PROGRESS)
+        );
+        for command in [Command::Fetch, Command::Refresh, Command::Abort] {
+            assert!(command.availability(&merge).enabled(), "{command:?}");
+        }
+        assert_eq!(
+            Command::Continue.availability(&merge).reason(),
+            Some(UNRESOLVED_CONFLICTS)
+        );
+        assert_eq!(
+            Command::Skip.availability(&merge).reason(),
+            Some(SKIP_UNSUPPORTED)
+        );
+        let resolved = CommandContext {
+            conflicts: 0,
+            ..merge
+        };
+        assert!(Command::Continue.availability(&resolved).enabled());
+        let rebase = CommandContext {
+            sequence: Some(Sequence::Rebase),
+            detached: true,
+            ..merge
+        };
+        assert!(Command::Skip.availability(&rebase).enabled());
+        assert!(Command::Abort.availability(&rebase).enabled());
+        let busy = CommandContext {
+            busy: true,
+            ..resolved
+        };
+        assert!(!Command::Continue.availability(&busy).enabled());
+    }
+
+    #[test]
+    fn a_conflicted_stash_apply_offers_no_abort() {
+        let cx = CommandContext {
+            in_progress: true,
+            conflicts: 2,
+            ..ready()
+        };
+        for command in [Command::Abort, Command::Continue, Command::Skip] {
+            assert_eq!(command.availability(&cx).reason(), Some(NO_SEQUENCE));
+        }
+        assert_eq!(
+            Command::PopStash.availability(&cx).reason(),
+            Some(crate::git::OPERATION_IN_PROGRESS)
+        );
+        assert!(!Command::Abort.availability(&ready()).enabled());
     }
 
     #[test]

@@ -825,14 +825,13 @@ impl GitCrab {
                     )
                     .when(!unstage, |bar| {
                         bar.child(
-                            self.semantic_button(
+                            self.discard_button(
                                 "current-hunk-discard",
                                 format!("Discard hunk {}…", index + 1),
-                                components::ButtonKind::Discard,
                                 ControlSize::Compact,
+                                p,
                                 cx,
                             )
-                            .disabled_when(!ready)
                             .on_click(cx.listener(
                                 move |v, _, w, cx| {
                                     v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
@@ -1125,19 +1124,38 @@ impl GitCrab {
         )
         .when(!unstage, |bar| {
             bar.child(
-                self.semantic_button(
+                self.discard_button(
                     SharedString::from(format!("{place}-lines-discard")),
                     format!("Discard {count} {noun}…"),
-                    components::ButtonKind::Discard,
                     ControlSize::Compact,
+                    p,
                     cx,
                 )
-                .disabled_when(!ready)
                 .on_click(cx.listener(move |v, _, w, cx| {
                     v.review_discard(token, DiscardTarget::Lines(lines.clone()), w, cx)
                 })),
             )
         })
+    }
+
+    /// A Discard button for `p`'s hunks or lines. It is disabled while the
+    /// patch is not ready, and also, with the reason as its tooltip, when
+    /// Discard does not support this change type.
+    fn discard_button(
+        &self,
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        size: ControlSize,
+        p: &gitcrab_core::controller::Patch,
+        cx: &App,
+    ) -> Button {
+        let button = self
+            .semantic_button(id, label, components::ButtonKind::Discard, size, cx)
+            .disabled_when(!self.diff_actions_ready() || p.discard_blocked.is_some());
+        match p.discard_blocked.clone() {
+            Some(reason) => button.tooltip(reason),
+            None => button,
+        }
     }
 
     fn review_discard(
@@ -1147,20 +1165,17 @@ impl GitCrab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(p) = self
-            .state
-            .patch
-            .as_ref()
-            .filter(|p| p.id.is_none() && !p.staged && p.token == token)
-        else {
+        let Some(p) = self.state.patch.as_ref().filter(|p| {
+            p.id.is_none() && !p.staged && p.token == token && p.discard_blocked.is_none()
+        }) else {
             return;
         };
         if self.state.busy {
             return;
         }
-        let path = p.path.clone();
+        let path = gitcrab_core::git::display_path(&p.path);
         let epoch = self.state.epoch;
-        let repo = self.state.path.clone();
+        let repo = gitcrab_core::presentation::display_path(&self.state.path);
         let weak = cx.weak_entity();
         let cancel_focus = cx.focus_handle();
         let scroll = ScrollHandle::new();
@@ -1381,14 +1396,13 @@ impl GitCrab {
                             .bg_role(Role::BorderDivider),
                     )
                     .child(
-                        self.semantic_button(
+                        self.discard_button(
                             ("discard-hunk", i),
                             "Discard hunk…",
-                            components::ButtonKind::Discard,
                             ControlSize::DenseHunk,
+                            p,
                             cx,
                         )
-                        .disabled_when(!ready)
                         .on_click(cx.listener(move |v, _, w, cx| {
                             v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
                         })),

@@ -42,6 +42,9 @@ pub struct Patch {
     pub hunks: Vec<String>,
     /// User-facing reason to disable hunk actions, when applicable.
     pub hunk_blocked: Option<String>,
+    /// User-facing reason Discard cannot act on this patch's hunks or lines,
+    /// when staging them still can.
+    pub discard_blocked: Option<String>,
     /// Worker token tying a hunk action to this exact cached patch.
     pub token: u32,
     /// What the comparison can show. Only text previews have lines.
@@ -149,7 +152,11 @@ pub struct Controller {
     // Some(true) requires a full refresh because Git metadata changed.
     pending_watcher_refresh: Option<bool>,
     drafts: std::collections::HashMap<std::path::PathBuf, String>,
-    /// Unmerged paths whose resolution GitCrab refused because of conflict markers.
+    /// Git's prepared message for the operation in progress, once it has
+    /// been offered to the draft. Clearing the draft does not bring it back.
+    offered_message: Option<String>,
+    /// Unmerged paths whose resolution GitCrab refused because of conflict
+    /// markers. A path is forgotten once a read finds no markers in its file.
     pub marker_refusals: std::collections::BTreeSet<String>,
     resolving: Option<String>,
     /// A commit or reference the user activated outside loaded history.
@@ -226,6 +233,7 @@ impl Default for Controller {
             selection_generation: 0,
             pending_watcher_refresh: None,
             drafts: Default::default(),
+            offered_message: None,
             marker_refusals: Default::default(),
             resolving: None,
             reveal: None,
@@ -241,11 +249,55 @@ impl Controller {
         self.operation_notice = None;
     }
 
+    /// Replaces `prefix` at the start of the last successful operation's
+    /// feedback with `replacement`, as when the view ran two writes for one
+    /// command. Other feedback is left as it is.
+    pub fn reword_operation_notice(&mut self, prefix: &str, replacement: &str) {
+        let Some((message, false)) = &mut self.operation_notice else {
+            return;
+        };
+        let Some(rest) = message.strip_prefix(prefix) else {
+            return;
+        };
+        let reworded = format!("{replacement}{rest}");
+        if self.notice == *message {
+            self.notice = reworded.clone();
+        }
+        *message = reworded;
+    }
+
     /// Updates the commit message and advances its revision when the text changes.
     pub fn set_draft(&mut self, value: String) {
         if self.draft != value {
             self.draft = value;
             self.draft_revision += 1;
+        }
+    }
+
+    /// Puts Git's prepared message for a merge, cherry-pick or revert in
+    /// progress into an empty draft, once per message, so continuing commits
+    /// with it rather than with a stale draft.
+    fn offer_operation_message(&mut self, message: Option<&String>) {
+        if self.offered_message.as_ref() == message {
+            return;
+        }
+        self.offered_message = message.cloned();
+        if let Some(message) = message {
+            if self.draft.trim().is_empty() {
+                self.set_draft(message.clone());
+            }
+        }
+    }
+
+    /// Replaces the draft with Git's prepared message for the operation in
+    /// progress, if there is one.
+    pub fn use_operation_message(&mut self) {
+        if let Some(message) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.operation_message.clone())
+        {
+            self.set_draft(message);
         }
     }
 
@@ -292,6 +344,7 @@ impl Controller {
             self.invalidate(l);
         }
         self.snapshot = None;
+        self.offered_message = None;
         // Writes waiting for a refresh belong to the repository being left.
         self.queued.clear();
         self.predicted_from = None;
@@ -434,6 +487,13 @@ impl Controller {
         let plan = self.load_more();
         self.reveal = Some(reveal);
         Seek::Loading(plan)
+    }
+
+    /// The reference the sidebar selected, named as [`Self::preview_ref`] took it.
+    pub fn previewed_ref(&self) -> Option<(ReferenceKind, &str)> {
+        self.previewed_ref
+            .as_ref()
+            .map(|(kind, name)| (*kind, name.as_str()))
     }
 
     /// Reports whether this exact reference is being previewed.
@@ -691,8 +751,15 @@ impl Controller {
 
     /// Starts `action` now. Callers have checked that no write is running.
     fn start_write(&mut self, action: Action) -> Option<(Lane, Request)> {
-        self.submitted_revision =
-            matches!(action, Action::Commit { .. }).then_some(self.draft_revision);
+        self.submitted_revision = matches!(
+            action,
+            Action::Commit { .. }
+                | Action::RunOperation {
+                    op: crate::service::Operation::Continue { message: Some(_) },
+                    ..
+                }
+        )
+        .then_some(self.draft_revision);
         self.resolving = match &action {
             Action::MarkResolved { path, .. } => Some(path.clone()),
             _ => None,
@@ -952,15 +1019,12 @@ impl Controller {
                     }) {
                         self.previewed_ref = None;
                     }
-                    self.marker_refusals.retain(|path| {
-                        snapshot
-                            .status
-                            .iter()
-                            .any(|file| &file.path == path && file.is_unmerged())
-                    });
+                    self.marker_refusals
+                        .retain(|path| snapshot.conflict_markers.contains(path));
                     self.path = path;
                     // Git's status replaces any predicted file move.
                     self.settle_prediction(false);
+                    self.offer_operation_message(snapshot.operation_message.as_ref());
                     self.snapshot = Some(snapshot);
                     // Writes queued behind a commit start once its refresh lands.
                     if !self.busy {
@@ -1059,6 +1123,7 @@ impl Controller {
                     content,
                     hunks,
                     hunk_blocked,
+                    discard_blocked,
                     token,
                     preview,
                 }) if self.selected == id => {
@@ -1070,6 +1135,7 @@ impl Controller {
                         content,
                         hunks,
                         hunk_blocked,
+                        discard_blocked,
                         token,
                         preview,
                     });
@@ -1105,6 +1171,7 @@ impl Controller {
                         content,
                         hunks,
                         hunk_blocked,
+                        discard_blocked,
                         token,
                         preview,
                     }) = diff.map(|diff| *diff)
@@ -1130,6 +1197,7 @@ impl Controller {
                                 content,
                                 hunks,
                                 hunk_blocked,
+                                discard_blocked,
                                 token,
                                 preview,
                             });
@@ -1276,12 +1344,9 @@ impl Controller {
         snapshot.status = state.status;
         snapshot.reviewed = Some(state.reviewed);
         snapshot.journal = state.journal;
-        let status = &snapshot.status;
-        self.marker_refusals.retain(|path| {
-            status
-                .iter()
-                .any(|file| &file.path == path && file.is_unmerged())
-        });
+        snapshot.conflict_markers = state.conflict_markers;
+        let markers = &snapshot.conflict_markers;
+        self.marker_refusals.retain(|path| markers.contains(path));
         self.worktree_fresh = true;
         self.worktree_read_at = state.read_started;
     }
@@ -1751,11 +1816,12 @@ mod tests {
             ),
         );
         assert!(c.marker_refusals.contains("d"));
-        let snapshot = |status| {
+        let snapshot = |status, markers: &[&str]| {
             Ok(Reply::Snapshot {
                 path: "repo".into(),
                 snapshot: RepoSnapshot {
                     status,
+                    conflict_markers: markers.iter().map(|path| (*path).to_owned()).collect(),
                     ..Default::default()
                 },
                 graph: Default::default(),
@@ -1763,7 +1829,7 @@ mod tests {
         };
         let jobs = c.complete(
             Lane::Snapshot,
-            reply(&refresh[0].1, snapshot(vec![change("d", 'U', 'U')])),
+            reply(&refresh[0].1, snapshot(vec![change("d", 'U', 'U')], &["d"])),
         );
         assert!(
             matches!(&jobs[..], [(Lane::Diff, Request { action: Action::Diff { path, .. }, .. })] if path == "d")
@@ -1773,9 +1839,80 @@ mod tests {
         let (_, refresh) = c.refresh().unwrap().dispatch.unwrap();
         c.complete(
             Lane::Snapshot,
-            reply(&refresh, snapshot(vec![change("d", 'M', ' ')])),
+            reply(&refresh, snapshot(vec![change("d", 'M', ' ')], &[])),
         );
         assert!(c.marker_refusals.is_empty());
+    }
+
+    #[test]
+    fn marker_refusals_clear_once_the_file_no_longer_has_markers() {
+        let mut c = Controller {
+            epoch: 1,
+            snapshot: Some(RepoSnapshot {
+                status: vec![change("d", 'U', 'U')],
+                conflict_markers: ["d".to_owned()].into(),
+                ..Default::default()
+            }),
+            marker_refusals: ["d".to_owned()].into(),
+            ..Default::default()
+        };
+        let (_, refresh) = c.refresh().unwrap().dispatch.unwrap();
+        c.complete(
+            Lane::Snapshot,
+            reply(
+                &refresh,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot: RepoSnapshot {
+                        status: vec![change("d", 'U', 'U')],
+                        reviewed: Some(Default::default()),
+                        ..Default::default()
+                    },
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        assert!(c.marker_refusals.is_empty());
+
+        c.marker_refusals.insert("d".into());
+        c.apply_worktree(crate::service::WorktreeState {
+            status: vec![change("d", 'U', 'U')],
+            reviewed: Default::default(),
+            conflict_markers: ["d".to_owned()].into(),
+            journal: Default::default(),
+            read_started: None,
+        });
+        assert!(c.marker_refusals.contains("d"));
+        c.apply_worktree(crate::service::WorktreeState {
+            status: vec![change("d", 'U', 'U')],
+            reviewed: Default::default(),
+            conflict_markers: Default::default(),
+            journal: Default::default(),
+            read_started: None,
+        });
+        assert!(c.marker_refusals.is_empty());
+    }
+
+    #[test]
+    fn reworded_operation_feedback_keeps_the_rest_of_the_message() {
+        let done = "Checked out topic. Undo is available.";
+        let mut c = Controller {
+            notice: done.into(),
+            operation_notice: Some((done.into(), false)),
+            ..Default::default()
+        };
+        c.reword_operation_notice(
+            "Checked out topic",
+            "Created branch topic and switched to it",
+        );
+        assert_eq!(
+            c.notice,
+            "Created branch topic and switched to it. Undo is available."
+        );
+        assert_eq!(c.operation_notice.as_ref().unwrap().0, c.notice);
+        c.operation_notice = Some(("Checked out topic failed".into(), true));
+        c.reword_operation_notice("Checked out topic", "Created");
+        assert_eq!(c.operation_notice.unwrap().0, "Checked out topic failed");
     }
     #[test]
     fn hunk_writes_keep_the_patch_on_screen_until_it_reloads() {
@@ -1796,6 +1933,7 @@ mod tests {
             content: diff::prepare(vec![]),
             hunks: vec!["@@ -1 +1 @@".into()],
             hunk_blocked: None,
+            discard_blocked: None,
             token,
             preview: Default::default(),
         };
@@ -1853,6 +1991,7 @@ mod tests {
             content: diff::prepare(vec![]),
             hunks: vec!["@@ -1 +1 @@".into(); hunks],
             hunk_blocked: None,
+            discard_blocked: None,
             token,
             preview: Default::default(),
         };
@@ -1937,6 +2076,7 @@ mod tests {
                     content: diff::prepare(vec![]),
                     hunks: vec!["@@ -1 +1 @@".into(); 2],
                     hunk_blocked: None,
+                    discard_blocked: None,
                     token: read.sequence,
                     preview: Default::default(),
                 }),
@@ -1959,6 +2099,7 @@ mod tests {
             content: diff::prepare(vec![]),
             hunks: vec!["@@ -1 +1 @@".into()],
             hunk_blocked: None,
+            discard_blocked: None,
             token: write.sequence,
             preview: Default::default(),
         };
@@ -1985,6 +2126,7 @@ mod tests {
         let state = |head: &str, file: crate::git::FileChange| crate::service::WorktreeState {
             status: vec![file],
             reviewed: identity(head, b"new"),
+            conflict_markers: Default::default(),
             journal: Default::default(),
             read_started: Some(std::time::Instant::now()),
         };
@@ -2011,6 +2153,7 @@ mod tests {
                     content: diff::prepare(vec![]),
                     hunks: vec!["@@ -1 +1 @@".into()],
                     hunk_blocked: None,
+                    discard_blocked: None,
                     token: read.sequence,
                     preview: Default::default(),
                 }),
@@ -2092,6 +2235,7 @@ mod tests {
                     head: "h".into(),
                     ..Default::default()
                 },
+                conflict_markers: Default::default(),
                 journal: Default::default(),
                 read_started: None,
             }),
@@ -2169,6 +2313,7 @@ mod tests {
             content: diff::prepare(vec![]),
             hunks: vec!["@@ -1 +1 @@".into(); hunks],
             hunk_blocked: None,
+            discard_blocked: None,
             token,
             preview: Default::default(),
         };
@@ -2351,6 +2496,7 @@ mod tests {
                     content: diff::prepare(vec![]),
                     hunks: vec!["@@ -1 +1 @@".into()],
                     hunk_blocked: None,
+                    discard_blocked: None,
                     token: read.sequence,
                     preview: Default::default(),
                 }),
@@ -2682,6 +2828,46 @@ mod tests {
         assert!(
             matches!(&jobs[0].1.action, Action::Open { trust: RepositoryTrust::Confirmed(location), .. } if location.worktree == std::path::Path::new("c"))
         );
+    }
+    #[test]
+    fn gits_prepared_message_fills_only_an_empty_draft_once() {
+        fn install(c: &mut Controller, message: Option<&str>) {
+            let request = match c.snapshot {
+                None => c.open_trusted(RepositoryLocation::test_path("repo")),
+                Some(_) => c.refresh().unwrap().dispatch,
+            }
+            .unwrap()
+            .1;
+            c.complete(
+                Lane::Snapshot,
+                reply(
+                    &request,
+                    Ok(Reply::Snapshot {
+                        path: "repo".into(),
+                        snapshot: RepoSnapshot {
+                            operations: vec!["merge".into()],
+                            operation_message: message.map(str::to_owned),
+                            ..Default::default()
+                        },
+                        graph: Default::default(),
+                    }),
+                ),
+            );
+        }
+        let merge = "Merge branch 'topic'";
+        let mut c = Controller::default();
+        install(&mut c, Some(merge));
+        assert_eq!(c.draft, merge);
+        c.set_draft(String::new());
+        install(&mut c, Some(merge));
+        assert!(c.draft.is_empty());
+
+        c.set_draft("Stale draft".into());
+        install(&mut c, None);
+        install(&mut c, Some("Revert \"Fix\""));
+        assert_eq!(c.draft, "Stale draft");
+        c.use_operation_message();
+        assert_eq!(c.draft, "Revert \"Fix\"");
     }
     #[test]
     fn draft_recovery_is_tab_local_and_closing_drops_it() {

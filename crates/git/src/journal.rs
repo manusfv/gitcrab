@@ -1,6 +1,6 @@
 //! The undo and redo stacks and the Git work that checks and runs them.
 use crate::git::{Git, WriteError, WriteIdentity};
-use crate::service::{Operation, ReviewedOperation};
+use crate::service::{Operation, RemoteCheckout, RemoteCheckoutKind, ReviewedOperation};
 pub use gitcrab_core::journal::*;
 /// State read before a write that recording it needs.
 #[derive(Clone, Debug, Default)]
@@ -68,6 +68,11 @@ impl Journal {
     /// Forgets every entry, for example when the tab opens another repository.
     pub fn clear(&mut self) {
         self.undo.clear();
+        self.redo.clear();
+    }
+
+    /// Forgets the redo stack after a new action that is not recorded.
+    pub fn clear_redo(&mut self) {
         self.redo.clear();
     }
 
@@ -183,6 +188,10 @@ impl Journal {
         let moved = |action: &str, summary: String, journal: &mut Self| {
             journal.record_head_move(git, action, summary, destination)
         };
+        let created = reviewed
+            .remote_branch
+            .as_ref()
+            .filter(|remote| remote.kind == RemoteCheckoutKind::CreateTracking);
         let entry = match reviewed.op {
             Operation::Merge => {
                 return moved("merge", format!("merge of {label} into {here}"), self)
@@ -203,17 +212,22 @@ impl Journal {
                     })),
                     _ => Err("The new branch could not be verified.".into()),
                 }),
-            Operation::Checkout => git.head_state().map(|(to_ref, to_id)| {
-                (to_ref != destination.symbolic_head || to_id != destination.head).then(|| Entry {
-                    summary: format!("checkout of {}", place(&to_ref, &to_id)),
-                    change: Change::Checkout {
-                        from_ref: destination.symbolic_head.clone(),
-                        from_id: destination.head.clone(),
-                        to_ref,
-                        to_id,
-                    },
-                })
-            }),
+            Operation::Checkout => match created {
+                Some(remote) => new_branch_entry(git, destination, remote, &target_id),
+                None => git.head_state().map(|(to_ref, to_id)| {
+                    (to_ref != destination.symbolic_head || to_id != destination.head).then(|| {
+                        Entry {
+                            summary: format!("checkout of {}", place(&to_ref, &to_id)),
+                            change: Change::Checkout {
+                                from_ref: destination.symbolic_head.clone(),
+                                from_id: destination.head.clone(),
+                                to_ref,
+                                to_id,
+                            },
+                        }
+                    })
+                }),
+            },
             Operation::Stash => before.and_then(|before| {
                 let top = git.ref_commit("refs/stash")?;
                 Ok(top
@@ -258,9 +272,21 @@ impl Journal {
     /// Checks the top entry of each stack against the repository.
     pub fn status(&self, git: &Git) -> JournalStatus {
         let preview = |direction| {
-            self.top(direction).map(|entry| StepPreview {
-                summary: entry.summary.clone(),
-                blocked: check(git, &entry.change, direction).unwrap_or(Some(Blocker::Unchecked)),
+            self.top(direction).map(|entry| {
+                let (blocked, published) = both(
+                    || check(git, &entry.change, direction),
+                    || published(git, &entry.change, direction),
+                );
+                let (blocked, published) = match (blocked, published) {
+                    (Ok(None), Ok(published)) => (None, published),
+                    (Ok(Some(blocker)), _) => (Some(blocker), None),
+                    (Err(_), _) | (Ok(None), Err(_)) => (Some(Blocker::Unchecked), None),
+                };
+                StepPreview {
+                    summary: entry.summary.clone(),
+                    blocked,
+                    published,
+                }
             })
         };
         // Each check is a few Git calls of its own, so the two run side by side.
@@ -291,20 +317,28 @@ impl Journal {
             Direction::Undo => NOTHING_TO_UNDO,
             Direction::Redo => NOTHING_TO_REDO,
         })?;
-        if let Some(blocker) = check(git, &entry.change, direction)? {
+        let (blocked, published) = both(
+            || check(git, &entry.change, direction),
+            || published(git, &entry.change, direction),
+        );
+        if let Some(blocker) = blocked? {
             return Err(blocker.reason().into());
         }
+        let published = published?;
         Ok(ReviewedOperation {
             op: direction.operation(),
             target: String::new(),
             destination,
             target_id: None,
             checkout_ref: None,
+            remote_branch: None,
+            merge_ref: None,
             target_summary: None,
             network: None,
             journal: Some(Step {
                 direction,
                 entry: entry.clone(),
+                published,
             }),
         })
     }
@@ -331,7 +365,7 @@ impl Journal {
         if let Some(blocker) = check(git, &step.entry.change, step.direction)? {
             return Err(blocker.reason().into());
         }
-        let change = perform(git, &step.entry.change, step.direction)?;
+        let (change, staging_dropped) = perform(git, &step.entry.change, step.direction)?;
         let entry = Entry {
             summary: step.entry.summary.clone(),
             change,
@@ -346,11 +380,47 @@ impl Journal {
                 self.undo.push(entry);
             }
         }
-        Ok(format!("{} {}.", step.direction.verb(), step.entry.summary))
+        let done = format!("{} {}.", step.direction.verb(), step.entry.summary);
+        Ok(if staging_dropped {
+            format!("{done} {}", crate::git::POP_STAGING_DROPPED)
+        } else {
+            done
+        })
     }
 }
 
-/// Checks a step's preconditions. `Ok(None)` means it can run.
+/// The entry for a Checkout that created `remote.local` tracking
+/// `remote.tracking` at `id` and switched to it from `destination`, after
+/// checking that HEAD and the upstream are as that left them.
+fn new_branch_entry(
+    git: &Git,
+    destination: &WriteIdentity,
+    remote: &RemoteCheckout,
+    id: &str,
+) -> Result<Option<Entry>, String> {
+    let full = format!("refs/heads/{}", remote.local);
+    let (head, upstream) = both(|| git.head_state(), || git.upstream_of(&full));
+    if head? != (full.clone(), id.to_owned())
+        || upstream?.as_deref() != Some(remote.tracking.as_str())
+    {
+        return Err("The new tracking branch could not be verified.".into());
+    }
+    Ok(Some(Entry {
+        summary: format!(
+            "checkout of {} as new branch {}",
+            remote.remote_name(),
+            remote.local
+        ),
+        change: Change::CheckoutNewBranch {
+            from_ref: destination.symbolic_head.clone(),
+            from_id: destination.head.clone(),
+            name: remote.local.clone(),
+            upstream: remote.tracking.clone(),
+            id: id.to_owned(),
+        },
+    }))
+}
+
 /// Runs `a` here and `b` on a scoped thread at the same time.
 fn both<A: Send, B: Send>(a: impl FnOnce() -> A + Send, b: impl FnOnce() -> B + Send) -> (A, B) {
     std::thread::scope(|scope| {
@@ -390,6 +460,56 @@ fn check(git: &Git, change: &Change, direction: Direction) -> Result<Option<Bloc
         return Ok(Some(Blocker::OperationInProgress));
     }
     blocked
+}
+
+/// The remote-tracking branch, as a short name such as `origin/main`, that
+/// already has the branch tip a step moves away from, when the step takes
+/// commits off a local branch.
+///
+/// Every commit the step takes off is an ancestor of that tip, and one
+/// recorded action produced it, so the tip being on a remote means the
+/// action's result was shared. Checking only the tip keeps the commits an
+/// action merely brought in, such as a merged remote branch's, from counting.
+/// The upstream is named when it has the tip, otherwise any remote-tracking
+/// branch that does.
+fn published(git: &Git, change: &Change, direction: Direction) -> Result<Option<String>, String> {
+    let undo = direction == Direction::Undo;
+    let (head_ref, from, to) = match change {
+        Change::Commit {
+            head_ref,
+            parent,
+            commit,
+        } if undo => (head_ref, commit, parent),
+        Change::BranchMoved {
+            head_ref,
+            before,
+            after,
+            ..
+        } if undo => (head_ref, after, before),
+        Change::BranchMoved {
+            head_ref,
+            before,
+            after,
+            ..
+        } => (head_ref, before, after),
+        _ => return Ok(None),
+    };
+    if !head_ref.starts_with("refs/heads/") || from.is_empty() || to.is_empty() {
+        return Ok(None);
+    }
+    let (kept, remotes, upstream) = all3(
+        || git.is_ancestor(from, to),
+        || git.remote_refs_containing(from),
+        || git.upstream_of(head_ref),
+    );
+    if kept? {
+        return Ok(None);
+    }
+    let remotes = remotes?;
+    let upstream = upstream?.filter(|upstream| remotes.contains(upstream));
+    Ok(upstream
+        .or_else(|| remotes.into_iter().next())
+        .map(|full| gitcrab_core::presentation::short_ref(&full).to_owned()))
 }
 
 fn check_change(git: &Git, change: &Change, undo: bool) -> Result<Option<Blocker>, String> {
@@ -448,6 +568,54 @@ fn check_change(git: &Git, change: &Change, undo: bool) -> Result<Option<Blocker
                         Some(tip) if tip != *there_id => Some(Blocker::BranchMoved),
                         Some(_) => None,
                     }
+                }
+            }
+        }
+        Change::CheckoutNewBranch {
+            from_ref,
+            from_id,
+            name,
+            upstream,
+            id,
+        } => {
+            let full = format!("refs/heads/{name}");
+            if undo {
+                if from_id.is_empty() {
+                    return Ok(Some(Blocker::NoPreviousCommit));
+                }
+                let (here, there) = both(head, || {
+                    if from_ref.is_empty() {
+                        git.commit_parents(from_id)
+                            .map(|commit| commit.map(|_| from_id.clone()))
+                    } else {
+                        git.ref_commit(from_ref)
+                    }
+                });
+                if here? != (full, id.clone()) {
+                    Some(Blocker::HeadMoved)
+                } else {
+                    match there? {
+                        None if from_ref.is_empty() => Some(Blocker::CommitMissing),
+                        None => Some(Blocker::BranchMissing),
+                        Some(tip) if tip != *from_id => Some(Blocker::BranchMoved),
+                        Some(_) => None,
+                    }
+                }
+            } else {
+                let ((here, tip, commit), tracking) = both(
+                    || all3(head, || git.ref_commit(&full), || git.commit_parents(id)),
+                    || git.ref_commit(upstream),
+                );
+                if here? != (from_ref.clone(), from_id.clone()) {
+                    Some(Blocker::HeadMoved)
+                } else if tip?.is_some() {
+                    Some(Blocker::BranchExists)
+                } else if commit?.is_none() {
+                    Some(Blocker::CommitMissing)
+                } else if tracking?.is_none() {
+                    Some(Blocker::UpstreamMissing)
+                } else {
+                    None
                 }
             }
         }
@@ -601,8 +769,9 @@ fn verify_head(git: &Git, head_ref: &str, id: &str) -> Result<(), WriteError> {
     Ok(())
 }
 
-/// Runs a checked step and returns the change to file on the other stack.
-fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, WriteError> {
+/// Runs a checked step and returns the change to file on the other stack,
+/// and whether a redone pop had to apply its staged changes unstaged.
+fn perform(git: &Git, change: &Change, direction: Direction) -> Result<(Change, bool), WriteError> {
     let undo = direction == Direction::Undo;
     match change {
         Change::Commit {
@@ -627,6 +796,46 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
             };
             git.switch_to(Some(there_ref), there_id)?;
             verify_head(git, there_ref, there_id)?;
+        }
+        Change::CheckoutNewBranch {
+            from_ref,
+            from_id,
+            name,
+            upstream,
+            id,
+        } => {
+            let full = format!("refs/heads/{name}");
+            if !undo {
+                git.switch_create_tracking(name, upstream, id)?;
+                verify_head(git, &full, id)?;
+                return Ok((change.clone(), false));
+            }
+            git.switch_to(Some(from_ref), from_id)?;
+            verify_head(git, from_ref, from_id)?;
+            let uncertain = |what: &str| {
+                WriteError::inspect(format!(
+                    "Switched back to {}, but {what}",
+                    place(from_ref, from_id)
+                ))
+            };
+            if git.ref_commit(&full).map_err(WriteError::inspect)? != Some(id.clone()) {
+                return Err(uncertain(&format!(
+                    "branch {name} moved meanwhile, so it was kept."
+                )));
+            }
+            git.delete_branch(name).map_err(|error| {
+                uncertain(&format!(
+                    "Git could not delete branch {name}. {}",
+                    error.message
+                ))
+            })?;
+            if git
+                .ref_commit(&full)
+                .map_err(WriteError::inspect)?
+                .is_some()
+            {
+                return Err(uncertain(&format!("branch {name} still exists.")));
+            }
         }
         Change::CreateBranch { name, id } => {
             let full = format!("refs/heads/{name}");
@@ -656,11 +865,14 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
                 let after = git.ref_commit("refs/stash").map_err(WriteError::inspect)?;
                 match after {
                     Some(stash) if Some(&stash) != before.as_ref() => {
-                        return Ok(Change::Stash {
-                            head: head.clone(),
-                            stash,
-                            message: message.clone(),
-                        })
+                        return Ok((
+                            Change::Stash {
+                                head: head.clone(),
+                                stash,
+                                message: message.clone(),
+                            },
+                            false,
+                        ))
                     }
                     _ => {
                         return Err(WriteError::inspect(
@@ -694,16 +906,19 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
                     git.reset_tracked_to_head()?;
                 }
             } else {
-                git.stash_apply(stash, false)?;
+                let restored = git.stash_apply_with_index(stash)?;
                 git.drop_stash_object(stash)?;
                 let result = git.capture_tracked_state()?;
-                return Ok(Change::PopStash {
-                    head: head.clone(),
-                    stash: stash.clone(),
-                    subject: subject.clone(),
-                    result,
-                    restorable: true,
-                });
+                return Ok((
+                    Change::PopStash {
+                        head: head.clone(),
+                        stash: stash.clone(),
+                        subject: subject.clone(),
+                        result,
+                        restorable: true,
+                    },
+                    !restored,
+                ));
             }
         }
         Change::BranchMoved {
@@ -717,7 +932,7 @@ fn perform(git: &Git, change: &Change, direction: Direction) -> Result<Change, W
             verify_head(git, head_ref, target)?;
         }
     }
-    Ok(change.clone())
+    Ok((change.clone(), false))
 }
 
 #[cfg(test)]
@@ -755,6 +970,8 @@ mod tests {
             destination,
             target_id: id,
             checkout_ref: None,
+            remote_branch: None,
+            merge_ref: None,
             target_summary: None,
             network: None,
             journal: None,
@@ -1038,7 +1255,7 @@ mod tests {
                 Some(id.clone()),
             );
             let before = Before::capture(git, &op);
-            git.stash_apply(&id, false).unwrap();
+            assert!(git.stash_apply_with_index(&id).unwrap());
             git.drop_stash_object(&id).unwrap();
             journal.record_operation(git, &op, before);
         };
@@ -1080,6 +1297,45 @@ mod tests {
             state(&journal, git, Direction::Undo),
             StepState::Blocked(Blocker::PopNotRestorable)
         );
+    }
+
+    #[test]
+    fn undo_and_redo_of_a_pop_keep_the_staged_and_unstaged_split() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        base(&fixture);
+        fixture.write("tracked.txt", "staged\n");
+        git.stage("tracked.txt").unwrap();
+        fixture.write("tracked.txt", "staged and edited\n");
+        git.stash_with_message("split").unwrap();
+        let split = |git: &Git| {
+            let status = git.snapshot(1).unwrap().status;
+            assert_eq!(status.len(), 1);
+            assert_eq!((status[0].index, status[0].worktree), ('M', 'M'));
+            assert_eq!(git.run(&["show", ":tracked.txt"]).unwrap(), "staged\n");
+            assert_eq!(read(&fixture, "tracked.txt"), "staged and edited\n");
+        };
+        let id = git.resolve_commit("refs/stash").unwrap();
+        let op = reviewed(
+            Operation::PopStash,
+            "",
+            git.write_identity().unwrap(),
+            Some(id.clone()),
+        );
+        let before = Before::capture(git, &op);
+        assert!(git.stash_apply_with_index(&id).unwrap());
+        git.drop_stash_object(&id).unwrap();
+        let mut journal = Journal::default();
+        journal.record_operation(git, &op, before);
+        split(git);
+
+        step(&mut journal, git, Direction::Undo).unwrap();
+        assert!(!git.has_tracked_changes().unwrap());
+        assert_eq!(git.stash_entries().unwrap()[0].0, id);
+
+        step(&mut journal, git, Direction::Redo).unwrap();
+        assert!(git.stash_entries().unwrap().is_empty());
+        split(git);
     }
 
     #[test]
@@ -1176,5 +1432,133 @@ mod tests {
             after,
         );
         assert_eq!(journal.undo_entries().len(), 1);
+    }
+
+    mod published {
+        use super::*;
+        use crate::git::network_tests::{commit, connected, publish};
+
+        fn published(journal: &Journal, git: &Git, direction: Direction) -> Option<String> {
+            journal.status(git).published(direction).map(str::to_owned)
+        }
+
+        fn record_commit(journal: &mut Journal, fixture: &Fixture, name: &str) -> String {
+            fixture.write(name, &format!("{name}\n"));
+            fixture.git.stage(name).unwrap();
+            let identity = fixture.git.write_identity().unwrap();
+            let sha = fixture.git.commit_reviewed(name, &identity).unwrap();
+            journal.record_commit(&identity, &sha, name);
+            sha
+        }
+
+        #[test]
+        fn undoing_a_pushed_commit_names_the_remote_that_keeps_it() {
+            let (local, _other) = connected();
+            let git = &local.git;
+            git.run(&["switch", "--quiet", "-c", "local-only"]).unwrap();
+            let mut journal = Journal::default();
+            let pushed = record_commit(&mut journal, &local, "Pushed commit");
+            assert_eq!(published(&journal, git, Direction::Undo), None);
+            git.run(&["push", "--quiet", "-u", "origin", "local-only"])
+                .unwrap();
+            let status = journal.status(git);
+            assert_eq!(status.state(Direction::Undo), StepState::Ready);
+            assert_eq!(status.published(Direction::Undo), Some("origin/local-only"));
+            assert_eq!(
+                published_note("origin/local-only"),
+                "It is already on origin/local-only; only your local branch moves."
+            );
+
+            record_commit(&mut journal, &local, "Local commit");
+            assert_eq!(published(&journal, git, Direction::Undo), None);
+            let reviewed = journal
+                .review(git, Direction::Undo, git.write_identity().unwrap())
+                .unwrap();
+            assert_eq!(reviewed.journal.unwrap().published, None);
+            step(&mut journal, git, Direction::Undo).unwrap();
+            git.run(&["reset", "--quiet", "--hard"]).unwrap();
+
+            let reviewed = journal
+                .review(git, Direction::Redo, git.write_identity().unwrap())
+                .unwrap();
+            assert_eq!(reviewed.journal.unwrap().published, None);
+
+            let reviewed = journal
+                .review(git, Direction::Undo, git.write_identity().unwrap())
+                .unwrap();
+            assert_eq!(
+                reviewed.journal.as_ref().unwrap().published.as_deref(),
+                Some("origin/local-only")
+            );
+            journal.execute(git, &reviewed).unwrap();
+            assert_ne!(head(git).1, pushed);
+            assert_eq!(published(&journal, git, Direction::Redo), None);
+        }
+
+        #[test]
+        fn any_remote_tracking_branch_counts_but_the_upstream_is_named_first() {
+            let (local, _other) = connected();
+            let git = &local.git;
+            let mut journal = Journal::default();
+            record_commit(&mut journal, &local, "Backed up");
+            git.run(&["push", "--quiet", "origin", "HEAD:backup"])
+                .unwrap();
+            assert_eq!(
+                published(&journal, git, Direction::Undo).as_deref(),
+                Some("origin/backup")
+            );
+            git.run(&["push", "--quiet"]).unwrap();
+            assert_eq!(
+                published(&journal, git, Direction::Undo).as_deref(),
+                Some("origin/main")
+            );
+        }
+
+        #[test]
+        fn branch_moves_warn_only_when_the_tip_they_leave_is_on_a_remote() {
+            let (local, other) = connected();
+            let git = &local.git;
+            let before = git.resolve_commit("HEAD").unwrap();
+            let pulled = publish(&other, "upstream.txt");
+            git.run(&["pull", "--quiet", "--ff-only"]).unwrap();
+            let mut journal = Journal::default();
+            journal.record_branch_move(
+                "pull",
+                "pull into main".into(),
+                "refs/heads/main".into(),
+                before,
+                pulled,
+            );
+            assert_eq!(
+                published(&journal, git, Direction::Undo).as_deref(),
+                Some("origin/main")
+            );
+            step(&mut journal, git, Direction::Undo).unwrap();
+            assert_eq!(published(&journal, git, Direction::Redo), None);
+            step(&mut journal, git, Direction::Redo).unwrap();
+
+            other
+                .git
+                .run(&["switch", "--quiet", "-c", "feature"])
+                .unwrap();
+            commit(&other, "feature.txt", "feature\n");
+            other
+                .git
+                .run(&["push", "--quiet", "-u", "origin", "feature"])
+                .unwrap();
+            git.run(&["fetch", "--quiet"]).unwrap();
+            commit(&local, "local.txt", "local\n");
+            let destination = git.write_identity().unwrap();
+            git.merge("origin/feature").unwrap();
+            let op = reviewed(Operation::Merge, "origin/feature", destination, None);
+            journal.record_operation(git, &op, Before::capture(git, &op));
+            assert_eq!(state(&journal, git, Direction::Undo), StepState::Ready);
+            assert_eq!(published(&journal, git, Direction::Undo), None);
+            git.run(&["push", "--quiet"]).unwrap();
+            assert_eq!(
+                published(&journal, git, Direction::Undo).as_deref(),
+                Some("origin/main")
+            );
+        }
     }
 }

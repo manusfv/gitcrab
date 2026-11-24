@@ -1,5 +1,6 @@
 use super::*;
 use gitcrab_core::platform::RepositoryLocation;
+use gitcrab_core::presentation::display_location;
 
 /// How long a burst of file changes may settle before it is read.
 const WATCH_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
@@ -54,7 +55,7 @@ impl GitCrab {
         }
         let Some(worktree) = location.worktree.to_str() else {
             self.open_failure = Some(OpenFailure {
-                path: location.worktree.display().to_string(),
+                path: display_location(&location.worktree),
                 details: "Repository folder names must be valid Unicode on this platform.".into(),
             });
             cx.notify();
@@ -70,14 +71,11 @@ impl GitCrab {
             .pop()
             .map(|label| label.name)
             .unwrap_or_else(|| shown.clone());
-        let mut metadata = vec![(
-            "Git metadata",
-            display_path(&location.git_dir.display().to_string()),
-        )];
+        let mut metadata = vec![("Git metadata", display_location(&location.git_dir))];
         if location.common_dir != location.git_dir {
             metadata.push((
                 "Shared Git metadata",
-                display_path(&location.common_dir.display().to_string()),
+                display_location(&location.common_dir),
             ));
         }
         let view = cx.weak_entity();
@@ -184,6 +182,7 @@ impl GitCrab {
         self.cancel_pending_run();
         self.branch_prompt = None;
         self.switch_after_branch = None;
+        self.switching_to_new_branch = None;
         for kind in [
             ReadKind::Snapshot,
             ReadKind::Details,

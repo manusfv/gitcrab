@@ -2,6 +2,34 @@
 
 use crate::git::Hunk;
 
+const CRLF_UNSUPPORTED: &str =
+    "Discard doesn't support CRLF line endings or filtered files yet. Use Git.";
+
+/// Why Discard cannot reverse hunks of `patch`, a working-tree comparison,
+/// judging by the patch alone. The worker checks file attributes and the
+/// working file itself again when it runs.
+pub fn discard_blocked_reason(patch: &str) -> Option<&'static str> {
+    if patch.lines().any(|l| l.starts_with("new file mode ")) {
+        return Some("Discard works on files Git already tracks. This file is new; delete it if you no longer need it.");
+    }
+    if [
+        "deleted file mode ",
+        "rename from ",
+        "rename to ",
+        "old mode ",
+        "new mode ",
+        "GIT binary patch",
+    ]
+    .iter()
+    .any(|s| patch.lines().any(|l| l.starts_with(s)))
+    {
+        return Some(
+            "Discard supports ordinary modified text files only. Use Git for this change type.",
+        );
+    }
+    patch.contains('\r').then_some(CRLF_UNSUPPORTED)
+}
+
 /// Returns the bytes that reversing a hunk would produce in a working file.
 ///
 /// `current` must contain the current contents of an ordinary UTF-8 file with
@@ -14,28 +42,12 @@ use crate::git::Hunk;
 /// coordinates, or source text that differs from the hunk.
 pub fn reversed_worktree(hunk: &Hunk, current: &[u8]) -> Result<Vec<u8>, String> {
     let patch = &hunk.patch;
-    if [
-        "new file mode ",
-        "deleted file mode ",
-        "rename from ",
-        "rename to ",
-        "old mode ",
-        "new mode ",
-        "GIT binary patch",
-    ]
-    .iter()
-    .any(|s| patch.lines().any(|l| l.starts_with(s)))
-    {
-        return Err(
-            "Discard supports ordinary modified text files only. Use Git for this change type."
-                .into(),
-        );
+    if let Some(reason) = discard_blocked_reason(patch) {
+        return Err(reason.into());
     }
     let text = std::str::from_utf8(current).map_err(|_| "Discard requires UTF-8 text")?;
     if text.contains('\r') {
-        return Err(
-            "Discard doesn't support CRLF line endings or filtered files yet. Use Git.".into(),
-        );
+        return Err(CRLF_UNSUPPORTED.into());
     }
     // Each hunk's working-file text and its replacement, located by the
     // new-side range, which counts lines in the current file.

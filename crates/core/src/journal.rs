@@ -72,6 +72,16 @@ pub enum Change {
         to_ref: String,
         to_id: String,
     },
+    /// Local branch `name` was created at `id` with the remote-tracking
+    /// branch `upstream` (`refs/remotes/origin/main`) as its upstream, and
+    /// HEAD switched to it from `from_ref` at `from_id`.
+    CheckoutNewBranch {
+        from_ref: String,
+        from_id: String,
+        name: String,
+        upstream: String,
+        id: String,
+    },
     /// Local branch `name` was created at `id`.
     CreateBranch { name: String, id: String },
     /// Tracked changes on top of `head` were saved as stash commit `stash`.
@@ -117,6 +127,10 @@ pub struct Entry {
 pub struct Step {
     pub direction: Direction,
     pub entry: Entry,
+    /// The remote-tracking branch (`origin/main`) that already has the
+    /// commits this step takes off the local branch, when one does.
+    #[serde(default)]
+    pub published: Option<String>,
 }
 
 /// Why the top entry cannot be undone or redone now.
@@ -127,6 +141,7 @@ pub enum Blocker {
     BranchMissing,
     BranchExists,
     BranchCheckedOut,
+    UpstreamMissing,
     CommitMissing,
     RootCommit,
     NoPreviousCommit,
@@ -147,6 +162,7 @@ impl Blocker {
             Self::BranchMissing => "The branch no longer exists.",
             Self::BranchExists => "A branch with this name exists again.",
             Self::BranchCheckedOut => "The branch is checked out. Switch to another branch first.",
+            Self::UpstreamMissing => "The remote-tracking branch the new branch tracked no longer exists. Fetch, then try again.",
             Self::CommitMissing => "The recorded commit is no longer in this repository.",
             Self::RootCommit => "This is the first commit on its branch. GitCrab does not undo a root commit.",
             Self::NoPreviousCommit => "HEAD had no commit before this action, so there is nothing to return to.",
@@ -155,7 +171,7 @@ impl Blocker {
             Self::PopNotRestorable => "Tracked files had other changes when the stash was popped, or the stash held untracked files, so GitCrab cannot separate the stash's changes from other work.",
             Self::StashMissing => "The stash entry is no longer in the stash list.",
             Self::StashPresent => "The stash entry is already back in the stash list.",
-            Self::OperationInProgress => "A merge, rebase, cherry-pick or revert is in progress, or the index has conflicts. Finish or abort it first.",
+            Self::OperationInProgress => crate::git::OPERATION_IN_PROGRESS,
             Self::Unchecked => "GitCrab could not check the repository. Refresh and try again.",
         }
     }
@@ -175,6 +191,9 @@ pub enum StepState {
 pub struct StepPreview {
     pub summary: String,
     pub blocked: Option<Blocker>,
+    /// As [`Step::published`], checked only for a step that can run.
+    #[serde(default)]
+    pub published: Option<String>,
 }
 
 /// Undo and Redo availability carried with each snapshot.
@@ -207,6 +226,18 @@ impl JournalStatus {
     pub fn summary(&self, direction: Direction) -> Option<&str> {
         self.preview(direction).map(|p| p.summary.as_str())
     }
+
+    /// The remote-tracking branch that already has what the top step takes
+    /// off the local branch, such as `origin/main`.
+    pub fn published(&self, direction: Direction) -> Option<&str> {
+        self.preview(direction)?.published.as_deref()
+    }
+}
+
+/// Explains that a step moves only the local branch, because `remote`
+/// already has the commits it takes off.
+pub fn published_note(remote: &str) -> String {
+    format!("It is already on {remote}; only your local branch moves.")
 }
 
 pub fn short(id: &str) -> &str {
@@ -253,6 +284,21 @@ impl Step {
                 let to = place(to_ref, to_id);
                 let (leave, enter) = if undo { (to, from) } else { (from, to) };
                 format!("Switch the working tree from {leave} back to {enter}. Git's normal checks for local changes apply: if switching would overwrite them, nothing changes.")
+            }
+            Change::CheckoutNewBranch {
+                from_ref,
+                from_id,
+                name,
+                upstream,
+                id,
+            } => {
+                let from = place(from_ref, from_id);
+                let upstream = crate::presentation::short_ref(upstream);
+                if undo {
+                    format!("Switch the working tree from {name} back to {from}, then delete branch {name}, which still points at {} where it was created from {upstream}. Git's normal checks for local changes apply: if switching would overwrite them, nothing changes. Redo creates the branch again.", short(id))
+                } else {
+                    format!("Create branch {name} again at {} tracking {upstream}, and switch the working tree from {from} to it. Git's normal checks for local changes apply: if switching would overwrite them, nothing changes.", short(id))
+                }
             }
             Change::CreateBranch { name, id } => {
                 if undo {

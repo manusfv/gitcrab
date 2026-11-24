@@ -62,6 +62,9 @@ fn command_glyph(command: Command) -> &'static str {
         Command::Fetch => "fetch",
         Command::Pull => "pull",
         Command::Push => "push",
+        Command::Abort => "back",
+        Command::Continue => "check",
+        Command::Skip => "right",
     }
 }
 
@@ -531,6 +534,9 @@ pub struct GitCrab {
     branch_prompt: Option<BranchPrompt>,
     /// The branch to switch to once its creation succeeds.
     switch_after_branch: Option<String>,
+    /// The branch just created and being switched to, whose checkout result
+    /// is worded as both steps.
+    switching_to_new_branch: Option<String>,
     split: bool,
     compact: bool,
     show_whitespace: bool,
@@ -767,6 +773,7 @@ impl GitCrab {
             pending_run: None,
             branch_prompt: None,
             switch_after_branch: None,
+            switching_to_new_branch: None,
             split: preferences.split,
             compact: preferences.compact,
             show_whitespace: false,
@@ -1063,21 +1070,7 @@ impl GitCrab {
                 super::trace::record("external-event-to-state", start, cx);
             }
         }
-        let (summary, body) = split_message(&self.state.draft);
-        let summary = summary.to_string();
-        let body = body.to_string();
-        for (input, value) in [(&self.wip_summary, summary.clone()), (&self.draft, summary)] {
-            input.update(cx, |s, cx| {
-                if s.marked_text_range(window, cx).is_none() && s.value().as_ref() != value {
-                    s.set_value(value, window, cx);
-                }
-            });
-        }
-        self.description.update(cx, |s, cx| {
-            if s.marked_text_range(window, cx).is_none() && s.value().as_ref() != body {
-                s.set_value(body, window, cx);
-            }
-        });
+        self.show_draft(window, cx);
         if lane == Lane::Snapshot && self.state.snapshot.is_some() {
             self.update_search(cx);
             self.install_watch(window, cx);
@@ -1748,6 +1741,9 @@ impl GitCrab {
             behind: snapshot
                 .and_then(|s| s.remote.upstream.as_ref())
                 .map_or(0, |u| u.behind),
+            in_progress: snapshot.is_some_and(|s| s.commit_blocked()),
+            sequence: snapshot.and_then(|s| s.sequence()),
+            conflicts: snapshot.map_or(0, |s| s.conflict_count()),
         }
     }
 
@@ -1758,13 +1754,15 @@ impl GitCrab {
             Command::Redo => Some(gitcrab_core::journal::Direction::Redo),
             _ => None,
         };
-        let summary = direction.and_then(|direction| {
-            self.state
-                .snapshot
-                .as_ref()
-                .and_then(|s| s.journal.summary(direction))
-        });
-        command.toolbar_tooltip(context, summary)
+        let journal = self.state.snapshot.as_ref().map(|s| &s.journal);
+        let summary = direction.and_then(|direction| journal.and_then(|j| j.summary(direction)));
+        let text = command.toolbar_tooltip(context, summary);
+        match direction.and_then(|direction| journal.and_then(|j| j.published(direction))) {
+            Some(remote) if command.availability(context).enabled() => {
+                format!("{text}. {}", gitcrab_core::journal::published_note(remote))
+            }
+            _ => text,
+        }
     }
 
     /// Runs Undo or Redo from its shortcut. A focused text field keeps its
@@ -1834,6 +1832,24 @@ impl GitCrab {
                 mode: gitcrab_core::git::PullMode::default(),
             },
             Command::Push => Operation::Push,
+            Command::Abort | Command::Skip => {
+                self.confirm_sequence_step(command, window, cx);
+                return;
+            }
+            Command::Continue => {
+                let Some(sequence) = self.state.snapshot.as_ref().and_then(|s| s.sequence()) else {
+                    return;
+                };
+                let message = (sequence.takes_message() && !self.state.draft.trim().is_empty())
+                    .then(|| self.state.draft.clone());
+                self.run_operation(
+                    Operation::Continue { message },
+                    sequence.name().to_owned(),
+                    window,
+                    cx,
+                );
+                return;
+            }
         };
         if op.takes_revision() && target.trim().is_empty() {
             self.state.notice = format!(
@@ -2152,6 +2168,33 @@ impl GitCrab {
                 )
         });
     }
+    /// Shows the controller's draft in the summary and description inputs,
+    /// leaving an input alone while it holds uncommitted IME text.
+    fn show_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (summary, body) = split_message(&self.state.draft);
+        let summary = summary.to_string();
+        let body = body.to_string();
+        for (input, value) in [(&self.wip_summary, summary.clone()), (&self.draft, summary)] {
+            input.update(cx, |s, cx| {
+                if s.marked_text_range(window, cx).is_none() && s.value().as_ref() != value {
+                    s.set_value(value, window, cx);
+                }
+            });
+        }
+        self.description.update(cx, |s, cx| {
+            if s.marked_text_range(window, cx).is_none() && s.value().as_ref() != body {
+                s.set_value(body, window, cx);
+            }
+        });
+    }
+
+    /// Replaces the draft with Git's prepared message for the operation in progress.
+    fn use_operation_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.use_operation_message();
+        self.show_draft(window, cx);
+        cx.notify();
+    }
+
     fn can_commit(&self) -> bool {
         !self.settings_open
             && !self.state.blocking_write()
@@ -2660,7 +2703,7 @@ impl GitCrab {
                 let copy = if path.is_empty() {
                     details.to_owned()
                 } else {
-                    format!("{path}\n{details}")
+                    format!("{}\n{details}", display_path(path))
                 };
                 el.child(
                     div()
