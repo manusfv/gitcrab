@@ -173,9 +173,11 @@ pub const NOTHING_TO_STASH: &str =
 
 mod model;
 mod remote;
+mod setup;
 
 pub use model::*;
 pub use remote::*;
+pub use setup::*;
 
 #[cfg(test)]
 mod tests {

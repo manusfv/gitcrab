@@ -103,6 +103,11 @@ impl Fixture {
         fixture
     }
 
+    /// The temporary folder that holds the worktree, removed with the fixture.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn write(&self, name: &str, text: &str) {
         fs::write(self.git.path.join(name), text).unwrap();
     }

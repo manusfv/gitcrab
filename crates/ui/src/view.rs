@@ -38,9 +38,6 @@ use gpui::component::{
 use gpui::{prelude::*, *};
 use std::ops::Range;
 
-/// What startup restores, shown where recent repositories are listed.
-const SESSION_NOTE: &str = "At startup GitCrab reopens the repositories that were open in your tabs. Empty tabs and commit drafts are not restored.";
-
 /// The action whose key binding a command's tooltip shows.
 fn command_action(command: Command) -> Option<&'static dyn gpui::Action> {
     match command {
@@ -317,6 +314,8 @@ actions!(
     gitcrab,
     [
         Open,
+        CloneRepository,
+        CreateRepository,
         Refresh,
         Back,
         Next,
@@ -1664,7 +1663,7 @@ impl GitCrab {
         self.references_open = true;
         let weak = cx.weak_entity();
         let closed = weak.clone();
-        window.open_alert_dialog(cx, move |d, w, cx| {
+        window.open_modal(cx, move |d, w, cx| {
             let content = weak.update(cx, |v, cx| v.sidebar(w, cx)).ok();
             let closed = closed.clone();
             d.frame(
@@ -1748,26 +1747,17 @@ impl GitCrab {
         }
     }
 
-    /// Tooltip for a command, naming the journal step Undo or Redo acts on.
+    /// A toolbar command's tooltip, naming the journal step Undo or Redo acts on.
     fn command_tooltip(&self, command: Command, context: &CommandContext) -> String {
         let direction = match command {
-            Command::Undo => gitcrab_core::journal::Direction::Undo,
-            Command::Redo => gitcrab_core::journal::Direction::Redo,
-            Command::Fetch | Command::Pull | Command::Push => {
-                let upstream = self
-                    .state
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.remote.network_upstream())
-                    .map(|u| u.name.as_str());
-                return command.describe_with_upstream(context, upstream);
-            }
-            _ => return command.describe(context),
+            Command::Undo => Some(gitcrab_core::journal::Direction::Undo),
+            Command::Redo => Some(gitcrab_core::journal::Direction::Redo),
+            _ => None,
         };
         let journal = self.state.snapshot.as_ref().map(|s| &s.journal);
-        let text =
-            command.describe_with_summary(context, journal.and_then(|j| j.summary(direction)));
-        match journal.and_then(|j| j.published(direction)) {
+        let summary = direction.and_then(|direction| journal.and_then(|j| j.summary(direction)));
+        let text = command.toolbar_tooltip(context, summary);
+        match direction.and_then(|direction| journal.and_then(|j| j.published(direction))) {
             Some(remote) if command.availability(context).enabled() => {
                 format!("{text}. {}", gitcrab_core::journal::published_note(remote))
             }
@@ -1921,7 +1911,6 @@ impl GitCrab {
             ))
             .px_0()
             .child(icon("down").size(px(CARET_SIZE)))
-            .tooltip("Fetch and pull options")
             .dropdown_menu(move |menu, _, _| {
                 let fetch_view = weak.clone();
                 let mut menu = menu.item(components::menu_item("Fetch", fetch).on_click(
@@ -2022,7 +2011,7 @@ impl GitCrab {
         let repo = display_path(&self.state.path);
         let weak = cx.weak_entity();
         let scroll = self.activity_scroll.clone();
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_modal(cx, move |dialog, _, cx| {
             let records = weak
                 .read_with(cx, |v, _| v.activity.clone())
                 .unwrap_or_default();
@@ -2146,7 +2135,7 @@ impl GitCrab {
                             footer.leading(
                                 components::basic(
                                     Button::new("activity-copy-all")
-                                        .icon(icon("copy"))
+                                        .icon(components::label_icon("copy"))
                                         .label("Copy all"),
                                     components::ButtonKind::Ghost,
                                     ControlSize::Compact,
@@ -2569,15 +2558,38 @@ impl GitCrab {
                         "Choose a local Git repository to browse history and review changes.",
                     ),
                 )
-                .child(
-                    Button::new("browse-repository")
-                        .primary()
-                        .tab_stop(true)
-                        .icon(icon("folder"))
-                        .label("Browse…")
+                .child({
+                    let start = |id: &'static str, glyph: &'static str, label: &'static str| {
+                        components::style(
+                            Button::new(id)
+                                .tab_stop(true)
+                                .icon(components::label_icon(glyph))
+                                .label(label),
+                            components::ButtonKind::Secondary,
+                            ControlSize::Regular,
+                            cx,
+                        )
                         .set_disabled(self.settings_open)
-                        .on_click(|_, w, cx| w.dispatch_action(Box::new(Open), cx)),
-                )
+                    };
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            start("open-repository", "folder", "Open")
+                                .on_click(|_, w, cx| w.dispatch_action(Box::new(Open), cx)),
+                        )
+                        .child(
+                            start("clone-repository", "remote", "Clone").on_click(|_, w, cx| {
+                                w.dispatch_action(Box::new(CloneRepository), cx)
+                            }),
+                        )
+                        .child(
+                            start("create-repository", "plus", "Create").on_click(|_, w, cx| {
+                                w.dispatch_action(Box::new(CreateRepository), cx)
+                            }),
+                        )
+                })
                 .when(!recent.is_empty(), |el| {
                     el.child(
                         div()
@@ -2592,75 +2604,80 @@ impl GitCrab {
                                     .text_role(Role::TextMuted)
                                     .child("Recent repositories"),
                             )
-                            .child(scroll_area(
-                                "new-tab-recent-list",
-                                &self.recent_scroll,
+                            .child(
                                 div()
-                                    .id("new-tab-recent-list")
-                                    .max_h(scaled(180.))
-                                    .children(
-                                        path_labels(&recent)
-                                            .into_iter()
-                                            .zip(recent.clone())
-                                            .enumerate()
-                                            .map(|(index, (label, path))| {
-                                                self.button(("new-tab-recent", index), "")
-                                                    .icon(icon("history"))
-                                                    .w_full()
-                                                    .h(scaled(40.))
-                                                    .justify_start()
-                                                    .overflow_hidden()
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .flex()
-                                                            .flex_col()
-                                                            // Not `truncate()`: gpui keeps the first
-                                                            // measure of no-wrap text, taken here before
-                                                            // the width is known, so it would clip without
-                                                            // an ellipsis. A one-line clamp re-measures.
+                                    .w_full()
+                                    .p(scaled(4.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_role(Role::BorderDivider)
+                                    .bg_role(Role::SurfaceChrome)
+                                    .overflow_hidden()
+                                    .child(scroll_area(
+                                        "new-tab-recent-list",
+                                        &self.recent_scroll,
+                                        div()
+                                            .id("new-tab-recent-list")
+                                            .max_h(scaled(180.))
+                                            .children(
+                                                path_labels(&recent)
+                                                    .into_iter()
+                                                    .zip(recent.clone())
+                                                    .enumerate()
+                                                    .map(|(index, (label, path))| {
+                                                        self.button(("new-tab-recent", index), "")
+                                                            .icon(icon("history"))
+                                                            .w_full()
+                                                            .h(scaled(40.))
+                                                            .justify_start()
+                                                            .overflow_hidden()
                                                             .child(
                                                                 div()
-                                                                    .w_full()
-                                                                    .overflow_hidden()
-                                                                    .text_ellipsis()
-                                                                    .line_clamp(1)
-                                                                    .child(label.suffix),
+                                                                    .flex_1()
+                                                                    .min_w_0()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    // Not `truncate()`: gpui keeps the first
+                                                                    // measure of no-wrap text, taken here before
+                                                                    // the width is known, so it would clip without
+                                                                    // an ellipsis. A one-line clamp re-measures.
+                                                                    .child(
+                                                                        div()
+                                                                            .w_full()
+                                                                            .overflow_hidden()
+                                                                            .text_ellipsis()
+                                                                            .line_clamp(1)
+                                                                            .child(label.suffix),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .w_full()
+                                                                            .overflow_hidden()
+                                                                            .text_ellipsis()
+                                                                            .line_clamp(1)
+                                                                            .text_size(scaled(
+                                                                                TEXT_SIZE_CAPTION,
+                                                                            ))
+                                                                            .text_role(
+                                                                                Role::TextMuted,
+                                                                            )
+                                                                            .child(label.location),
+                                                                    ),
                                                             )
-                                                            .child(
-                                                                div()
-                                                                    .w_full()
-                                                                    .overflow_hidden()
-                                                                    .text_ellipsis()
-                                                                    .line_clamp(1)
-                                                                    .text_size(scaled(
-                                                                        TEXT_SIZE_CAPTION,
-                                                                    ))
-                                                                    .text_role(Role::TextMuted)
-                                                                    .child(label.location),
-                                                            ),
-                                                    )
-                                                    .tooltip(display_path(&path))
-                                                    .tab_stop(true)
-                                                    .set_disabled(self.settings_open)
-                                                    .on_click(move |_, w, cx| {
-                                                        w.dispatch_action(
+                                                            .tooltip(display_path(&path))
+                                                            .tab_stop(true)
+                                                            .set_disabled(self.settings_open)
+                                                            .on_click(move |_, w, cx| {
+                                                                w.dispatch_action(
                                                             Box::new(super::workspace::OpenRecent(
                                                                 path.clone(),
                                                             )),
                                                             cx,
                                                         );
-                                                    })
-                                            }),
-                                    ),
-                            ))
-                            .child(
-                                div()
-                                    .pt_1()
-                                    .text_size(scaled(TEXT_SIZE_CAPTION))
-                                    .text_role(Role::TextMuted)
-                                    .child(SESSION_NOTE),
+                                                            })
+                                                    }),
+                                            ),
+                                    )),
                             ),
                     )
                 })
@@ -2672,7 +2689,7 @@ impl GitCrab {
                     .bottom(px(PAGE_CORNER_INSET))
                     .child(
                         self.button("new-tab-appearance", "Appearance")
-                            .icon(icon("settings"))
+                            .icon(components::label_icon("settings"))
                             .on_click(cx.listener(|v, _, w, cx| {
                                 v.open_settings(w, cx);
                             })),
@@ -3028,20 +3045,24 @@ impl Render for GitCrab {
                 )
             })
             .child({
-                // Index 0 is "Browse", the rest follow `recent`.
+                // Open, Clone and Create come first; the rest follow `recent`.
+                const STARTS: usize = 3;
                 let choices = recent
                     .iter()
                     .map(|(path, _)| path.clone())
                     .collect::<Vec<_>>();
                 let action_focus = menu_focus.clone();
-                let entries = std::iter::once(
-                    PickerItem::new("Browse for a repository…")
+                let entries = [
+                    PickerItem::new("Open repository…")
                         .icon("folder")
                         .when_some(components::shortcut_text(&Open, window), |item, key| {
                             item.note(key)
                         })
                         .into(),
-                )
+                    PickerItem::new("Clone repository…").icon("remote").into(),
+                    PickerItem::new("Create repository…").icon("plus").into(),
+                ]
+                .into_iter()
                 .chain((!recent.is_empty()).then(|| PickerEntry::Heading("Recent".into())))
                 .chain(recent.iter().map(|(path, label)| {
                     PickerItem::new(label.suffix.clone())
@@ -3067,8 +3088,12 @@ impl Render for GitCrab {
                     // Dispatch from this view's own focus node, as the old menu's
                     // action context did, so it does not depend on where focus
                     // happens to be once the list has closed.
-                    move |index, window, cx| match index.checked_sub(1) {
-                        None => action_focus.dispatch_action(&Open, window, cx),
+                    move |index, window, cx| match index.checked_sub(STARTS) {
+                        None => match index {
+                            0 => action_focus.dispatch_action(&Open, window, cx),
+                            1 => action_focus.dispatch_action(&CloneRepository, window, cx),
+                            _ => action_focus.dispatch_action(&CreateRepository, window, cx),
+                        },
                         Some(recent) => {
                             if let Some(path) = choices.get(recent) {
                                 action_focus.dispatch_action(

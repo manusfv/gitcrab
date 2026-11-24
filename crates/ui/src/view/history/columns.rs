@@ -6,8 +6,6 @@ const RESIZE_HALF_WIDTH: f32 = 5.;
 /// Room at the default font size kept clear at the right of the history table
 /// for the floating Columns button, so it never covers a column header.
 const COLUMNS_BUTTON_ROOM: f32 = 32.;
-/// How much the Widen and Narrow menu items change a column's width.
-const COLUMN_WIDTH_STEP: f32 = 32.;
 
 #[derive(Clone)]
 struct DraggedColumn {
@@ -48,12 +46,12 @@ impl GitCrab {
         }
     }
 
-    /// Column visibility, order and width controls shared by the header menu and
-    /// the Columns button, so every drag and resize action has a keyboard route.
+    /// Column visibility controls shared by the header menu and the Columns
+    /// button. Columns are reordered and resized by dragging their headers.
     pub(super) fn columns_menu(
         weak: WeakEntity<Self>,
         mut menu: PopupMenu,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
         let Some(view) = weak.upgrade() else {
@@ -79,56 +77,6 @@ impl GitCrab {
                     }),
             );
         }
-        let visible: Vec<_> = layout.visible().map(|e| e.column).collect();
-        let order = weak.clone();
-        let order_columns = visible.clone();
-        menu = menu
-            .separator()
-            .submenu("Move column", window, cx, move |mut menu, _, _| {
-                for (index, column) in order_columns.iter().copied().enumerate() {
-                    for (delta, direction) in [(-1, "left"), (1, "right")] {
-                        let weak = order.clone();
-                        let at_end = (delta < 0 && index == 0)
-                            || (delta > 0 && index + 1 == order_columns.len());
-                        menu = menu.item(
-                            components::menu_item(
-                                format!("Move {} {direction}", column.label()),
-                                !at_end,
-                            )
-                            .on_click(move |_, w, cx| {
-                                let _ = weak.update(cx, |v, cx| {
-                                    v.materialize_columns();
-                                    v.history_columns.move_visible(column, delta);
-                                    v.columns_changed(w, cx);
-                                });
-                            }),
-                        );
-                    }
-                }
-                menu
-            });
-        let widths = weak.clone();
-        menu = menu.submenu("Column width", window, cx, move |mut menu, _, _| {
-            for column in visible.iter().copied() {
-                for (delta, verb) in [(COLUMN_WIDTH_STEP, "Widen"), (-COLUMN_WIDTH_STEP, "Narrow")]
-                {
-                    let weak = widths.clone();
-                    menu = menu.item(
-                        components::menu_item(format!("{verb} {}", column.label()), true).on_click(
-                            move |_, w, cx| {
-                                let _ = weak.update(cx, |v, cx| {
-                                    v.materialize_columns();
-                                    v.history_columns.resize_by(column, delta);
-                                    v.columns_changed(w, cx);
-                                });
-                            },
-                        ),
-                    );
-                }
-            }
-            menu
-        });
-        let weak = weak.clone();
         menu.separator()
             .item(
                 components::menu_item("Reset columns", true).on_click(move |_, w, cx| {

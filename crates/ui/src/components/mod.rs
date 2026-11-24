@@ -32,7 +32,7 @@ pub mod prelude {
     pub use super::layout::*;
     pub use super::list_row::{disclosure, ListRow};
     pub use super::modal::{
-        modal_body, ModalFooter, ModalFrame as _, ModalHeader, ModalWidth, Tone,
+        modal_body, ModalFooter, ModalFrame as _, ModalHeader, ModalWidth, OpenModal as _, Tone,
     };
     pub use super::picker::{Picker, PickerEntry, PickerItem};
 }

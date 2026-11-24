@@ -794,6 +794,33 @@ pub trait GitBackend: Send + Sync {
     /// Returns a message if `path` is not inside a Git worktree.
     fn discover(&self, path: &Path) -> Result<RepositoryLocation, String>;
 
+    /// Creates a repository in `path` on `branch`, creating the folder if
+    /// needed, with a first commit that adds a README so the branch exists.
+    /// Blocks while Git runs, so call it off the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `path` already holds a repository, the branch
+    /// name is not valid, or Git fails, for example because no Git identity
+    /// is set for the commit.
+    fn init(&self, path: &Path, branch: &str) -> Result<(), String>;
+
+    /// Clones `url` into `destination`, which must not exist or be empty.
+    /// Blocks while Git runs, with no time limit, until it finishes or
+    /// `cancelled` is set; a cancelled or failed clone leaves no folder it
+    /// created behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plain explanation for common failures, followed by Git's
+    /// diagnostics, or a cancellation.
+    fn clone_repository(
+        &self,
+        url: &str,
+        destination: &Path,
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String>;
+
     /// Opens a check of Git's ignore rules for the trusted worktree at
     /// `location`, which the file watcher uses to skip changes to ignored
     /// files such as build output. Blocks while it runs Git, so call it off

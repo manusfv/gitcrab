@@ -43,6 +43,7 @@ fn patch_args(command: &str) -> Vec<&str> {
 
 mod network;
 mod read;
+pub mod setup;
 #[cfg(test)]
 mod tests;
 mod write;

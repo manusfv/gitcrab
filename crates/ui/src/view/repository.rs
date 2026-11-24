@@ -80,7 +80,7 @@ impl GitCrab {
         }
         let view = cx.weak_entity();
         let scroll = ScrollHandle::new();
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert(cx, move |dialog, _, cx| {
             let accepted = view.clone();
             let closed = view.clone();
             let location = location.clone();
@@ -108,10 +108,6 @@ impl GitCrab {
                         .tone_glyph(Tone::Warning, "shield-alert"),
                     ModalWidth::Medium,
                     cx,
-                )
-                .confirm()
-                .button_props(
-                    gpui::component::dialog::DialogButtonProps::default().ok_text("Trust and open"),
                 )
                 .footer(
                     ModalFooter::new()
@@ -148,6 +144,25 @@ impl GitCrab {
             });
             cx.notify();
         }
+    }
+
+    /// Opens a repository GitCrab just created or cloned. Its configuration
+    /// and metadata come from the user's own Git, not from anyone else, so it
+    /// is trusted without asking.
+    pub(crate) fn open_created(
+        &mut self,
+        location: RepositoryLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.awaiting_trust || self.state.busy {
+            return;
+        }
+        match crate::preferences::remember_trust(&location, cx) {
+            Ok(result) => self.observe_persistence(result, "repository trust", cx),
+            Err(error) => self.persistence_error("repository trust", error),
+        }
+        self.open_trusted(location, window, cx);
     }
 
     fn open_trusted(

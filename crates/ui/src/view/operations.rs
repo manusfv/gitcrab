@@ -301,7 +301,7 @@ impl GitCrab {
         let cancel_focus = cx.focus_handle();
         let initial_focus = cancel_focus.clone();
         let scroll = ScrollHandle::new();
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert(cx, move |dialog, _, cx| {
             let weak = weak.clone();
             let reviewed = reviewed.clone();
             let confirm = components::style(

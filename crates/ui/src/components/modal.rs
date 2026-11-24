@@ -1,4 +1,19 @@
-//! Modal dialogs: the shared frame every dialog is built from.
+//! Modal dialogs: the parts every dialog is built from, and the two ways to
+//! open one.
+//!
+//! Dialogs come in two kinds, as in most UI libraries:
+//!
+//! - [`OpenModal::open_modal`] for a dialog that asks nothing critical:
+//!   reference content, lists, settings. Escape, the close button and a
+//!   press outside it all close it.
+//! - [`OpenModal::open_alert`] for a dialog that needs an answer: a
+//!   destructive, security or state-changing confirmation. Escape cancels
+//!   it, but a press outside does nothing, so a stray click cannot dismiss
+//!   it.
+//!
+//! Both are centered in the window and enter the same way. The library's own
+//! `open_dialog` and `open_alert_dialog` are banned outside this module (see
+//! `clippy.toml`) so no dialog can drift from these defaults.
 //!
 //! A dialog is a [`ModalHeader`] and a width applied with [`ModalFrame`], a
 //! [`modal_body`] passed to [`ModalFrame::body`] and a [`ModalFooter`]. The
@@ -11,10 +26,63 @@ use crate::theme::Role;
 use crate::theme::*;
 use gpui::component::{
     button::Button,
-    dialog::{AlertDialog, Dialog, DialogContent},
+    dialog::{AlertDialog, Dialog, DialogContent, DialogEntrance},
     WindowExt,
 };
 use gpui::{prelude::*, *};
+
+/// Opens dialogs with the placement and dismissal every GitCrab dialog
+/// shares. Each builder should apply [`ModalFrame::frame`], and runs again
+/// whenever the dialog layer is rebuilt, so keep it cheap.
+pub trait OpenModal {
+    /// Opens a dialog that closes on Escape or a press outside it.
+    fn open_modal<F>(&mut self, cx: &mut App, build: F)
+    where
+        F: Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static;
+
+    /// Opens a dialog that needs an answer. Escape runs its Cancel path; a
+    /// press outside it is ignored.
+    fn open_alert<F>(&mut self, cx: &mut App, build: F)
+    where
+        F: Fn(AlertDialog, &mut Window, &mut App) -> AlertDialog + 'static;
+}
+
+const ENTRANCE: DialogEntrance = DialogEntrance::FadeSlide;
+
+impl OpenModal for Window {
+    fn open_modal<F>(&mut self, cx: &mut App, build: F)
+    where
+        F: Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
+    {
+        #[allow(clippy::disallowed_methods)]
+        self.open_dialog(cx, move |dialog, window, cx| {
+            build(
+                dialog
+                    .centered()
+                    .entrance(ENTRANCE)
+                    .keyboard(true)
+                    .overlay_closable(true),
+                window,
+                cx,
+            )
+        });
+    }
+
+    fn open_alert<F>(&mut self, cx: &mut App, build: F)
+    where
+        F: Fn(AlertDialog, &mut Window, &mut App) -> AlertDialog + 'static,
+    {
+        // The library's alert dialog never closes from a backdrop press.
+        #[allow(clippy::disallowed_methods)]
+        self.open_alert_dialog(cx, move |dialog, window, cx| {
+            build(
+                dialog.centered().entrance(ENTRANCE).keyboard(true),
+                window,
+                cx,
+            )
+        });
+    }
+}
 
 /// The space between a dialog's edge and its content.
 const INSET: f32 = 20.;
@@ -186,8 +254,8 @@ impl RenderOnce for ModalHeader {
     }
 }
 
-/// Applies the shared frame to a library dialog: its header, its width, and
-/// a body region between the header and the footer.
+/// Applies the shared frame to a dialog opened with [`OpenModal`]: its
+/// header, its width, and a body region between the header and the footer.
 ///
 /// A dialog is as tall as its content until it reaches the window's limit;
 /// then only the body gives way. Call [`Self::frame`] before the body.
@@ -357,33 +425,79 @@ impl RenderOnce for ModalFooter {
 /// What the dialog acts on, such as a file or repository path, in code type
 /// so it can be checked before reading the rest. `detail` is a second,
 /// quieter line such as the containing repository.
-pub fn subject(title: impl Into<SharedString>, detail: Option<SharedString>) -> Div {
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap(scaled(2.))
-        .px(scaled(NOTE_PADDING_X))
-        .py(scaled(NOTE_PADDING_Y))
-        .rounded(px(NOTE_RADIUS))
-        .bg_role(Role::SurfaceChrome)
-        .border_1()
-        .border_role(Role::BorderDivider)
-        .font_family(CODE_FONT)
-        .child(
-            div()
-                .text_size(scaled(NOTE_TEXT_SIZE))
-                .text_role(Role::TextDefault)
-                .child(title.into()),
-        )
-        .when_some(detail, |el, detail| {
-            el.child(
+pub fn subject(title: impl Into<SharedString>, detail: Option<SharedString>) -> Subject {
+    Subject {
+        title: title.into(),
+        detail,
+    }
+}
+
+/// See [`subject`]. Like a code block, each line stays whole: a line wider
+/// than the box scrolls sideways under a slim scrollbar instead of wrapping,
+/// so a path is never broken at an arbitrary character.
+#[derive(IntoElement)]
+pub struct Subject {
+    title: SharedString,
+    detail: Option<SharedString>,
+}
+
+impl RenderOnce for Subject {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let id = SharedString::from(format!("modal-subject-{}", self.title));
+        let scroll = window
+            .use_keyed_state(id.clone(), cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let overflowing = super::layout::overflows_horizontally(&scroll);
+        super::layout::track_horizontal_overflow(div(), &scroll, overflowing)
+            .relative()
+            .w_full()
+            .px(scaled(NOTE_PADDING_X))
+            .pt(scaled(NOTE_PADDING_Y))
+            // Room for the scrollbar under the last line while it is shown.
+            .pb(scaled(
+                NOTE_PADDING_Y
+                    + if overflowing {
+                        f32::from(super::layout::SCROLLBAR_GUTTER)
+                    } else {
+                        0.
+                    },
+            ))
+            .rounded(px(NOTE_RADIUS))
+            .bg_role(Role::SurfaceChrome)
+            .border_1()
+            .border_role(Role::BorderDivider)
+            .font_family(CODE_FONT)
+            .child(
                 div()
-                    .text_size(scaled(NOTE_DETAIL_SIZE))
-                    .text_role(Role::TextMuted)
-                    .child(detail),
+                    .id(ElementId::Name(id.clone()))
+                    .w_full()
+                    .overflow_x_scroll()
+                    .track_scroll(&scroll)
+                    .flex()
+                    .flex_col()
+                    // Lines take their text's width, so a long one overflows
+                    // the scroll region instead of its own clipped box.
+                    .items_start()
+                    .gap(scaled(2.))
+                    .whitespace_nowrap()
+                    .child(
+                        div()
+                            .text_size(scaled(NOTE_TEXT_SIZE))
+                            .text_role(Role::TextDefault)
+                            .child(self.title),
+                    )
+                    .when_some(self.detail, |el, detail| {
+                        el.child(
+                            div()
+                                .text_size(scaled(NOTE_DETAIL_SIZE))
+                                .text_role(Role::TextMuted)
+                                .child(detail),
+                        )
+                    }),
             )
-        })
+            .child(super::layout::horizontal_scrollbar_overlay(id, &scroll))
+    }
 }
 
 /// Explanatory body text.
@@ -444,6 +558,23 @@ pub fn section(title: impl Into<SharedString>) -> Div {
             .text_role(Role::TextMuted)
             .child(title.into()),
     )
+}
+
+/// A form control under its label, such as a text field.
+pub fn field(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(scaled(6.))
+        .child(
+            div()
+                .text_size(scaled(TEXT_SIZE_SMALL))
+                .font_weight(FontWeight::MEDIUM)
+                .text_role(Role::TextSecondary)
+                .child(label.into()),
+        )
+        .child(control)
 }
 
 /// A labelled value, such as a path in a details list.
@@ -649,7 +780,7 @@ mod tests {
     fn open_alert(cx: &mut VisualTestContext, scroll: &ScrollHandle, count: usize) {
         let scroll = scroll.clone();
         cx.update(move |window, cx| {
-            window.open_alert_dialog(cx, move |dialog, _, cx| {
+            window.open_alert(cx, move |dialog, _, cx| {
                 dialog
                     .frame(
                         ModalHeader::new("Title").description("Description"),
@@ -744,12 +875,66 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_non_alert_dialog_scrolls_its_body_the_same_way(cx: &mut TestAppContext) {
+    fn a_dialog_sits_in_the_middle_of_the_window(cx: &mut TestAppContext) {
+        let cx = window(cx, 800.);
+        let scroll = ScrollHandle::new();
+        open_alert(cx, &scroll, 3);
+
+        let surface = bounds(cx, "dialog-0");
+        assert!(
+            (surface.center().y - px(400.)).abs() <= px(1.),
+            "surface {surface:?} is not vertically centered in an 800px window"
+        );
+        assert!(
+            (surface.center().x - px(450.)).abs() <= px(1.),
+            "surface {surface:?} is not horizontally centered in a 900px window"
+        );
+    }
+
+    #[gpui::test]
+    fn a_press_outside_the_dialog_cancels_it(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+        let cx = window(cx, 800.);
+        let cancelled = Rc::new(Cell::new(false));
+        let confirmed = Rc::new(Cell::new(false));
+        let (on_cancel, on_ok) = (cancelled.clone(), confirmed.clone());
+        cx.update(move |window, cx| {
+            window.open_modal(cx, move |dialog, _, cx| {
+                let (on_cancel, on_ok) = (on_cancel.clone(), on_ok.clone());
+                dialog
+                    .frame(ModalHeader::new("Title"), ModalWidth::Small, cx)
+                    .footer(footer())
+                    .on_cancel(move |_, _, _| {
+                        on_cancel.set(true);
+                        true
+                    })
+                    .on_ok(move |_, _, _| {
+                        on_ok.set(true);
+                        true
+                    })
+            })
+        });
+        draw(cx);
+
+        let surface = bounds(cx, "dialog-0");
+        cx.simulate_click(surface.center(), Modifiers::default());
+        draw(cx);
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+
+        cx.simulate_click(point(px(40.), px(780.)), Modifiers::default());
+        draw(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(cancelled.get());
+        assert!(!confirmed.get());
+    }
+
+    #[gpui::test]
+    fn a_regular_dialog_scrolls_its_body_the_same_way(cx: &mut TestAppContext) {
         let cx = window(cx, 480.);
         let scroll = ScrollHandle::new();
         let handle = scroll.clone();
         cx.update(move |window, cx| {
-            window.open_dialog(cx, move |dialog, _, cx| {
+            window.open_modal(cx, move |dialog, _, cx| {
                 dialog
                     .frame(ModalHeader::new("Title").closable(), ModalWidth::Medium, cx)
                     .body(&handle, rows(60))
@@ -763,9 +948,25 @@ mod tests {
         assert!(scroll.max_offset().y > px(0.));
     }
 
+    #[gpui::test]
+    fn a_press_outside_an_alert_leaves_it_open(cx: &mut TestAppContext) {
+        let cx = window(cx, 800.);
+        let scroll = ScrollHandle::new();
+        open_alert(cx, &scroll, 3);
+
+        let surface = bounds(cx, "dialog-0");
+        assert!(
+            (surface.center().y - px(400.)).abs() <= px(1.),
+            "alert {surface:?} is not vertically centered in an 800px window"
+        );
+        cx.simulate_click(point(px(40.), px(780.)), Modifiers::default());
+        draw(cx);
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    }
+
     fn open_filled(cx: &mut VisualTestContext) {
         cx.update(|window, cx| {
-            window.open_alert_dialog(cx, |dialog, _, cx| {
+            window.open_modal(cx, |dialog, _, cx| {
                 dialog
                     .frame(ModalHeader::new("Title"), ModalWidth::Medium, cx)
                     .fill_body(
