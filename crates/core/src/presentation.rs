@@ -508,9 +508,8 @@ pub fn commit_branch(
         snapshot
             .remote_refs
             .iter()
-            .find(|remote| remote.full_name == full)
+            .find(|remote| remote.full_name == full && !full.ends_with("/HEAD"))
             .map(|remote| remote.label.clone())
-            .filter(|label| !label.ends_with("/HEAD"))
     };
     if let Some((kind, name)) = previewed {
         if snapshot.loaded_ref_tip(kind, name) == Some(id) {
@@ -792,17 +791,23 @@ mod tests {
             refs: refs.iter().map(|r| r.to_string()).collect(),
             ..Default::default()
         };
+        let origin_head = ReferenceTip {
+            label: "origin".into(),
+            full_name: "refs/remotes/origin/HEAD".into(),
+            tip: "c4".into(),
+        };
         let snapshot = RepoSnapshot {
             commits: vec![
-                commit("c1", &["origin/HEAD", "origin/main", "feature/clean"]),
-                commit("c2", &["origin/HEAD", "origin/topic"]),
+                commit("c1", &["origin/main", "feature/clean"]),
+                commit("c2", &["origin/topic"]),
                 commit("c3", &["v1"]),
+                commit("c4", &["origin"]),
             ],
             branches: vec![LocalBranch {
                 name: "feature/clean".into(),
                 tip: "c1".into(),
             }],
-            remote_refs: vec![remote("origin/HEAD"), remote("origin/main"), {
+            remote_refs: vec![origin_head, remote("origin/main"), {
                 let mut topic = remote("origin/topic");
                 topic.tip = "c2".into();
                 topic
@@ -823,6 +828,7 @@ mod tests {
             Some("origin/topic")
         );
         assert_eq!(commit_branch(&snapshot, "c3", None), None);
+        assert_eq!(commit_branch(&snapshot, "c4", None), None);
         assert_eq!(commit_branch(&snapshot, "missing", None), None);
         let selected = Some((ReferenceKind::Remote, "refs/remotes/origin/main"));
         assert_eq!(
