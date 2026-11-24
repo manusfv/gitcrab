@@ -42,9 +42,10 @@ use tokio::sync::{oneshot, watch};
 
 /// The minisign public key update bundles are signed with (the contents of
 /// the `.pub` file from `cargo packager signer generate`; see
-/// `docs/updates.md`). Checks work while it is empty, but without it no bundle
-/// can be verified, so [`ManifestUpdater`] reports installing as unsupported.
-pub const UPDATE_PUBLIC_KEY: &str = "";
+/// `docs/updates.md`). Its private half signs releases in CI. Replacing it
+/// means copies built with the old key can no longer install updates and must
+/// be updated by hand once.
+pub const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVGOTVDNjNDOTM3Q0QwMEUKUldRTzBIeVRQTWFWWHhzT0RnSHoxSk94Szl0Mm5XcHlrN3ByNkFLSFp4a3FYamtGUVB1a3RCS0YK";
 
 /// Where each channel's manifest is published: `<base>/<channel>.json`.
 const MANIFEST_BASE: &str = "https://raw.githubusercontent.com/manusfv/gitcrab/update-manifests";
