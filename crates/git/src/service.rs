@@ -13,6 +13,14 @@ use std::sync::{
 };
 use tokio::sync::oneshot;
 
+/// What a successful local operation reports beyond its effect on HEAD.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Ran {
+    /// A popped stash's staged changes could not be restored, so all of
+    /// its changes were applied unstaged.
+    pub staging_dropped: bool,
+}
+
 /// Resolves, revalidates and runs reviewed operations against a repository.
 pub(crate) trait OperationRun: Sized {
     fn capture(
@@ -27,8 +35,8 @@ pub(crate) trait OperationRun: Sized {
         target: String,
         destination: crate::git::WriteIdentity,
     ) -> Result<Self, String>;
-    fn execute(&self, git: &Git) -> Result<(), WriteError>;
-    fn run_captured(&self, git: &Git) -> Result<(), WriteError>;
+    fn execute(&self, git: &Git) -> Result<Ran, WriteError>;
+    fn run_captured(&self, git: &Git) -> Result<Ran, WriteError>;
     fn execute_network(
         &self,
         git: &Git,
@@ -47,17 +55,34 @@ impl OperationRun for ReviewedOperation {
         if op.journal_direction().is_some() {
             return Err("Undo and Redo are reviewed against the tab's journal.".into());
         }
-        // Reading HEAD and the index does not depend on the target, so it runs
-        // beside the target lookups. A changed identity is reported first.
-        let (identity, resolved) = std::thread::scope(|scope| {
+        let finishes = op.finishes_sequence();
+        let continues = matches!(op, Operation::Continue { .. });
+        let named = crate::git::Sequence::from_name(&target);
+        // Reading HEAD, the index and the operation markers does not depend
+        // on the target, so they run beside the target lookups. A changed
+        // identity is reported first.
+        let (identity, markers, resolved) = std::thread::scope(|scope| {
             let identity = scope.spawn(|| git.write_identity());
+            let markers = scope.spawn(|| git.operation_markers());
             let resolved = Self::resolve(git, op, target, destination.clone());
-            (identity.join(), resolved)
+            (identity.join(), markers.join(), resolved)
         });
         if identity.map_err(|_| "HEAD and index read failed")?? != destination {
             return Err(
                 "HEAD or index changed since the repository was last read. Wait for the refresh, then try again.".into(),
             );
+        }
+        let markers = markers.map_err(|_| "Git metadata read failed")??;
+        let unmerged = !destination.unmerged_entries().is_empty();
+        if finishes {
+            if crate::git::Sequence::from_operations(&markers) != named {
+                return Err("That operation is no longer in progress. Wait for the refresh, then try again.".into());
+            }
+            if continues && unmerged {
+                return Err(gitcrab_core::commands::UNRESOLVED_CONFLICTS.into());
+            }
+        } else if unmerged || !markers.is_empty() {
+            return Err(crate::git::OPERATION_IN_PROGRESS.into());
         }
         resolved
     }
@@ -123,8 +148,31 @@ impl OperationRun for ReviewedOperation {
                 revision_read,
             )
         });
-        let checkout_ref = match (branch, exists) {
+        let mut checkout_ref = match (branch, exists) {
             (Some(full), Some(exists)) => exists??.then_some(full),
+            _ => None,
+        };
+        let remote_branch = match op {
+            Operation::Checkout if checkout_ref.is_none() => git.remote_checkout(&target)?,
+            _ => None,
+        };
+        // A remote-tracking branch resolves to the commit of the ref the
+        // checkout actually uses, read again by its full name.
+        let (branch_read, revision_read) = match &remote_branch {
+            Some(remote) => {
+                let full = match remote.kind {
+                    RemoteCheckoutKind::SwitchTracking => format!("refs/heads/{}", remote.local),
+                    _ => remote.tracking.clone(),
+                };
+                if remote.kind != RemoteCheckoutKind::DetachNameTaken {
+                    checkout_ref = Some(format!("refs/heads/{}", remote.local));
+                }
+                (None, Some(read(&full)))
+            }
+            None => (branch_read, revision_read),
+        };
+        let merge_ref = match op {
+            Operation::Merge => git.branch_ref(&target)?,
             _ => None,
         };
         if matches!(op, Operation::Stash) && !git.has_tracked_changes()? {
@@ -144,7 +192,12 @@ impl OperationRun for ReviewedOperation {
                 None,
             ),
             Operation::Push => (Some(git.resolve_commit("HEAD")?), None),
-            Operation::Stash | Operation::Undo | Operation::Redo => (None, None),
+            Operation::Stash
+            | Operation::Undo
+            | Operation::Redo
+            | Operation::Abort
+            | Operation::Continue { .. }
+            | Operation::Skip => (None, None),
             _ => {
                 let (id, summary) = match (checkout_ref.is_some(), branch_read, revision_read) {
                     (true, Some(branch_read), _) => branch_read?,
@@ -171,30 +224,40 @@ impl OperationRun for ReviewedOperation {
             destination,
             target_id,
             checkout_ref,
+            remote_branch,
+            merge_ref,
             target_summary,
             network,
             journal: None,
         })
     }
 
-    fn execute(&self, git: &Git) -> Result<(), WriteError> {
+    fn execute(&self, git: &Git) -> Result<Ran, WriteError> {
         let current = Self::capture(
             git,
             self.op.clone(),
             self.target.clone(),
             self.destination.clone(),
         )?;
-        if current.target_id != self.target_id || current.checkout_ref != self.checkout_ref {
-            return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
+        if current.target_id != self.target_id
+            || current.checkout_ref != self.checkout_ref
+            || current.remote_branch != self.remote_branch
+            || current.merge_ref != self.merge_ref
+        {
+            return Err(crate::git::TARGET_MOVED.into());
         }
         self.run_captured(git)
     }
 
     /// Runs an operation whose capture was just taken in this worker request,
     /// so it needs no second revalidation.
-    fn run_captured(&self, git: &Git) -> Result<(), WriteError> {
+    fn run_captured(&self, git: &Git) -> Result<Ran, WriteError> {
         let id = self.target_id.as_deref().unwrap_or_default();
-        let result = match self.op {
+        let sequence = || {
+            crate::git::Sequence::from_name(&self.target)
+                .ok_or_else(|| WriteError::from(gitcrab_core::commands::NO_SEQUENCE))
+        };
+        let result = match &self.op {
             Operation::Pull { .. } | Operation::Push => {
                 Err("Pull and Push run as network operations.".into())
             }
@@ -204,18 +267,40 @@ impl OperationRun for ReviewedOperation {
             Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
                 git.create_branch_at(&self.target, id)
             }
-            Operation::Checkout => git.switch_to(self.checkout_ref.as_deref(), id),
-            Operation::Merge => git.merge(id),
+            Operation::Checkout => match &self.remote_branch {
+                Some(remote) if remote.kind == RemoteCheckoutKind::CreateTracking => {
+                    git.switch_create_tracking(&remote.local, &remote.tracking, id)
+                }
+                _ => git.switch_to(self.checkout_ref.as_deref(), id),
+            },
+            Operation::Merge => match &self.merge_ref {
+                Some(full_ref) => git.merge_branch_at(full_ref, id),
+                None => git.merge(id),
+            },
             Operation::CherryPick => git.cherry_pick(id),
             Operation::Revert => git.revert(id),
             Operation::Stash => git.stash_with_message(&self.target),
             // Apply the reviewed stash object, then drop its entry only after a
             // clean apply. Like `git stash pop`, conflicts keep the stash.
-            Operation::PopStash => git
-                .stash_apply(id, false)
-                .and_then(|()| git.drop_stash_object(id)),
+            Operation::PopStash => {
+                return git
+                    .stash_apply_with_index(id)
+                    .and_then(|restored| {
+                        git.drop_stash_object(id).map(|()| Ran {
+                            staging_dropped: !restored,
+                        })
+                    })
+                    .map_err(|error| operation_failure(git, error, &self.destination))
+            }
+            Operation::Abort => sequence().and_then(|sequence| git.abort_sequence(sequence)),
+            Operation::Continue { message } => {
+                sequence().and_then(|sequence| git.continue_sequence(sequence, message.as_deref()))
+            }
+            Operation::Skip => sequence().and_then(|sequence| git.skip_sequence(sequence)),
         };
-        result.map_err(|error| operation_failure(git, error))
+        result
+            .map(|()| Ran::default())
+            .map_err(|error| operation_failure(git, error, &self.destination))
     }
 
     /// Runs a reviewed Pull or Push after the same revalidation as other
@@ -235,7 +320,7 @@ impl OperationRun for ReviewedOperation {
             self.destination.clone(),
         )?;
         if current.target_id != self.target_id || current.network != self.network {
-            return Err("The target moved since the repository was last read. Wait for the refresh, then try again.".into());
+            return Err(crate::git::TARGET_MOVED.into());
         }
         let network = self
             .network
@@ -245,7 +330,7 @@ impl OperationRun for ReviewedOperation {
             Operation::Pull { mode } => {
                 let outcome = git
                     .pull(network, mode, scope)
-                    .map_err(|error| operation_failure(git, error))?;
+                    .map_err(|error| operation_failure(git, error, &self.destination))?;
                 Ok((outcome.message.clone(), Some(outcome)))
             }
             Operation::Push => Ok((git.push(network, scope)?, None)),
@@ -254,18 +339,97 @@ impl OperationRun for ReviewedOperation {
     }
 }
 
-fn operation_failure(git: &Git, error: WriteError) -> WriteError {
+/// Words the result of a successful local operation. `head` is the full
+/// symbolic ref and commit of HEAD read after the write, so the wording
+/// follows where Git actually left HEAD.
+fn operation_message(reviewed: &ReviewedOperation, head: &(String, String), ran: Ran) -> String {
+    use gitcrab_core::presentation::short_id;
+    let (symbolic, head_id) = head;
+    let id = reviewed.target_id.as_deref().unwrap_or_default();
+    let target = reviewed.target.trim();
+    let label = if target.is_empty() || id.starts_with(target) {
+        short_id(id)
+    } else {
+        gitcrab_core::presentation::short_ref(target)
+    };
+    let branch = symbolic.strip_prefix("refs/heads/");
+    let here = branch.map_or_else(|| "detached HEAD".to_owned(), str::to_owned);
+    match reviewed.op {
+        Operation::CreateBranch | Operation::CreateBranchAt { .. } => {
+            format!("Created branch {target} at {}", short_id(id))
+        }
+        Operation::Checkout => match branch {
+            Some(branch) => format!("Checked out {branch}"),
+            None if label == short_id(head_id) => {
+                format!(
+                    "HEAD is detached at {label}. {}",
+                    crate::git::DETACHED_ADVICE
+                )
+            }
+            None => format!(
+                "Checked out {label}. HEAD is detached at {}. {}",
+                short_id(head_id),
+                crate::git::DETACHED_ADVICE
+            ),
+        },
+        Operation::Merge if *head_id == reviewed.destination.head => {
+            format!("Already up to date: {here} already contains {label}")
+        }
+        Operation::Merge if head_id == id => format!("Fast-forwarded {here} to {label}"),
+        Operation::Merge => format!("Merged {label} into {here}"),
+        Operation::CherryPick => format!("Cherry-picked {} onto {here}", short_id(id)),
+        Operation::Revert => format!("Reverted {} on {here}", short_id(id)),
+        Operation::Stash => {
+            "Stashed changes to tracked files; untracked files stay in the working tree".into()
+        }
+        Operation::PopStash => {
+            let popped = "Stash popped. The stash entry was removed.";
+            if ran.staging_dropped {
+                format!("{popped} {}", crate::git::POP_STAGING_DROPPED)
+            } else {
+                popped.to_owned()
+            }
+        }
+        Operation::Pull { .. }
+        | Operation::Push
+        | Operation::Undo
+        | Operation::Redo
+        | Operation::Abort
+        | Operation::Continue { .. }
+        | Operation::Skip => {
+            format!("{} completed", reviewed.op.label())
+        }
+    }
+}
+
+/// Classifies a failed Git write. It stopped with conflicts only when it left
+/// unmerged entries that the index reviewed `before` it did not already hold;
+/// Git refusing to run over existing conflicts is an ordinary failure.
+fn operation_failure(
+    git: &Git,
+    error: WriteError,
+    before: &crate::git::WriteIdentity,
+) -> WriteError {
     if error.kind != FailureKind::GitFailure {
         return error;
     }
-    let message = error.message;
-    match git.has_unmerged_entries() {
+    let introduced = git.unmerged_entries().map(|after| {
+        let after: Vec<&[u8]> = after
+            .split(|&byte| byte == 0)
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        !after.is_empty() && after != before.unmerged_entries()
+    });
+    match introduced {
         Ok(true) => WriteError {
             kind: FailureKind::Conflict,
-            message: format!("Git left conflicts in the index. Inspect Working changes before retrying. {message}"),
+            message: format!("Git left conflicts in the index. {}", error.message),
         },
-        Ok(false) => WriteError::git(message),
-        Err(error) => WriteError::inspect(format!("{message} Could not check for conflicts. {error}")),
+        Ok(false) => error,
+        Err(read) => WriteError::inspect(format!(
+            "{} Could not check for conflicts. {read}",
+            error.git_text()
+        )),
     }
 }
 struct Pending {
@@ -561,6 +725,10 @@ fn read_diff(
         .iter()
         .find_map(|hunk| hunk.blocked_reason(&patch))
         .map(str::to_owned);
+    let discard_blocked = (!staged && !hunks.is_empty())
+        .then(|| crate::hunk_edit::discard_blocked_reason(&patch))
+        .flatten()
+        .map(str::to_owned);
     let preview = diff::classify(&patch, fits);
     // Only text patches have displayable lines. Other previews are
     // described by the view instead of synthetic code rows.
@@ -590,6 +758,7 @@ fn read_diff(
             content,
             hunks: titles,
             hunk_blocked,
+            discard_blocked,
             token,
             preview,
         },
@@ -920,7 +1089,10 @@ impl Session {
                     .unwrap()
                     .record_commit(reviewed, &sha, &message);
                 Reply::Done {
-                    message: format!("Verified commit {sha} in {}", g.path.display()),
+                    message: format!(
+                        "Verified commit {sha} in {}",
+                        gitcrab_core::presentation::display_location(&g.path)
+                    ),
                     committed_draft: Some(message),
                 }
             }
@@ -954,6 +1126,7 @@ impl Session {
                 op,
                 target,
                 destination,
+                expected,
             } => {
                 if op.is_network() || op.journal_direction().is_some() {
                     return Err("Review this operation before running it.".into());
@@ -961,14 +1134,32 @@ impl Session {
                 // The capture is this write's revalidation: it checks HEAD and
                 // the index against `destination` and resolves the target now.
                 let reviewed = ReviewedOperation::capture(g, op, target, destination)?;
-                let before = crate::journal::Before::capture(g, &reviewed);
-                reviewed.run_captured(g)?;
-                self.operation_done(g, &reviewed, before)
+                // Switching to the branch that tracks a remote branch does not
+                // use the remote branch's commit, so its tip may move.
+                let switches = reviewed
+                    .remote_branch
+                    .as_ref()
+                    .is_some_and(|remote| remote.kind == RemoteCheckoutKind::SwitchTracking);
+                if expected.is_some() && !switches && reviewed.target_id != expected {
+                    return Err(crate::git::TARGET_MOVED.into());
+                }
+                if reviewed.op.finishes_sequence() {
+                    reviewed.run_captured(g)?;
+                    self.sequence_done(g, &reviewed)
+                } else {
+                    let before = crate::journal::Before::capture(g, &reviewed);
+                    let ran = reviewed.run_captured(g)?;
+                    self.operation_done(g, &reviewed, before, ran)
+                }
+            }
+            Action::Operation { reviewed } if reviewed.op.finishes_sequence() => {
+                reviewed.execute(g)?;
+                self.sequence_done(g, &reviewed)
             }
             Action::Operation { reviewed } => {
                 let before = crate::journal::Before::capture(g, &reviewed);
-                reviewed.execute(g)?;
-                self.operation_done(g, &reviewed, before)
+                let ran = reviewed.execute(g)?;
+                self.operation_done(g, &reviewed, before, ran)
             }
             Action::Fetch => return Err("Fetch runs as a network operation.".into()),
             Action::Open { .. }
@@ -1039,6 +1230,7 @@ impl Session {
         Reply::IndexDone {
             message,
             worktree: worktree.map(|((status, reviewed), journal)| WorktreeState {
+                conflict_markers: g.conflict_marker_paths(&status),
                 status,
                 reviewed,
                 journal,
@@ -1054,23 +1246,59 @@ impl Session {
         g: &Git,
         reviewed: &ReviewedOperation,
         before: Result<crate::journal::Before, String>,
+        ran: Ran,
     ) -> Reply {
+        let message = match g.head_state() {
+            Ok(head) => operation_message(reviewed, &head, ran),
+            Err(_) => format!("{} completed", reviewed.op.label()),
+        };
         let note = self
             .journal
             .lock()
             .unwrap()
             .record_operation(g, reviewed, before);
-        let message = if matches!(reviewed.op, Operation::PopStash) {
-            "Stash popped. The stash entry was removed."
-        } else {
-            "Operation completed"
+        let message = match &reviewed.remote_branch {
+            Some(remote) => remote.outcome(),
+            None => message,
         };
         Reply::Done {
             message: match note {
                 Some(note) => format!("{}. {note}", message.trim_end_matches('.')),
-                None => message.into(),
+                None => message,
             },
             committed_draft: None,
+        }
+    }
+
+    /// Words the result of Abort, Continue or Skip.
+    ///
+    /// None of them is recorded for Undo. Continue and Skip make new commits,
+    /// so like any new action they clear the redo stack. Abort returns to the
+    /// state the journal's entries were checked against before the operation
+    /// started, so the stacks stay as they are.
+    fn sequence_done(&self, g: &Git, reviewed: &ReviewedOperation) -> Reply {
+        let title = crate::git::Sequence::from_name(&reviewed.target)
+            .map_or("Operation", crate::git::Sequence::title);
+        if !matches!(reviewed.op, Operation::Abort) {
+            self.journal.lock().unwrap().clear_redo();
+        }
+        let finished = g
+            .operation_markers()
+            .is_ok_and(|markers| markers.is_empty());
+        let message = match (&reviewed.op, finished) {
+            (Operation::Abort, _) => format!("{title} aborted."),
+            (Operation::Skip, true) => format!("Commit skipped. {title} finished."),
+            (Operation::Skip, false) => format!("Commit skipped. The {} goes on.", reviewed.target),
+            (_, true) => format!("{title} finished."),
+            (_, false) => format!("{title} continued. Git stopped again."),
+        };
+        let committed_draft = match &reviewed.op {
+            Operation::Continue { message } => message.clone(),
+            _ => None,
+        };
+        Reply::Done {
+            message,
+            committed_draft,
         }
     }
 
@@ -1152,6 +1380,8 @@ mod tests {
             },
             target_id: Some("fedcba9876543210".into()),
             checkout_ref: checkout_ref.map(str::to_owned),
+            remote_branch: None,
+            merge_ref: None,
             target_summary: None,
             journal: None,
             network: None,
@@ -1800,6 +2030,7 @@ mod tests {
                         op,
                         target: target.into(),
                         destination,
+                        expected: None,
                     },
                 })
                 .result
@@ -1821,6 +2052,255 @@ mod tests {
         let current = git.write_identity().unwrap();
         assert!(run(Operation::Push, "", current.clone()).is_err());
         assert!(run(Operation::Undo, "", current).is_err());
+    }
+
+    /// Runs `op` on `target` against the current HEAD and index and returns
+    /// the result message or the failure.
+    fn run_local(session: &mut Session, op: Operation, target: &str) -> Result<String, WriteError> {
+        let destination = session.repo.as_ref().unwrap().write_identity().unwrap();
+        match session.run(
+            1,
+            1,
+            Action::RunOperation {
+                op,
+                target: target.into(),
+                destination,
+                expected: None,
+            },
+        )? {
+            Reply::Done { message, .. } => Ok(message),
+            other => panic!("expected a result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_operations_word_their_result_from_head_after_the_write() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("tracked.txt", "base\n");
+        git.stage("tracked.txt").unwrap();
+        git.commit("base").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let short = |id: &str| gitcrab_core::presentation::short_id(id).to_owned();
+        // Each message may end with a note about Undo, so only its start is fixed.
+        let starts = |message: Result<String, WriteError>, expected: &str| {
+            let message = message.unwrap();
+            assert!(message.starts_with(expected), "{message:?}");
+        };
+        starts(
+            run_local(&mut session, Operation::CreateBranch, "topic"),
+            &format!(
+                "Created branch topic at {}",
+                short(&git.resolve_commit("HEAD").unwrap())
+            ),
+        );
+        starts(
+            run_local(&mut session, Operation::Checkout, "topic"),
+            "Checked out topic",
+        );
+        fixture.write("topic.txt", "topic\n");
+        git.stage("topic.txt").unwrap();
+        git.commit("topic").unwrap();
+        let topic = git.resolve_commit("HEAD").unwrap();
+        starts(
+            run_local(&mut session, Operation::Checkout, "main"),
+            "Checked out main",
+        );
+        starts(
+            run_local(&mut session, Operation::Merge, "topic"),
+            "Fast-forwarded main to topic",
+        );
+        starts(
+            run_local(&mut session, Operation::Merge, "topic"),
+            "Already up to date: main already contains topic",
+        );
+        starts(
+            run_local(&mut session, Operation::Revert, &topic),
+            &format!("Reverted {} on main", short(&topic)),
+        );
+        starts(
+            run_local(&mut session, Operation::CherryPick, &topic),
+            &format!("Cherry-picked {} onto main", short(&topic)),
+        );
+        git.checkout("topic").unwrap();
+        fixture.write("other.txt", "other\n");
+        git.stage("other.txt").unwrap();
+        git.commit("other").unwrap();
+        git.checkout("main").unwrap();
+        starts(
+            run_local(&mut session, Operation::Merge, "topic"),
+            "Merged topic into main",
+        );
+        starts(
+            run_local(&mut session, Operation::Checkout, &topic),
+            &format!(
+                "HEAD is detached at {}. Create a branch before committing.",
+                short(&topic)
+            ),
+        );
+        starts(
+            run_local(&mut session, Operation::Checkout, "main~1"),
+            "Checked out main~1. HEAD is detached at ",
+        );
+        fixture.write("tracked.txt", "edited\n");
+        starts(
+            run_local(&mut session, Operation::Stash, ""),
+            "Stashed changes to tracked files; untracked files stay in the working tree",
+        );
+    }
+
+    #[test]
+    fn diffs_say_up_front_when_discard_cannot_act_on_their_hunks() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("tracked.txt", "base\n");
+        git.stage("tracked.txt").unwrap();
+        git.commit("base").unwrap();
+        fixture.write("tracked.txt", "edited\n");
+        fixture.write("new.txt", "new\n");
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let mut blocked = |path: &str| {
+            let reply = session
+                .run(
+                    1,
+                    1,
+                    Action::Diff {
+                        id: None,
+                        path: path.into(),
+                        staged: false,
+                    },
+                )
+                .unwrap();
+            let Reply::Diff {
+                hunks,
+                hunk_blocked,
+                discard_blocked,
+                ..
+            } = reply
+            else {
+                panic!("expected a diff, got {reply:?}")
+            };
+            assert!(!hunks.is_empty() && hunk_blocked.is_none(), "{path}");
+            discard_blocked
+        };
+        assert_eq!(blocked("tracked.txt"), None);
+        assert!(blocked("new.txt").is_some_and(|reason| reason.contains("new")));
+        let hunk = git
+            .compare(None, "new.txt", false)
+            .map(|comparison| {
+                crate::git::hunk_ranges(&comparison.patch)[0].materialize(&comparison.patch)
+            })
+            .unwrap();
+        let refused = git.discard_hunk("new.txt", &hunk).unwrap_err();
+        assert_eq!(
+            Some(refused.message.as_str()),
+            crate::hunk_edit::discard_blocked_reason(&hunk.patch)
+        );
+    }
+
+    #[test]
+    fn pop_stash_restores_the_staged_split_and_conflicts_keep_the_stash() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("app.txt", "base\n");
+        git.stage("app.txt").unwrap();
+        git.commit("base").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        fixture.write("app.txt", "staged\n");
+        git.stage("app.txt").unwrap();
+        fixture.write("app.txt", "staged and edited\n");
+        run_local(&mut session, Operation::Stash, "").unwrap();
+        let popped = run_local(&mut session, Operation::PopStash, "").unwrap();
+        assert!(
+            popped.starts_with("Stash popped. The stash entry was removed.")
+                && !popped.contains("staged changes could not"),
+            "{popped:?}"
+        );
+        let status = git.snapshot(1).unwrap().status;
+        assert_eq!((status[0].index, status[0].worktree), ('M', 'M'));
+        assert_eq!(git.run(&["show", ":app.txt"]).unwrap(), "staged\n");
+        assert!(git.stash_entries().unwrap().is_empty());
+
+        run_local(&mut session, Operation::Stash, "").unwrap();
+        fixture.write("app.txt", "conflicting\n");
+        git.stage("app.txt").unwrap();
+        git.commit("conflicting").unwrap();
+        let failed = run_local(&mut session, Operation::PopStash, "").unwrap_err();
+        assert_eq!(failed.kind, FailureKind::Conflict, "{failed:?}");
+        assert_eq!(
+            failed.message.matches("Inspect Working changes").count(),
+            1,
+            "{failed:?}"
+        );
+        assert_eq!(git.stash_entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merging_a_branch_by_name_names_it_and_needs_it_where_it_was_chosen() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("tracked.txt", "base\n");
+        git.stage("tracked.txt").unwrap();
+        git.commit("base").unwrap();
+        git.create_branch("feature/clean").unwrap();
+        git.checkout("feature/clean").unwrap();
+        fixture.write("feature.txt", "feature\n");
+        git.stage("feature.txt").unwrap();
+        git.commit("feature").unwrap();
+        let chosen = git.resolve_commit("HEAD").unwrap();
+        git.checkout("main").unwrap();
+        fixture.write("main.txt", "main\n");
+        git.stage("main.txt").unwrap();
+        git.commit("main").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let mut merge = |expected: &str| {
+            session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 1,
+                    action: Action::RunOperation {
+                        op: Operation::Merge,
+                        target: "feature/clean".into(),
+                        destination: git.write_identity().unwrap(),
+                        expected: Some(expected.into()),
+                    },
+                })
+                .result
+        };
+        let other = Git::open(&git.path).unwrap();
+        other
+            .write(&["branch", "-f", "feature/clean", "main"])
+            .unwrap();
+        assert_eq!(
+            git.branch_ref("feature/clean").unwrap().as_deref(),
+            Some("refs/heads/feature/clean")
+        );
+        let moved = merge(&chosen).unwrap_err();
+        assert!(moved.message.contains("target moved"), "{}", moved.message);
+        other
+            .write(&["branch", "-f", "feature/clean", &chosen])
+            .unwrap();
+        assert!(merge(&chosen).is_ok());
+        assert_eq!(
+            git.run(&["log", "-1", "--format=%s"]).unwrap().trim(),
+            "Merge branch 'feature/clean'"
+        );
     }
 
     #[test]
@@ -2060,6 +2540,98 @@ mod tests {
             b"reviewed stash\n"
         );
         result.unwrap();
+    }
+
+    #[test]
+    fn a_stopped_merge_allows_only_its_own_steps_and_only_new_conflicts_count() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("conflict.txt", "base\n");
+        git.stage("conflict.txt").unwrap();
+        git.commit("base").unwrap();
+        git.create_branch("feature").unwrap();
+        git.checkout("feature").unwrap();
+        fixture.write("conflict.txt", "feature\n");
+        git.stage("conflict.txt").unwrap();
+        git.commit("feature").unwrap();
+        git.checkout("main").unwrap();
+        fixture.write("conflict.txt", "main\n");
+        git.stage("conflict.txt").unwrap();
+        git.commit("main").unwrap();
+        let clean = git.write_identity().unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        let mut run = |op, target: &str| {
+            session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 1,
+                    action: Action::RunOperation {
+                        op,
+                        target: target.into(),
+                        destination: git.write_identity().unwrap(),
+                        expected: None,
+                    },
+                })
+                .result
+        };
+        let failure = run(Operation::Merge, "feature").unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Conflict);
+
+        let refused = run(Operation::Stash, "").unwrap_err();
+        assert_eq!(refused.kind, FailureKind::Rejected);
+        assert_eq!(refused.message, crate::git::OPERATION_IN_PROGRESS);
+        let conflicted = git.write_identity().unwrap();
+        let error = git.stash_with_message("during merge").unwrap_err();
+        assert_eq!(
+            operation_failure(git, error, &conflicted).kind,
+            FailureKind::GitFailure
+        );
+        let error = WriteError::git("Git exited with 1.".into());
+        assert_eq!(
+            operation_failure(git, error, &clean).kind,
+            FailureKind::Conflict
+        );
+
+        let wrong = run(Operation::Abort, "rebase").unwrap_err();
+        assert!(wrong.message.contains("no longer in progress"));
+        let unresolved = run(Operation::Continue { message: None }, "merge").unwrap_err();
+        assert_eq!(
+            unresolved.message,
+            gitcrab_core::commands::UNRESOLVED_CONFLICTS
+        );
+        let Ok(Reply::Done { message, .. }) = run(Operation::Abort, "merge") else {
+            panic!("abort failed");
+        };
+        assert_eq!(message, "Merge aborted.");
+        assert_eq!(git.write_identity().unwrap(), clean);
+
+        assert!(run(Operation::Merge, "feature").is_err());
+        fixture.write("conflict.txt", "resolved\n");
+        git.mark_resolved("conflict.txt", false).unwrap();
+        let draft = "Merge feature by hand".to_owned();
+        let continued = run(
+            Operation::Continue {
+                message: Some(draft.clone()),
+            },
+            "merge",
+        );
+        let Ok(Reply::Done {
+            message,
+            committed_draft,
+        }) = continued
+        else {
+            panic!("continue failed: {continued:?}");
+        };
+        assert_eq!(message, "Merge finished.");
+        assert_eq!(committed_draft, Some(draft.clone()));
+        let merge = git.run(&["show", "-s", "--format=%P%n%s", "HEAD"]).unwrap();
+        let (parents, subject) = merge.trim().split_once('\n').unwrap();
+        assert_eq!(parents.split_whitespace().count(), 2);
+        assert_eq!(subject, draft);
     }
 
     #[test]
@@ -2736,6 +3308,172 @@ mod tests {
             // Redo moved the entry back onto the undo stack.
             let status = session.journal.lock().unwrap().status(&local.git);
             assert_eq!(status.state(Direction::Redo), StepState::Empty);
+        }
+
+        fn checkout(session: &mut Session, target: &str) -> Result<String, String> {
+            let destination = session.repo.as_ref().unwrap().write_identity().unwrap();
+            match session
+                .execute(Request {
+                    epoch: 1,
+                    sequence: 2,
+                    action: Action::RunOperation {
+                        op: Operation::Checkout,
+                        target: target.into(),
+                        destination,
+                        expected: None,
+                    },
+                })
+                .result
+            {
+                Ok(Reply::Done { message, .. }) => Ok(message),
+                Ok(other) => Err(format!("unexpected reply {other:?}")),
+                Err(failure) => Err(failure.message),
+            }
+        }
+
+        fn journal_step(session: &Session, direction: crate::journal::Direction) {
+            let git = session.repo.as_ref().unwrap();
+            let mut journal = session.journal.lock().unwrap();
+            let reviewed = journal
+                .review(git, direction, git.write_identity().unwrap())
+                .unwrap();
+            journal.execute(git, &reviewed).unwrap();
+        }
+
+        fn head(git: &Git) -> (String, String) {
+            git.head_state().unwrap()
+        }
+
+        /// Publishes branch `name` from `other` and fetches it into `local`.
+        fn remote_branch(local: &Fixture, other: &Fixture, name: &str) -> String {
+            other.git.run(&["switch", "--quiet", "-c", name]).unwrap();
+            let tip = commit(other, &format!("{name}.txt"), "remote\n");
+            other
+                .git
+                .run(&["push", "--quiet", "-u", "origin", name])
+                .unwrap();
+            local.git.run(&["fetch", "--quiet"]).unwrap();
+            tip
+        }
+
+        #[test]
+        fn checking_out_a_tracked_remote_branch_switches_to_its_local_branch() {
+            use crate::journal::Direction;
+            let (local, _other) = connected();
+            let git = &local.git;
+            let main = git.resolve_commit("HEAD").unwrap();
+            git.run(&["switch", "--quiet", "-c", "topic"]).unwrap();
+            let topic = commit(&local, "topic.txt", "topic\n");
+            let mut session = session(git);
+            assert_eq!(
+                checkout(&mut session, "origin/main").unwrap(),
+                "Switched to main, which tracks origin/main."
+            );
+            assert_eq!(head(git), ("refs/heads/main".into(), main));
+            let status = session.journal.lock().unwrap().status(git);
+            assert_eq!(status.summary(Direction::Undo), Some("checkout of main"));
+            journal_step(&session, Direction::Undo);
+            assert_eq!(head(git), ("refs/heads/topic".into(), topic));
+        }
+
+        #[test]
+        fn checking_out_an_untracked_remote_branch_creates_a_tracking_branch() {
+            use crate::journal::{Blocker, Direction, StepState};
+            let (local, other) = connected();
+            let git = &local.git;
+            let main = git.resolve_commit("HEAD").unwrap();
+            let tip = remote_branch(&local, &other, "feature");
+            let mut session = session(git);
+            assert_eq!(
+                checkout(&mut session, "origin/feature").unwrap(),
+                "Created feature tracking origin/feature and switched to it."
+            );
+            assert_eq!(head(git), ("refs/heads/feature".into(), tip.clone()));
+            assert_eq!(
+                git.upstream_of("refs/heads/feature").unwrap().as_deref(),
+                Some("refs/remotes/origin/feature")
+            );
+            let status = session.journal.lock().unwrap().status(git);
+            assert_eq!(
+                status.summary(Direction::Undo),
+                Some("checkout of origin/feature as new branch feature")
+            );
+
+            journal_step(&session, Direction::Undo);
+            assert_eq!(head(git), ("refs/heads/main".into(), main.clone()));
+            assert_eq!(git.ref_commit("refs/heads/feature").unwrap(), None);
+            journal_step(&session, Direction::Redo);
+            assert_eq!(head(git), ("refs/heads/feature".into(), tip.clone()));
+            assert_eq!(
+                git.upstream_of("refs/heads/feature").unwrap().as_deref(),
+                Some("refs/remotes/origin/feature")
+            );
+
+            git.write(&["commit", "--quiet", "--allow-empty", "-m", "more"])
+                .unwrap();
+            let status = |session: &Session| session.journal.lock().unwrap().status(git);
+            assert_eq!(
+                status(&session).state(Direction::Undo),
+                StepState::Blocked(Blocker::HeadMoved)
+            );
+            git.write(&["reset", "--quiet", "--hard", &tip]).unwrap();
+            git.write(&["branch", "-f", "main", &tip]).unwrap();
+            assert_eq!(
+                status(&session).state(Direction::Undo),
+                StepState::Blocked(Blocker::BranchMoved)
+            );
+            git.write(&["branch", "-f", "main", &main]).unwrap();
+            assert_eq!(status(&session).state(Direction::Undo), StepState::Ready);
+
+            journal_step(&session, Direction::Undo);
+            assert!(checkout(&mut session, "refs/remotes/origin/feature")
+                .unwrap()
+                .starts_with("Created feature tracking origin/feature"));
+            assert_eq!(head(git), ("refs/heads/feature".into(), tip));
+        }
+
+        #[test]
+        fn redo_of_a_tracking_checkout_needs_the_branch_name_free() {
+            use crate::journal::{Blocker, Direction, StepState};
+            let (local, other) = connected();
+            let git = &local.git;
+            let tip = remote_branch(&local, &other, "feature");
+            let mut session = session(git);
+            checkout(&mut session, "origin/feature").unwrap();
+            journal_step(&session, Direction::Undo);
+            git.write(&["branch", "feature", &tip]).unwrap();
+            assert_eq!(
+                session
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .status(git)
+                    .state(Direction::Redo),
+                StepState::Blocked(Blocker::BranchExists)
+            );
+        }
+
+        #[test]
+        fn a_remote_branch_whose_name_is_taken_locally_still_detaches() {
+            let (local, other) = connected();
+            let git = &local.git;
+            let tip = remote_branch(&local, &other, "feature");
+            git.write(&["branch", "feature"]).unwrap();
+            let mut session = session(git);
+            assert_eq!(
+                checkout(&mut session, "origin/feature").unwrap(),
+                "Checked out origin/feature in detached HEAD, because local branch feature already exists and does not track it. Create a branch before committing."
+            );
+            assert_eq!(head(git), (String::new(), tip));
+            let main = git.resolve_commit("main").unwrap();
+            assert_eq!(
+                checkout(&mut session, &main).unwrap(),
+                format!(
+                    "HEAD is detached at {}. Create a branch before committing.",
+                    gitcrab_core::presentation::short_id(&main)
+                )
+            );
+            assert_eq!(head(git), (String::new(), main));
         }
 
         #[test]

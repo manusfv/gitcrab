@@ -96,6 +96,10 @@ pub enum Action {
         op: Operation,
         target: String,
         destination: crate::git::WriteIdentity,
+        /// The commit a branch `target` pointed at when the user chose it.
+        /// The write is refused if the branch has moved since.
+        #[serde(default)]
+        expected: Option<String>,
     },
     /// Fetches every remote with pruning. Runs off the worker and can be cancelled.
     Fetch,
@@ -236,6 +240,20 @@ pub enum Operation {
     Undo,
     /// Re-applies the top entry of the tab's redo journal.
     Redo,
+    /// Abandons the merge, rebase, cherry-pick or revert that the target
+    /// names ([`crate::git::Sequence::name`]) and returns to the state
+    /// before it started.
+    Abort,
+    /// Concludes the step the named operation stopped at, without an
+    /// editor. A merge, cherry-pick or revert commits with `message`, or
+    /// with Git's prepared message when it is `None`.
+    Continue {
+        #[serde(default)]
+        message: Option<String>,
+    },
+    /// Drops the commit the named rebase or cherry-pick stopped at and goes
+    /// on with the rest.
+    Skip,
 }
 
 /// Operation target and destination resolved by [`Action::ReviewOperation`].
@@ -250,6 +268,18 @@ pub struct ReviewedOperation {
     pub target_id: Option<String>,
     /// Full local branch ref for an attached checkout.
     pub checkout_ref: Option<String>,
+    /// The remote-tracking branch (`refs/remotes/origin/main`) a Checkout of
+    /// it resolved to, kept only when the checkout creates `checkout_ref`
+    /// there with it as the upstream, or switches to a local branch that
+    /// already tracks it.
+    #[serde(default)]
+    pub remote_branch: Option<RemoteCheckout>,
+    /// The full branch ref a Merge target resolved through
+    /// (`refs/heads/feature`, `refs/remotes/origin/main`). Such a target is
+    /// merged by its name, so Git's message names the branch. `None` for a
+    /// commit ID.
+    #[serde(default)]
+    pub merge_ref: Option<String>,
     /// Subject and committer date of the resolved target, for people to verify.
     #[serde(default)]
     pub target_summary: Option<crate::git::CommitSummary>,
@@ -259,6 +289,55 @@ pub struct ReviewedOperation {
     /// The journal step an Undo or Redo was reviewed against.
     #[serde(default)]
     pub journal: Option<crate::journal::Step>,
+}
+
+/// What a Checkout of a remote-tracking branch does instead of detaching
+/// HEAD at its tip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteCheckoutKind {
+    /// Switch to the local branch whose upstream it is.
+    SwitchTracking,
+    /// Create a local branch of the same name at its tip, with it as the
+    /// upstream, and switch to it.
+    CreateTracking,
+    /// A local branch of the same name tracks something else, so HEAD
+    /// detaches at the remote branch's tip.
+    DetachNameTaken,
+}
+
+/// How a Checkout of a remote-tracking branch resolved.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteCheckout {
+    /// Full remote-tracking ref, such as `refs/remotes/origin/main`.
+    pub tracking: String,
+    /// The local branch involved: the one switched to, created, or whose
+    /// name is taken.
+    pub local: String,
+    pub kind: RemoteCheckoutKind,
+}
+
+impl RemoteCheckout {
+    /// The remote-tracking branch's short name, such as `origin/main`.
+    pub fn remote_name(&self) -> &str {
+        crate::presentation::short_ref(&self.tracking)
+    }
+
+    /// The result message for the status bar.
+    pub fn outcome(&self) -> String {
+        let (local, remote) = (&self.local, self.remote_name());
+        match self.kind {
+            RemoteCheckoutKind::SwitchTracking => {
+                format!("Switched to {local}, which tracks {remote}.")
+            }
+            RemoteCheckoutKind::CreateTracking => {
+                format!("Created {local} tracking {remote} and switched to it.")
+            }
+            RemoteCheckoutKind::DetachNameTaken => format!(
+                "Checked out {remote} in detached HEAD, because local branch {local} already exists and does not track it. {}",
+                crate::git::DETACHED_ADVICE
+            ),
+        }
+    }
 }
 
 /// Explains why Cherry-pick and Revert are unavailable for merge commits.
@@ -304,6 +383,18 @@ impl ReviewedOperation {
         };
         match self.op {
             Operation::Checkout => match &self.checkout_ref {
+                Some(branch)
+                    if self
+                        .remote_branch
+                        .as_ref()
+                        .is_some_and(|r| r.kind == RemoteCheckoutKind::CreateTracking) =>
+                {
+                    format!(
+                        "Create branch {} at {id} tracking {}, then switch the working tree from {here} to it.",
+                        branch.trim_start_matches("refs/heads/"),
+                        self.remote_branch.as_ref().map_or("", RemoteCheckout::remote_name),
+                    )
+                }
                 Some(branch) => format!(
                     "Switch the working tree from {here} to branch {} ({id}).",
                     branch.trim_start_matches("refs/heads/")
@@ -372,6 +463,15 @@ impl ReviewedOperation {
                 .as_ref()
                 .map(crate::journal::Step::describe)
                 .unwrap_or_default(),
+            Operation::Abort => format!(
+                "Abort the {} and return {here} to the state before it started.",
+                self.target
+            ),
+            Operation::Continue { .. } => format!("Continue the {} on {here}.", self.target),
+            Operation::Skip => format!(
+                "Skip the commit the {} stopped at and go on with the rest.",
+                self.target
+            ),
         }
     }
 }
@@ -415,7 +515,16 @@ impl Operation {
             Self::Push => "Push",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
+            Self::Abort => "Abort",
+            Self::Continue { .. } => "Continue",
+            Self::Skip => "Skip commit",
         }
+    }
+
+    /// Whether the operation finishes or abandons the merge, rebase,
+    /// cherry-pick or revert its target names.
+    pub fn finishes_sequence(&self) -> bool {
+        matches!(self, Self::Abort | Self::Continue { .. } | Self::Skip)
     }
 
     /// The journal stack an Undo or Redo acts on.
@@ -463,6 +572,15 @@ impl Operation {
         ) {
             return Ok(());
         }
+        if self.finishes_sequence() {
+            return match crate::git::Sequence::from_name(target) {
+                Some(sequence) if matches!(self, Self::Skip) && !sequence.can_skip() => {
+                    Err(crate::commands::SKIP_UNSUPPORTED.into())
+                }
+                Some(_) => Ok(()),
+                None => Err(crate::commands::NO_SEQUENCE.into()),
+            };
+        }
         if target.trim().is_empty() {
             return Err("Enter a target before continuing.".into());
         }
@@ -497,7 +615,14 @@ impl Operation {
         match self {
             Self::CreateBranch | Self::CreateBranchAt { .. } => "feature/branch-name",
             Self::Stash => "Optional message",
-            Self::PopStash | Self::Pull { .. } | Self::Push | Self::Undo | Self::Redo => "",
+            Self::PopStash
+            | Self::Pull { .. }
+            | Self::Push
+            | Self::Undo
+            | Self::Redo
+            | Self::Abort
+            | Self::Continue { .. }
+            | Self::Skip => "",
             _ => "Branch name or commit revision",
         }
     }
@@ -565,6 +690,10 @@ pub enum Reply {
         hunks: Vec<String>,
         /// User-facing reason hunk actions are unavailable for this patch.
         hunk_blocked: Option<String>,
+        /// User-facing reason Discard is unavailable for this patch's hunks
+        /// and lines while staging them is not.
+        #[serde(default)]
+        discard_blocked: Option<String>,
         /// Token required by subsequent actions on this cached patch.
         token: u32,
         /// What the comparison can show. Non-text previews carry no patch lines.
@@ -595,6 +724,10 @@ pub struct WorktreeState {
     pub status: Vec<crate::git::FileChange>,
     /// HEAD and index identity that `status` was read against.
     pub reviewed: crate::git::WriteIdentity,
+    /// Unmerged paths whose working file still has a conflict marker line,
+    /// as in [`crate::git::RepoSnapshot::conflict_markers`].
+    #[serde(default)]
+    pub conflict_markers: std::collections::BTreeSet<String>,
     pub journal: crate::journal::JournalStatus,
     /// When the worker started reading. File watcher events from before
     /// then are already reflected.

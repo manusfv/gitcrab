@@ -1,6 +1,10 @@
 //! Writes: staging, hunks, commits, branches, stashes and resets.
 use super::*;
 
+/// Git takes `:` as an editor that keeps the message as it is without
+/// starting a process, so a step that would ask for a message never waits.
+const NO_EDITOR_CONFIG: &str = "core.editor=:";
+
 impl Git {
     /// Stages or unstages a file after checking its reviewed status entry.
     ///
@@ -150,7 +154,7 @@ impl Git {
     }
 
     /// Reads raw unmerged index entries from `git ls-files --unmerged`.
-    fn unmerged_entries(&self) -> GitResult<Vec<u8>> {
+    pub(crate) fn unmerged_entries(&self) -> GitResult<Vec<u8>> {
         self.bytes(&["ls-files", "--unmerged", "-z"])
     }
 
@@ -443,7 +447,10 @@ impl Git {
             )
         });
         if !markers??.is_empty() {
-            return Err("An active Git operation blocks ordinary commit. Complete or abort it in a terminal, then refresh.".into());
+            return Err(
+                "An active Git operation blocks ordinary commit. Continue or abort it first."
+                    .into(),
+            );
         }
         if identity?? != *reviewed {
             return Err("HEAD or index changed since review. Refresh and review staged changes. Your draft is kept in this tab.".into());
@@ -547,6 +554,108 @@ impl Git {
         }
     }
 
+    /// Decides what a Checkout of `target` does when it names a
+    /// remote-tracking branch (`origin/main` or `refs/remotes/origin/main`)
+    /// rather than a local branch: switch to the local branch that tracks it,
+    /// create a local branch of the same name tracking it, or, when a local
+    /// branch of that name tracks something else, detach. `None` for any
+    /// other target.
+    pub(crate) fn remote_checkout(
+        &self,
+        target: &str,
+    ) -> GitResult<Option<gitcrab_core::service::RemoteCheckout>> {
+        use gitcrab_core::service::{RemoteCheckout, RemoteCheckoutKind};
+        if target.starts_with("refs/heads/") {
+            return Ok(None);
+        }
+        let tracking = if target.starts_with("refs/remotes/") {
+            target.to_owned()
+        } else {
+            format!("refs/remotes/{target}")
+        };
+        let (refs, remotes) = std::thread::scope(|scope| {
+            let remotes = scope.spawn(|| self.run(&["remote"]));
+            let refs = self.run(&[
+                "for-each-ref",
+                "--format=%(refname)%00%(upstream)%00%(symref)",
+                "refs/heads/",
+                "refs/remotes/",
+            ]);
+            (refs, remotes.join())
+        });
+        let refs = refs?;
+        let remotes = remotes.map_err(|_| "Git remote read failed")??;
+        let refs: Vec<(&str, &str, &str)> = refs
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\0');
+                Some((fields.next()?, fields.next()?, fields.next()?))
+            })
+            .collect();
+        let local_exists = |name: &str| {
+            let full = format!("refs/heads/{name}");
+            refs.iter().any(|(refname, _, _)| *refname == full)
+        };
+        if local_exists(target)
+            || !refs
+                .iter()
+                .any(|(refname, _, symref)| *refname == tracking && symref.is_empty())
+        {
+            return Ok(None);
+        }
+        let in_remotes = gitcrab_core::presentation::short_ref(&tracking);
+        // Remote names may contain slashes, so the longest configured remote
+        // that prefixes the ref decides where the branch name starts.
+        let name = remotes
+            .lines()
+            .map(str::trim)
+            .filter_map(|remote| in_remotes.strip_prefix(remote)?.strip_prefix('/'))
+            .min_by_key(|name| name.len())
+            .or_else(|| in_remotes.split_once('/').map(|(_, name)| name))
+            .unwrap_or(in_remotes);
+        let mut trackers: Vec<&str> = refs
+            .iter()
+            .filter(|(_, upstream, _)| *upstream == tracking)
+            .filter_map(|(refname, _, _)| refname.strip_prefix("refs/heads/"))
+            .collect();
+        trackers.sort_by_key(|local| *local != name);
+        let (local, kind) = match trackers.first() {
+            Some(local) => (local.to_string(), RemoteCheckoutKind::SwitchTracking),
+            None if !local_exists(name) => (name.to_owned(), RemoteCheckoutKind::CreateTracking),
+            None => (name.to_owned(), RemoteCheckoutKind::DetachNameTaken),
+        };
+        Ok(Some(RemoteCheckout {
+            tracking,
+            local,
+            kind,
+        }))
+    }
+
+    /// Creates local branch `name` at commit `id` with the remote-tracking
+    /// branch `tracking` as its upstream, and switches to it. The branch is
+    /// created and checked out in one Git command, so a refused switch
+    /// leaves no branch behind.
+    pub(crate) fn switch_create_tracking(
+        &self,
+        name: &str,
+        tracking: &str,
+        id: &str,
+    ) -> Result<(), WriteError> {
+        validate_revision(name)?;
+        validate_revision(tracking)?;
+        validate_revision(id)?;
+        self.run(&["check-ref-format", "--branch", name])?;
+        self.write(&["switch", "--no-track", "--create", name, id])?;
+        self.write(&["branch", "--set-upstream-to", tracking, "--", name])
+            .map_err(|error| {
+                WriteError::inspect(format!(
+                    "Switched to the new branch {name}, but Git could not set its upstream. {}",
+                    error.message
+                ))
+            })?;
+        Ok(())
+    }
+
     /// Switches to the local branch named by `full_ref` (`refs/heads/...`).
     /// Any other ref, or none, detaches HEAD at commit `id`.
     pub(crate) fn switch_to(&self, full_ref: Option<&str>, id: &str) -> Result<(), WriteError> {
@@ -562,11 +671,57 @@ impl Git {
         }
         .map(|_| ())
     }
+    /// The full local or remote-tracking branch ref that `revision` names, as
+    /// Git resolves it; `None` for commit IDs, tags and other revisions.
+    pub(crate) fn branch_ref(&self, revision: &str) -> GitResult<Option<String>> {
+        validate_revision(revision)?;
+        // rev-parse echoes `--end-of-options` among the names it prints.
+        let full = self.run(&[
+            "rev-parse",
+            "--symbolic-full-name",
+            "--end-of-options",
+            revision,
+        ])?;
+        Ok(full
+            .lines()
+            .map(str::trim)
+            .find(|full| full.starts_with("refs/heads/") || full.starts_with("refs/remotes/"))
+            .map(str::to_owned))
+    }
+
     /// Merges the target into the current checkout using Git's default message.
     /// A Git failure may leave an in-progress merge or conflicts.
     pub fn merge(&self, target: &str) -> Result<(), WriteError> {
         validate_revision(target)?;
         self.write(&["merge", "--no-edit", "--", target])
+            .map(|_| ())
+    }
+
+    /// Merges commit `id`, the reviewed tip of branch `full_ref`, with the
+    /// message Git writes when merging that branch by name. Merging the ID
+    /// keeps a branch that moved since the review from bringing in more.
+    pub(crate) fn merge_branch_at(&self, full_ref: &str, id: &str) -> Result<(), WriteError> {
+        validate_revision(full_ref)?;
+        validate_revision(id)?;
+        let name = gitcrab_core::presentation::short_ref(full_ref);
+        let source = if full_ref.starts_with("refs/heads/") {
+            format!("branch '{name}'")
+        } else {
+            format!("remote-tracking branch '{name}'")
+        };
+        let input = format!("{id}\t\t{source} of .\n");
+        let output = capture(
+            self.read_command(&["fmt-merge-msg"])?,
+            Some(input.as_bytes()),
+            0,
+            None,
+        )
+        .map_err(WriteError::inspect)?;
+        if !output.status.success() {
+            return Err(WriteError::inspect(Self::failed_output(&output)));
+        }
+        let message = String::from_utf8_lossy(&output.stdout);
+        self.write(&["merge", "--no-edit", "-m", message.trim_end(), "--", id])
             .map(|_| ())
     }
     /// Cherry-picks the target onto the current checkout.
@@ -601,9 +756,46 @@ impl Git {
         }
         Ok(())
     }
-    /// Applies the latest stash and drops it if Git applies it successfully.
+    /// Applies the latest stash with its staged changes and drops it if Git
+    /// applies it successfully.
     pub fn stash_pop(&self) -> Result<(), WriteError> {
-        self.write(&["stash", "pop"]).map(|_| ())
+        self.write(&["stash", "pop", "--index"]).map(|_| ())
+    }
+
+    /// Applies stash commit `id` like `git stash pop --index`: staged changes
+    /// return to the index and the rest to the working tree. Returns whether
+    /// the staged changes were restored.
+    ///
+    /// When Git cannot rebuild the stashed index on the current one (it says
+    /// to try without `--index`), it has changed nothing. That is checked
+    /// before the stash is applied again with every change unstaged.
+    ///
+    /// # Errors
+    ///
+    /// Returns Git's failure, including conflicts, or an
+    /// [`FailureKind::Inspect`] error when the refused attempt changed tracked
+    /// files after all.
+    pub(crate) fn stash_apply_with_index(&self, id: &str) -> Result<bool, WriteError> {
+        let before = self.capture_tracked_state()?;
+        let error = match self.stash_apply(id, true) {
+            Ok(()) => return Ok(true),
+            Err(error) => error,
+        };
+        if error.kind != FailureKind::GitFailure || !error.message.contains("without --index") {
+            return Err(error);
+        }
+        let unchanged = match &before {
+            Some(state) => self.tracked_state_matches(state),
+            None => self.has_tracked_changes().map(|changed| !changed),
+        }
+        .map_err(WriteError::inspect)?;
+        if !unchanged {
+            return Err(WriteError::inspect(
+                "Git could not restore the stash's staged changes, and tracked files changed anyway. The stash is still listed.",
+            ));
+        }
+        self.stash_apply(id, false)?;
+        Ok(false)
     }
 
     /// Drops the newest stash entry whose commit is `id`.
@@ -670,6 +862,64 @@ impl Git {
         validate_revision(target)?;
         self.write(&["rebase", target]).map(|_| ())
     }
+
+    /// Abandons the stopped `sequence` and restores HEAD, the index and the
+    /// working tree to their state before it started.
+    pub fn abort_sequence(&self, sequence: Sequence) -> Result<(), WriteError> {
+        self.write(&[sequence.name(), "--abort"]).map(|_| ())
+    }
+
+    /// Concludes the step `sequence` stopped at and lets it go on.
+    ///
+    /// A merge, cherry-pick or revert commits with `message`, or with Git's
+    /// prepared message when it is `None` or blank. A rebase keeps each
+    /// commit's own message. No editor opens.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Git refuses, for example while conflicts remain,
+    /// or when it stops again at the next conflicting commit.
+    pub fn continue_sequence(
+        &self,
+        sequence: Sequence,
+        message: Option<&str>,
+    ) -> Result<(), WriteError> {
+        let message = message.filter(|m| !m.trim().is_empty() && sequence.takes_message());
+        match (sequence, message) {
+            // `git merge --continue` only runs `git commit`, so a merge with
+            // MERGE_HEAD present concludes through the ordinary commit.
+            (Sequence::Merge, Some(message)) => self.commit(message),
+            (Sequence::Merge, None) => self
+                .write(&["commit", "--no-edit", "--cleanup=strip"])
+                .map(|_| ()),
+            (_, message) => {
+                if let Some(message) = message {
+                    let path = self.run(&[
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--git-path",
+                        "MERGE_MSG",
+                    ])?;
+                    std::fs::write(path.trim_end_matches(['\r', '\n']), format!("{message}\n"))
+                        .map_err(|error| {
+                            WriteError::from(format!("Could not save the commit message: {error}"))
+                        })?;
+                }
+                self.write(&["-c", NO_EDITOR_CONFIG, sequence.name(), "--continue"])
+                    .map(|_| ())
+            }
+        }
+    }
+
+    /// Drops the commit the stopped rebase or cherry-pick is at and goes on
+    /// with the rest.
+    pub fn skip_sequence(&self, sequence: Sequence) -> Result<(), WriteError> {
+        if !sequence.can_skip() {
+            return Err(gitcrab_core::commands::SKIP_UNSUPPORTED.into());
+        }
+        self.write(&["-c", NO_EDITOR_CONFIG, sequence.name(), "--skip"])
+            .map(|_| ())
+    }
     /// Resets HEAD to `target` while preserving working-tree contents.
     /// With `soft`, the index stays as it is. A mixed reset updates the index
     /// to match `target`.
@@ -713,6 +963,45 @@ impl Git {
             Some(1) if output.stderr.is_empty() => Ok(None),
             _ => Err(Self::failed_output(&output)),
         }
+    }
+
+    /// Whether commit `ancestor` is reachable from `descendant` (or is it).
+    pub(crate) fn is_ancestor(&self, ancestor: &str, descendant: &str) -> GitResult<bool> {
+        validate_revision(ancestor)?;
+        validate_revision(descendant)?;
+        let output = self.output(&["merge-base", "--is-ancestor", ancestor, descendant])?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(Self::failed_output(&output)),
+        }
+    }
+
+    /// Full names of the remote-tracking branches that contain commit `id`.
+    /// Symbolic refs such as `refs/remotes/origin/HEAD` are left out.
+    pub(crate) fn remote_refs_containing(&self, id: &str) -> GitResult<Vec<String>> {
+        validate_revision(id)?;
+        Ok(self
+            .run(&[
+                "for-each-ref",
+                "--format=%(refname)%00%(symref)",
+                "--contains",
+                id,
+                "refs/remotes/",
+            ])?
+            .lines()
+            .filter_map(|line| match line.split_once('\0') {
+                Some((name, "")) => Some(name.to_owned()),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// The full upstream ref of local branch `full_ref`, if it has one.
+    pub(crate) fn upstream_of(&self, full_ref: &str) -> GitResult<Option<String>> {
+        validate_revision(full_ref)?;
+        let line = self.run(&["for-each-ref", "--format=%(upstream)", full_ref])?;
+        Ok(Some(line.trim().to_owned()).filter(|upstream| !upstream.is_empty()))
     }
 
     /// Parent IDs of commit `id`, or `None` when no such commit exists.

@@ -589,6 +589,7 @@ fn run_scenarios(args: &Args, files: usize) -> Results {
                     op: Operation::CreateBranch,
                     target: name.clone(),
                     destination,
+                    expected: None,
                 }))
             },
             None,
@@ -609,6 +610,7 @@ fn run_scenarios(args: &Args, files: usize) -> Results {
                         op: Operation::Checkout,
                         target: target.into(),
                         destination,
+                        expected: None,
                     }))
                 },
                 None,
@@ -624,6 +626,7 @@ fn run_scenarios(args: &Args, files: usize) -> Results {
                     op: Operation::Stash,
                     target: format!("bench {i}"),
                     destination,
+                    expected: None,
                 }))
             },
             None,
@@ -636,6 +639,7 @@ fn run_scenarios(args: &Args, files: usize) -> Results {
                     op: Operation::PopStash,
                     target: String::new(),
                     destination,
+                    expected: None,
                 }))
             },
             None,

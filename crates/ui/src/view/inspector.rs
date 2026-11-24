@@ -1,6 +1,6 @@
 use super::*;
 use gitcrab_core::{
-    git::FileChange,
+    git::{FileChange, Sequence},
     presentation::{ordinal, reflow_body},
 };
 
@@ -581,6 +581,9 @@ impl GitCrab {
         if c.stash {
             return el;
         }
+        let branch = self.state.snapshot.as_ref().and_then(|snapshot| {
+            gitcrab_core::presentation::commit_branch(snapshot, &id, self.state.previewed_ref())
+        });
         el.child(
             div()
                 .flex_none()
@@ -596,8 +599,14 @@ impl GitCrab {
                         .into_iter()
                         .enumerate()
                         .map(|(i, command)| {
-                            let id = id.clone();
-                            self.action_button(("commit-op", i), command.menu_label())
+                            let (target, label) = match (command, &branch) {
+                                (Command::Checkout, Some(branch)) => (
+                                    branch.clone(),
+                                    format!("{} {branch}", command.label()).into(),
+                                ),
+                                _ => (id.clone(), SharedString::from(command.menu_label())),
+                            };
+                            self.action_button(("commit-op", i), label)
                                 .flex_none()
                                 .disabled_when(
                                     !command.availability_for_commit(commands, parents).enabled(),
@@ -610,7 +619,7 @@ impl GitCrab {
                                     },
                                 )
                                 .on_click(cx.listener(move |v, _, w, cx| {
-                                    v.run_command(command, id.clone(), w, cx)
+                                    v.run_command(command, target.clone(), w, cx)
                                 }))
                         }),
                 ),
@@ -638,7 +647,8 @@ impl GitCrab {
                 .child(div().flex_1()),
         );
         if !conflicts.is_empty() || !snapshot.operations.is_empty() {
-            el = el.child(self.operation_banner(conflicts.len(), cx));
+            let commands = self.command_context(window, cx);
+            el = el.child(self.operation_banner(conflicts.len(), &commands, cx));
         }
         if snapshot.status.is_empty() {
             el = el.child(
@@ -745,7 +755,12 @@ impl GitCrab {
         el.child(self.composer(cx))
     }
 
-    fn operation_banner(&self, conflicts: usize, cx: &mut Context<Self>) -> Div {
+    fn operation_banner(
+        &self,
+        conflicts: usize,
+        commands: &CommandContext,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let snapshot = self.state.snapshot.as_ref().unwrap();
         let title = match snapshot.operation_label() {
             Some(op) => {
@@ -832,6 +847,67 @@ impl GitCrab {
                     .text_role(Role::TextSecondary)
                     .child(snapshot.operation_recovery()),
             )
+            .when_some(snapshot.sequence(), |banner, sequence| {
+                banner.child(self.sequence_steps(sequence, commands, cx))
+            })
+    }
+
+    /// Abort, Skip and Continue for the operation Git stopped part-way.
+    fn sequence_steps(
+        &self,
+        sequence: Sequence,
+        commands: &CommandContext,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let name = sequence.name();
+        let step = |command: Command, button: Button, enabled_tip: String| {
+            let availability = command.availability(commands);
+            button
+                .tab_stop(!self.settings_open && availability.enabled())
+                .disabled_when(!availability.enabled())
+                .tooltip(match availability.reason() {
+                    Some(_) => command.describe(commands),
+                    None => enabled_tip,
+                })
+                .on_click(
+                    cx.listener(move |v, _, w, cx| v.run_command(command, String::new(), w, cx)),
+                )
+        };
+        let continue_tip = format!("Continue {}", sequence.continue_effect());
+        div()
+            .pt_1()
+            .flex()
+            .flex_wrap()
+            .justify_end()
+            .gap_1()
+            .child(step(
+                Command::Abort,
+                components::style(
+                    Button::new("sequence-abort").label(format!("Abort {name}…")),
+                    components::ButtonKind::Discard,
+                    ControlSize::Compact,
+                    cx,
+                ),
+                format!("Return to the state before the {name}. Asks first."),
+            ))
+            .when(sequence.can_skip(), |row| {
+                row.child(step(
+                    Command::Skip,
+                    self.action_button("sequence-skip", "Skip commit…"),
+                    format!("Leave out the commit the {name} stopped at. Asks first."),
+                ))
+            })
+            .child(step(
+                Command::Continue,
+                components::basic(
+                    Button::new("sequence-continue")
+                        .label("Continue")
+                        .icon(icon("check")),
+                    components::ButtonKind::Primary,
+                    ControlSize::Compact,
+                ),
+                continue_tip,
+            ))
     }
 
     fn section_header(
@@ -1028,6 +1104,103 @@ impl GitCrab {
             .into_any_element()
     }
 
+    /// Confirms Abort or Skip, which throw away conflict resolutions, before
+    /// running it on the operation in progress.
+    pub(super) fn confirm_sequence_step(
+        &mut self,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(sequence) = self.state.snapshot.as_ref().and_then(|s| s.sequence()) else {
+            return;
+        };
+        if self.state.blocking_write() || window.has_active_dialog(cx) {
+            return;
+        }
+        let skip = command == Command::Skip;
+        let name = sequence.name();
+        let (title, description, confirm) = if skip {
+            (
+                "Skip this commit?".to_string(),
+                format!("The {name} leaves out the commit it stopped at."),
+                "Skip commit".to_string(),
+            )
+        } else {
+            (
+                format!("Abort the {name}?"),
+                format!("Everything since the {name} started is undone."),
+                format!("Abort {name}"),
+            )
+        };
+        let explanation = match (sequence, skip) {
+            (_, true) => format!(
+                "GitCrab runs git {name} --skip. The commit's changes and any conflict resolution made for it are discarded, and the {name} goes on with the next commit."
+            ),
+            (Sequence::Merge, false) => "GitCrab runs git merge --abort. The index and working tree return to HEAD as it was before the merge, discarding every conflict resolution and other change staged since.".into(),
+            (Sequence::Rebase, false) => "GitCrab runs git rebase --abort. The branch returns to the commit it pointed to before the rebase. Commits already replayed and every conflict resolution are discarded.".into(),
+            (_, false) => format!(
+                "GitCrab runs git {name} --abort. HEAD returns to the commit before the {name} started, and every conflict resolution is discarded."
+            ),
+        };
+        let epoch = self.state.epoch;
+        let repo = gitcrab_core::presentation::display_path(&self.state.path);
+        let weak = cx.weak_entity();
+        let cancel_focus = cx.focus_handle();
+        let scroll = ScrollHandle::new();
+        let initial_focus = cancel_focus.clone();
+        window.open_alert(cx, move |dialog, _, cx| {
+            let weak = weak.clone();
+            let run = components::style(
+                Button::new("confirm-sequence-step")
+                    .label(confirm.clone())
+                    .tab_stop(true),
+                components::ButtonKind::Discard,
+                ControlSize::Regular,
+                cx,
+            )
+            .on_click(move |_, w, cx| {
+                let _ = weak.update(cx, |v, cx| {
+                    let current = v.state.snapshot.as_ref().and_then(|s| s.sequence());
+                    if v.state.epoch == epoch && !v.state.busy && current == Some(sequence) {
+                        let op = if skip {
+                            Operation::Skip
+                        } else {
+                            Operation::Abort
+                        };
+                        v.run_operation(op, name.to_owned(), w, cx);
+                    }
+                });
+                w.close_dialog(cx);
+            });
+            dialog
+                .frame(
+                    ModalHeader::new(title.clone())
+                        .description(description.clone())
+                        .tone(Tone::Danger),
+                    ModalWidth::Small,
+                    cx,
+                )
+                .confirm()
+                .body(
+                    &scroll,
+                    modal_body()
+                        .child(modal::subject(
+                            format!("{} in progress", sequence.title()),
+                            Some(repo.clone().into()),
+                        ))
+                        .child(modal::paragraph(explanation.clone())),
+                )
+                .on_ok(|_, _, _| true)
+                .footer(
+                    ModalFooter::new()
+                        .action(components::dialog_cancel_focused(&cancel_focus, cx))
+                        .action(run),
+                )
+        });
+        window.on_next_frame(move |w, cx| initial_focus.focus(w, cx));
+    }
+
     /// Confirms staging a conflicted file's working-tree content as its resolution.
     pub(super) fn review_resolution(
         &mut self,
@@ -1158,6 +1331,12 @@ impl GitCrab {
             }
         };
         let short_head = short_id(&snapshot.head_id);
+        let sequence = snapshot.sequence();
+        let draft_differs_from_git = snapshot
+            .operation_message
+            .as_ref()
+            .filter(|_| sequence.is_some_and(Sequence::takes_message))
+            .map(|message| *message != self.state.draft);
         let branches_at_head: Vec<String> = if snapshot.is_detached() {
             snapshot
                 .branches
@@ -1187,7 +1366,48 @@ impl GitCrab {
                     .justify_between()
                     .child(div().font_weight(FontWeight::MEDIUM).child("Commit")),
             )
-            .when(snapshot.is_detached(), |el| {
+            .when(sequence == Some(Sequence::Rebase), |el| {
+                el.child(
+                    div()
+                        .mx(scaled(INSPECTOR_INSET))
+                        .mt(px(COMPOSER_GAP))
+                        .text_size(scaled(TEXT_SIZE_SMALL))
+                        .text_role(Role::StatusWarningFg)
+                        .child(format!(
+                            "Rebasing at {short_head}. HEAD stays detached until the rebase finishes, and each commit keeps its own message. Use Continue, Skip or Abort under Working changes."
+                        )),
+                )
+            })
+            .when_some(draft_differs_from_git, |el, differs| {
+                let effect = sequence.map_or("", Sequence::continue_effect);
+                el.child(
+                    div()
+                        .mx(scaled(INSPECTOR_INSET))
+                        .mt(px(COMPOSER_GAP))
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(scaled(TEXT_SIZE_SMALL))
+                                .text_role(Role::TextSecondary)
+                                .child(format!("Continue {effect}.")),
+                        )
+                        .when(differs, |row| {
+                            row.child(
+                                self.action_button("use-git-message", "Use Git's message")
+                                    .tooltip("Replace the draft with the message Git prepared")
+                                    .disabled_when(self.state.blocking_write())
+                                    .on_click(cx.listener(|v, _, w, cx| {
+                                        v.use_operation_message(w, cx)
+                                    })),
+                            )
+                        }),
+                )
+            })
+            .when(snapshot.is_detached() && !snapshot.commit_blocked(), |el| {
                 el.child(
                     div()
                         .mx(scaled(INSPECTOR_INSET))
