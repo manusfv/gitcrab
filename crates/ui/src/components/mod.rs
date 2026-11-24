@@ -23,7 +23,7 @@ pub mod picker;
 pub mod rail;
 
 pub use buttons::*;
-pub use menu::menu_item;
+pub use menu::{clip, copy_item, menu_item, open_item, reveal_item, worktree_file};
 
 /// The components and helpers views use, for a single glob import.
 pub mod prelude {

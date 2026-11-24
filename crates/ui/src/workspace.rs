@@ -8,7 +8,12 @@ use super::{
     view::{CloneRepository, CreateRepository, GitCrab, Open, Quit},
 };
 use gitcrab_core::presentation::{display_path, path_labels};
-use gpui::component::{button::*, tooltip::Tooltip, Sizable, WindowExt};
+use gpui::component::{
+    button::*,
+    menu::{ContextMenuExt as _, PopupMenu},
+    tooltip::Tooltip,
+    Sizable, WindowExt,
+};
 use gpui::{prelude::*, *};
 use std::{cell::RefCell, rc::Rc};
 
@@ -483,6 +488,118 @@ impl Workspace {
             return;
         }
         self.close_after_flush(index, window, cx);
+    }
+
+    /// Closes several tabs with one draft confirmation and one settings
+    /// flush. Tabs running a Git write stay open.
+    fn close_many(&mut self, ids: Vec<EntityId>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(window, cx) {
+            return;
+        }
+        let closing: Vec<&Entity<GitCrab>> = self
+            .tabs
+            .iter()
+            .filter(|tab| ids.contains(&tab.entity_id()) && !tab.read(cx).mutating())
+            .collect();
+        let drafts = closing
+            .iter()
+            .filter(|tab| tab.read(cx).has_drafts())
+            .count();
+        let ids: Vec<EntityId> = closing.iter().map(|tab| tab.entity_id()).collect();
+        if ids.is_empty() {
+            return;
+        }
+        if drafts > 0 {
+            let message = match drafts {
+                1 => "Close these tabs and discard one tab's drafts?".to_string(),
+                n => format!("Close these tabs and discard drafts in {n} tabs?"),
+            };
+            self.confirm_discard(&message, window, cx, move |v, w, cx| {
+                v.close_many_after_flush(ids, w, cx)
+            });
+            return;
+        }
+        self.close_many_after_flush(ids, window, cx);
+    }
+
+    fn close_many_after_flush(
+        &mut self,
+        ids: Vec<EntityId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let identities: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|tab| ids.contains(&tab.entity_id()))
+            .map(|tab| (tab.entity_id(), tab.read(cx).close_identity()))
+            .collect();
+        self.after_persistence(window, cx, move |v, w, cx| {
+            let mut changed = false;
+            for (id, identity) in identities {
+                let Some(index) = v.tabs.iter().position(|tab| tab.entity_id() == id) else {
+                    continue;
+                };
+                let tab = v.tabs[index].read(cx);
+                if tab.mutating() || tab.close_identity() != identity {
+                    changed = true;
+                } else {
+                    v.close_now(index, w, cx);
+                }
+            }
+            if changed {
+                v.picker_error =
+                    Some("A tab changed while closing. Review it before closing again.".into());
+            }
+        });
+    }
+
+    /// The tab's context menu: close actions, then its repository's path.
+    fn tab_menu(
+        &self,
+        tab_id: EntityId,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let workspace = cx.entity();
+        move |menu, _, cx| {
+            let v = workspace.read(cx);
+            let Some(index) = v.tabs.iter().position(|tab| tab.entity_id() == tab_id) else {
+                return menu;
+            };
+            let ids: Vec<EntityId> = v.tabs.iter().map(|tab| tab.entity_id()).collect();
+            let tab = v.tabs[index].read(cx);
+            let closable = !tab.mutating();
+            let path = tab.repository_path().to_owned();
+            let others: Vec<EntityId> = ids.iter().copied().filter(|id| *id != tab_id).collect();
+            let right: Vec<EntityId> = ids[index + 1..].to_vec();
+            let close = |label: &'static str, enabled: bool, ids: Vec<EntityId>| {
+                let workspace = workspace.clone();
+                components::menu_item(label, enabled).on_click(move |_, w, cx| {
+                    workspace.update(cx, |v, cx| v.close_many(ids.clone(), w, cx))
+                })
+            };
+            let new_tab = workspace.clone();
+            let mut menu = menu
+                .item(close("Close tab", closable, vec![tab_id]))
+                .item(close("Close other tabs", !others.is_empty(), others))
+                .item(close("Close tabs to the right", !right.is_empty(), right))
+                .separator()
+                .item(
+                    components::menu_item("New tab", true)
+                        .on_click(move |_, w, cx| new_tab.update(cx, |v, cx| v.add(None, w, cx))),
+                );
+            if !path.is_empty() {
+                let shown = std::path::PathBuf::from(display_path(&path));
+                menu = menu
+                    .separator()
+                    .item(components::copy_item(
+                        "Copy repository path",
+                        shown.to_string_lossy().into_owned(),
+                    ))
+                    .item(components::reveal_item(shown));
+            }
+            menu
+        }
     }
 
     fn close_after_flush(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1226,7 +1343,8 @@ impl Render for Workspace {
                                 v.close(index, w, cx);
                             }
                         })),
-                    ),
+                    )
+                    .context_menu(self.tab_menu(tab_id, cx)),
                 self.tab_drag.as_ref(),
                 tab_id,
                 now,
