@@ -6,7 +6,7 @@ use gpui::component::{
     button::Button,
     menu::{ContextMenuExt as _, PopupMenu},
     tooltip::Tooltip,
-    Sizable,
+    FocusableExt as _, Sizable,
 };
 use gpui::{prelude::*, *};
 use std::rc::Rc;
@@ -256,6 +256,9 @@ impl RenderOnce for ListRow {
             .chain(self.trailing);
         let target = if self.focusable {
             super::buttons::without_interaction_fill(Button::new(self.id), foreground, cx)
+                // The library rings a button focused by a click too; the
+                // ring is for keyboard focus only.
+                .focus_ring(window.last_input_was_keyboard())
                 .small()
                 .tab_stop(self.tab_stop && !self.disabled)
                 .set_disabled(self.disabled)
