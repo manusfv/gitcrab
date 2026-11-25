@@ -71,13 +71,6 @@ impl GitCrab {
             .pop()
             .map(|label| label.name)
             .unwrap_or_else(|| shown.clone());
-        let mut metadata = vec![("Git metadata", display_location(&location.git_dir))];
-        if location.common_dir != location.git_dir {
-            metadata.push((
-                "Shared Git metadata",
-                display_location(&location.common_dir),
-            ));
-        }
         let view = cx.weak_entity();
         let scroll = ScrollHandle::new();
         window.open_alert(cx, move |dialog, _, cx| {
@@ -89,15 +82,8 @@ impl GitCrab {
                 .child(modal::paragraph(
                     "Only continue if you trust its local Git configuration and metadata.",
                 ))
-                .child(
-                    modal::section("Details").children(
-                        metadata
-                            .iter()
-                            .map(|(label, path)| modal::detail_row(*label, path.clone())),
-                    ),
-                )
                 .child(modal::fine_print(
-                    "Trust and open remembers this approval for these paths, including after restart. Cancel opens nothing.",
+                    "Trust and open remembers this approval for this repository, including after restart. Cancel opens nothing.",
                 ));
             dialog
                 .frame(
