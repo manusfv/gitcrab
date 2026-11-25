@@ -15,6 +15,8 @@ pub struct Commit {
     #[serde(default)]
     pub body_preview: String,
     pub author: String,
+    #[serde(default)]
+    pub author_email: String,
     /// Author date in strict ISO 8601 format.
     pub date: String,
     /// Display names of refs pointing at this commit, including the `HEAD` label.
@@ -349,7 +351,7 @@ pub struct StashEntry {
     pub date: String,
 }
 
-/// Parses `git stash list --format=%H%x00%P%x00%an%x00%aI%x00%ci%x00%gs`,
+/// Parses `git stash list --format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%ci%x00%gs`,
 /// newest first, into history rows and list entries.
 ///
 /// Each row keeps only the stash's base commit as its parent, so the commits
@@ -358,8 +360,8 @@ pub fn parse_stashes(output: &str) -> Vec<(Commit, StashEntry)> {
     output
         .lines()
         .filter_map(|line| {
-            let mut fields = line.splitn(6, '\0');
-            let [id, parents, author, date, created, message] =
+            let mut fields = line.splitn(7, '\0');
+            let [id, parents, author, author_email, date, created, message] =
                 std::array::from_fn(|_| fields.next().unwrap_or_default());
             let base = parents.split_whitespace().next()?;
             let row = Commit {
@@ -367,6 +369,7 @@ pub fn parse_stashes(output: &str) -> Vec<(Commit, StashEntry)> {
                 parents: vec![base.to_owned()],
                 subject: message.to_owned(),
                 author: author.to_owned(),
+                author_email: author_email.to_owned(),
                 date: date.to_owned(),
                 stash: true,
                 ..Default::default()

@@ -1,4 +1,5 @@
 use super::*;
+use components::{ContextMenu, MenuTarget};
 use gitcrab_core::sidebar::{section, section_key, tree_rows, RefFilter, TreeRow};
 use std::rc::Rc;
 
@@ -15,7 +16,7 @@ const FOLDER_INDENT: f32 = 4.;
 const ENTRY_INDENT: f32 = 18.;
 
 type EntryClick = Rc<dyn Fn(&mut GitCrab, &ClickEvent, &mut Window, &mut Context<GitCrab>)>;
-type EntryMenu = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
+type EntryMenu = Rc<dyn Fn(&mut Window, &mut App) -> ContextMenu>;
 
 /// The reference a sidebar context menu acts on.
 struct MenuReference {
@@ -30,21 +31,23 @@ struct MenuReference {
 
 /// A menu entry that runs `command` on `target` through the shared command model.
 fn command_item(
-    view: &Entity<GitCrab>,
+    menu: ContextMenu,
+    view: &MenuTarget<GitCrab>,
     commands: &CommandContext,
     command: Command,
     label: impl Into<SharedString>,
     target: String,
-) -> PopupMenuItem {
-    let view = view.clone();
-    components::menu_item(label, command.availability(commands).enabled()).on_click(
-        move |_, w, cx| view.update(cx, |v, cx| v.run_command(command, target.clone(), w, cx)),
+) -> ContextMenu {
+    menu.item(
+        label,
+        command.availability(commands).enabled(),
+        view.command(MenuCommand::Run(command, target)),
     )
 }
 
 /// Checkout, Merge, Pull and Push for a branch or tag, then Create branch and copy actions.
 fn reference_menu(view: Entity<GitCrab>, reference: MenuReference) -> EntryMenu {
-    Rc::new(move |mut menu, w, cx| {
+    Rc::new(move |w, cx| {
         let (commands, head) = view.update(cx, |v, cx| {
             let head = v
                 .state
@@ -53,6 +56,7 @@ fn reference_menu(view: Entity<GitCrab>, reference: MenuReference) -> EntryMenu 
                 .and_then(|s| s.checked_out_branch().map(str::to_owned));
             (v.command_context(w, cx), head)
         });
+        let target_view = MenuTarget::new(w, view.downgrade());
         let MenuReference {
             kind,
             target,
@@ -60,37 +64,37 @@ fn reference_menu(view: Entity<GitCrab>, reference: MenuReference) -> EntryMenu 
             tip,
             checked_out,
         } = &reference;
-        let name = components::clip(label);
+        let mut menu = ContextMenu::new();
         if *checked_out {
             for command in [Command::Pull, Command::Push] {
-                menu = menu.item(command_item(
-                    &view,
+                menu = command_item(
+                    menu,
+                    &target_view,
                     &commands,
                     command,
                     command.label(),
                     String::new(),
-                ));
+                );
             }
         } else {
-            let into = components::clip(head.as_deref().unwrap_or("HEAD"));
-            menu = menu
-                .item(command_item(
-                    &view,
-                    &commands,
-                    Command::Checkout,
-                    format!("Checkout {name}"),
-                    target.clone(),
-                ))
-                .item(command_item(
-                    &view,
-                    &commands,
-                    Command::Merge,
-                    format!("Merge {name} into {into}"),
-                    target.clone(),
-                ));
+            let into = head.as_deref().unwrap_or("HEAD");
+            menu = command_item(
+                menu,
+                &target_view,
+                &commands,
+                Command::Checkout,
+                format!("Checkout {label}"),
+                target.clone(),
+            );
+            menu = command_item(
+                menu,
+                &target_view,
+                &commands,
+                Command::Merge,
+                format!("Merge {label} into {into}"),
+                target.clone(),
+            );
         }
-        let create = view.clone();
-        let start = target.clone();
         let noun = if *kind == ReferenceKind::Tag {
             "tag"
         } else {
@@ -98,33 +102,31 @@ fn reference_menu(view: Entity<GitCrab>, reference: MenuReference) -> EntryMenu 
         };
         menu.separator()
             .item(
-                components::menu_item("Create branch here…", true).on_click(move |_, w, cx| {
-                    create.update(cx, |v, cx| v.prompt_branch(Some(start.clone()), w, cx))
-                }),
+                "Create branch here…",
+                true,
+                target_view.command(MenuCommand::CreateBranch(target.clone())),
             )
             .separator()
-            .item(components::copy_item(
-                format!("Copy {noun} name"),
-                label.clone(),
-            ))
-            .item(components::copy_item("Copy commit SHA", tip.clone()))
+            .copy(format!("Copy {noun} name"), label.clone())
+            .copy("Copy commit SHA", tip.clone())
     })
 }
 
 /// A section header's menu: one command, such as Fetch for Remotes.
 fn command_menu(view: Entity<GitCrab>, commands: &'static [Command]) -> EntryMenu {
-    Rc::new(move |mut menu, w, cx| {
+    Rc::new(move |w, cx| {
         let context = view.update(cx, |v, cx| v.command_context(w, cx));
-        for &command in commands {
-            menu = menu.item(command_item(
-                &view,
+        let target = MenuTarget::new(w, view.downgrade());
+        commands.iter().fold(ContextMenu::new(), |menu, &command| {
+            command_item(
+                menu,
+                &target,
                 &context,
                 command,
                 command.menu_label(),
                 String::new(),
-            ));
-        }
-        menu
+            )
+        })
     })
 }
 
@@ -306,7 +308,7 @@ impl GitCrab {
                     .highlighted(previewed)
                     .tooltip(tooltip)
                     .on_click(cx.listener(move |v, e: &ClickEvent, w, cx| on_click(v, e, w, cx)))
-                    .context_menu(move |m, w, cx| menu(m, w, cx)),
+                    .context_menu(move |w, cx| menu(w, cx)),
             );
         }
         tree
@@ -378,7 +380,7 @@ impl GitCrab {
                     }))
                     .context_menu({
                         let menu = command_menu(view.clone(), &[Command::Stash, Command::PopStash]);
-                        move |m, w, cx| menu(m, w, cx)
+                        move |w, cx| menu(w, cx)
                     }),
             );
         if let Some(s) = &self.state.snapshot {
@@ -441,7 +443,7 @@ impl GitCrab {
                 )
                 .context_menu({
                     let menu = command_menu(view.clone(), &[Command::CreateBranch]);
-                    move |m, w, cx| menu(m, w, cx)
+                    move |w, cx| menu(w, cx)
                 });
             let tree = self.sidebar_tree("", entries, filtering, cx);
             nav = nav.child(self.sidebar_section(
@@ -519,7 +521,7 @@ impl GitCrab {
                     )
                     .when(!header_commands.is_empty(), |header| {
                         let menu = command_menu(view.clone(), header_commands);
-                        header.context_menu(move |m, w, cx| menu(m, w, cx))
+                        header.context_menu(move |w, cx| menu(w, cx))
                     });
                 let tree = self.sidebar_tree(kind, entries, filtering, cx);
                 nav = nav.child(self.sidebar_section(
@@ -546,7 +548,7 @@ impl GitCrab {
                 .on_click(cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)))
                 .context_menu({
                     let menu = command_menu(view.clone(), &[Command::Stash, Command::PopStash]);
-                    move |m, w, cx| menu(m, w, cx)
+                    move |w, cx| menu(w, cx)
                 });
             let latest = div().when_some(s.latest_stash.as_ref(), |section, stash| {
                 // Pop stash acts on this entry, so name it where the button is.

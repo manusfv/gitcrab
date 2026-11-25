@@ -42,6 +42,15 @@ pub fn short_id(id: &str) -> &str {
         .map_or(id, |(end, _)| &id[..end])
 }
 
+/// A commit author as `Name <email>`, or the name alone when there is no email.
+pub fn author_label(name: &str, email: &str) -> String {
+    if email.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} <{email}>")
+    }
+}
+
 fn components(path: &str) -> Vec<&str> {
     path.split(['/', '\\']).filter(|c| !c.is_empty()).collect()
 }
@@ -635,6 +644,15 @@ pub fn reflow_body(body: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn author_labels_add_the_email_when_known() {
+        assert_eq!(
+            author_label("Ada", "ada@example.invalid"),
+            "Ada <ada@example.invalid>"
+        );
+        assert_eq!(author_label("Ada", ""), "Ada");
+    }
 
     #[test]
     fn commit_bodies_reflow_paragraphs_but_keep_lists_and_trailers() {

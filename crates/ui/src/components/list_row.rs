@@ -2,17 +2,12 @@
 use super::buttons::ButtonExt as _;
 use crate::theme::Role;
 use crate::theme::*;
-use gpui::component::{
-    button::Button,
-    menu::{ContextMenuExt as _, PopupMenu},
-    tooltip::Tooltip,
-    FocusableExt as _, Sizable,
-};
+use gpui::component::{button::Button, tooltip::Tooltip, FocusableExt as _, Sizable};
 use gpui::{prelude::*, *};
 use std::rc::Rc;
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
-type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
+type MenuBuilder = Rc<dyn Fn(&mut Window, &mut App) -> super::ContextMenu>;
 
 /// One row of a list.
 ///
@@ -201,7 +196,7 @@ impl ListRow {
     /// while the menu is open.
     pub fn context_menu(
         mut self,
-        builder: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+        builder: impl Fn(&mut Window, &mut App) -> super::ContextMenu + 'static,
     ) -> Self {
         self.menu = Some(Rc::new(builder));
         self
@@ -255,35 +250,45 @@ impl RenderOnce for ListRow {
             .chain(self.label)
             .chain(self.trailing);
         let target = if self.focusable {
-            super::buttons::without_interaction_fill(Button::new(self.id), foreground, cx)
-                // The library rings a button focused by a click too; the
-                // ring is for keyboard focus only.
-                .focus_ring(window.last_input_was_keyboard())
-                .small()
-                .tab_stop(self.tab_stop && !self.disabled)
-                .set_disabled(self.disabled)
+            let button =
+                super::buttons::without_interaction_fill(Button::new(self.id), foreground, cx)
+                    // The library rings a button focused by a click too; the
+                    // ring is for keyboard focus only.
+                    .focus_ring(window.last_input_was_keyboard())
+                    .small()
+                    .tab_stop(self.tab_stop && !self.disabled)
+                    .set_disabled(self.disabled)
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .px_0()
+                    .justify_start()
+                    .rounded(px(0.))
+                    .bg(transparent_black())
+                    .border_color(transparent_black())
+                    .text_role(foreground)
+                    .when(pad_inner_left, |b| b.pl(scaled(left)))
+                    .when(pad_inner_right, |b| b.pr(scaled(right)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .children(body),
+                    )
+                    .when_some(self.on_click, |b, handler| b.on_click(handler));
+            div()
+                .id(SharedString::from(format!("{row_id}-target")))
                 .flex_1()
                 .min_w_0()
                 .h_full()
-                .px_0()
-                .justify_start()
-                .rounded(px(0.))
-                .bg(transparent_black())
-                .border_color(transparent_black())
-                .text_role(foreground)
-                .when(pad_inner_left, |b| b.pl(scaled(left)))
-                .when(pad_inner_right, |b| b.pr(scaled(right)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .children(body),
-                )
-                .when_some(self.tooltip, |b, tooltip| b.tooltip(tooltip))
-                .when_some(self.on_click, |b, handler| b.on_click(handler))
+                .flex()
+                .child(button)
+                .when_some(self.tooltip, |d, text| {
+                    d.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+                })
                 .into_any_element()
         } else {
             div()
@@ -336,21 +341,13 @@ impl RenderOnce for ListRow {
             .map(|row| super::apply_style(row, &self.style));
         match (self.menu, menu_open) {
             (Some(builder), Some(open)) => row
-                .context_menu(move |menu, w, cx| {
-                    super::menu::track_open_menu(w, cx);
-                    open.update(cx, |open, cx| {
-                        *open = true;
-                        cx.notify();
-                    });
+                .on_mouse_up(MouseButton::Right, move |event, window, cx| {
+                    cx.stop_propagation();
+                    open.write(cx, true);
                     let closed = open.clone();
-                    cx.subscribe_self(move |_, _: &DismissEvent, cx| {
-                        closed.update(cx, |open, cx| {
-                            *open = false;
-                            cx.notify();
-                        })
-                    })
-                    .detach();
-                    builder(menu, w, cx)
+                    builder(window, cx).show(event.position, window, cx, move |cx| {
+                        closed.write(cx, false)
+                    });
                 })
                 .into_any_element(),
             _ => row.into_any_element(),

@@ -11,28 +11,24 @@ const COMPOSER_GAP: f32 = 8.;
 /// Open, show and copy entries for a changed file. A path that is not valid
 /// UTF-8 is only a display label, so it gets none.
 fn file_menu(
-    mut menu: PopupMenu,
+    menu: components::ContextMenu,
     root: Option<&std::path::Path>,
     change: &FileChange,
-) -> PopupMenu {
+) -> components::ContextMenu {
     if change.unsupported_path {
         return menu;
     }
-    if let Some(root) = root {
-        let full = components::worktree_file(root, &change.path);
-        menu = menu
-            .item(components::open_item(full.clone()))
-            .item(components::reveal_item(full.clone()))
-            .separator()
-            .item(components::copy_item("Copy file path", change.path.clone()))
-            .item(components::copy_item(
-                "Copy full path",
-                full.to_string_lossy().into_owned(),
-            ));
-    } else {
-        menu = menu.item(components::copy_item("Copy file path", change.path.clone()));
+    match root {
+        Some(root) => {
+            let full = components::worktree_file(root, &change.path);
+            menu.open(full.clone())
+                .reveal(full.clone())
+                .separator()
+                .copy("Copy file path", change.path.clone())
+                .copy("Copy full path", full.to_string_lossy().into_owned())
+        }
+        None => menu.copy("Copy file path", change.path.clone()),
     }
-    menu
 }
 
 fn inspector_bar() -> Div {
@@ -596,8 +592,12 @@ impl GitCrab {
                                                     let root = v
                                                         .repository_identity()
                                                         .map(std::path::Path::to_path_buf);
-                                                    move |menu, _, _| {
-                                                        file_menu(menu, root.as_deref(), &change)
+                                                    move |_, _| {
+                                                        file_menu(
+                                                            components::ContextMenu::new(),
+                                                            root.as_deref(),
+                                                            &change,
+                                                        )
                                                     }
                                                 })
                                         })
@@ -1116,33 +1116,26 @@ impl GitCrab {
             let view = cx.entity();
             let change = f.clone();
             let root = self.repository_identity().map(std::path::Path::to_path_buf);
-            move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
+            move |w: &mut Window, cx: &mut App| {
                 let ready = !view.read(cx).state.blocking_write() && change.path_issue().is_none();
-                let view = view.clone();
-                let change_for_action = change.clone();
-                let action = if conflict {
-                    components::menu_item("Mark resolved…", ready).on_click(move |_, w, cx| {
-                        view.update(cx, |v, cx| {
-                            v.review_resolution(change_for_action.path.clone(), w, cx)
-                        })
-                    })
+                let target = components::MenuTarget::new(w, view.downgrade());
+                let menu = if conflict {
+                    components::ContextMenu::new().item(
+                        "Mark resolved…",
+                        ready,
+                        target.command(MenuCommand::Resolve(change.path.clone())),
+                    )
                 } else {
-                    components::menu_item(if staged { "Unstage" } else { "Stage" }, ready).on_click(
-                        move |_, w, cx| {
-                            view.update(cx, |v, cx| {
-                                v.mutate(
-                                    Action::StageFile {
-                                        reviewed: change_for_action.clone(),
-                                        unstage: staged,
-                                    },
-                                    w,
-                                    cx,
-                                )
-                            })
-                        },
+                    components::ContextMenu::new().item(
+                        if staged { "Unstage" } else { "Stage" },
+                        ready,
+                        target.command(MenuCommand::Stage {
+                            change: change.clone(),
+                            unstage: staged,
+                        }),
                     )
                 };
-                file_menu(menu.item(action).separator(), root.as_deref(), &change)
+                file_menu(menu.separator(), root.as_deref(), &change)
             }
         };
         let id = match section {
