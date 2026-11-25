@@ -577,23 +577,6 @@ pub fn field(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
         .child(control)
 }
 
-/// A labelled value, such as a path in a details list.
-pub fn detail_row(label: impl Into<SharedString>, value: impl Into<SharedString>) -> Div {
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap(scaled(2.))
-        .text_size(scaled(TEXT_SIZE_SMALL))
-        .child(div().text_role(Role::TextMuted).child(label.into()))
-        .child(
-            div()
-                .font_family(CODE_FONT)
-                .text_role(Role::TextSecondary)
-                .child(value.into()),
-        )
-}
-
 /// A setting: its label and an optional description at the left, its
 /// control at the right.
 pub fn setting_row(
