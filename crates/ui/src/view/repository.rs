@@ -66,25 +66,57 @@ impl GitCrab {
             return;
         }
         self.awaiting_trust = true;
+        self.trust_folder = false;
         let shown = gitcrab_core::presentation::display_path(worktree);
         let name = gitcrab_core::presentation::path_labels(std::slice::from_ref(&shown))
             .pop()
             .map(|label| label.name)
             .unwrap_or_else(|| shown.clone());
+        let folder = gitcrab_core::preferences::trust_folder_for(&location).map(|folder| {
+            let name = folder.file_name().map_or_else(
+                || display_location(folder),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            (folder.to_owned(), name)
+        });
         let view = cx.weak_entity();
         let scroll = ScrollHandle::new();
         window.open_alert(cx, move |dialog, _, cx| {
             let accepted = view.clone();
             let closed = view.clone();
+            let toggled = view.clone();
             let location = location.clone();
+            let folder = folder.clone();
+            let whole_folder = folder.is_some()
+                && view.upgrade().is_some_and(|v| v.read(cx).trust_folder);
+            let remembered = match &folder {
+                Some((_, folder_name)) if whole_folder => {
+                    format!("every repository in “{folder_name}”")
+                }
+                _ => "this repository".to_owned(),
+            };
             let content = modal_body()
                 .child(modal::subject(name.clone(), Some(shown.clone().into())))
                 .child(modal::paragraph(
                     "Only continue if you trust its local Git configuration and metadata.",
                 ))
-                .child(modal::fine_print(
-                    "Trust and open remembers this approval for this repository, including after restart. Cancel opens nothing.",
-                ));
+                .when_some(folder.as_ref(), |body, (_, folder_name)| {
+                    body.child(
+                        Checkbox::new("trust-folder")
+                            .label(format!("Also trust every repository in “{folder_name}”"))
+                            .checked(whole_folder)
+                            .tab_stop(true)
+                            .on_click(move |checked, _, cx| {
+                                let _ = toggled.update(cx, |v, cx| {
+                                    v.trust_folder = *checked;
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                })
+                .child(modal::fine_print(format!(
+                    "Trust and open remembers this approval for {remembered}, including after restart. Cancel opens nothing."
+                )));
             dialog
                 .frame(
                     ModalHeader::new("Trust this local repository?")
@@ -108,7 +140,13 @@ impl GitCrab {
                 .on_ok(move |_, w, cx| {
                     let _ = accepted.update(cx, |v, cx| {
                         v.open_trusted(location.clone(), w, cx);
-                        match crate::preferences::remember_trust(&location, cx) {
+                        let remembered = match &folder {
+                            Some((folder, _)) if v.trust_folder => {
+                                crate::preferences::remember_trusted_folder(folder, cx)
+                            }
+                            _ => crate::preferences::remember_trust(&location, cx),
+                        };
+                        match remembered {
                             Ok(result) => v.observe_persistence(result, "repository trust", cx),
                             Err(error) => v.persistence_error("repository trust", error),
                         }

@@ -1,6 +1,7 @@
 //! Settings files behind [`gitcrab_core::preferences::SettingsStore`].
 //!
-//! [`FileStore`] keeps `preferences.json`, `session.json` and `trust.json` in
+//! [`FileStore`] keeps `preferences.json`, `session.json`, `trust.json` and
+//! `trusted-folders.json` in
 //! the platform configuration directory, or next to the file named by
 //! `GITCRAB_SETTINGS`. One background thread applies writes in order; the
 //! rules for what to write come from `gitcrab-core`.
@@ -29,6 +30,7 @@ enum FileAction {
     Write(Vec<u8>),
     ForgetLast(String),
     RememberTrust(TrustedRepository),
+    RememberTrustedFolder(PathBuf),
 }
 
 struct PersistenceJob {
@@ -46,6 +48,7 @@ struct Paths {
     preferences: PathBuf,
     session: PathBuf,
     trust: PathBuf,
+    trusted_folders: PathBuf,
 }
 
 impl Paths {
@@ -58,6 +61,7 @@ impl Paths {
             return Some(Self {
                 session: preferences.with_extension("session.json"),
                 trust: preferences.with_extension("trust.json"),
+                trusted_folders: preferences.with_extension("trusted-folders.json"),
                 preferences,
             });
         }
@@ -75,6 +79,7 @@ impl Paths {
             preferences: dir.join("preferences.json"),
             session: dir.join("session.json"),
             trust: dir.join("trust.json"),
+            trusted_folders: dir.join("trusted-folders.json"),
         })
     }
 }
@@ -162,6 +167,21 @@ impl SettingsStore for FileStore {
         ))
     }
 
+    fn trusted_folders(&self) -> Vec<PathBuf> {
+        self.paths
+            .as_ref()
+            .and_then(|paths| read_trusted_folders(&paths.trusted_folders).ok())
+            .unwrap_or_default()
+    }
+
+    fn remember_trusted_folder(&self, folder: &Path) -> Result<PersistenceResult, String> {
+        let path = self.paths()?.trusted_folders.clone();
+        self.persist(PersistenceAction::File(
+            path,
+            FileAction::RememberTrustedFolder(folder.to_owned()),
+        ))
+    }
+
     fn flush(&self) -> Result<PersistenceResult, String> {
         self.persist(PersistenceAction::Barrier)
     }
@@ -213,6 +233,9 @@ fn persist_file_actions(path: &Path, actions: &mut VecDeque<FileAction>) -> Resu
             FileAction::Write(bytes) => atomic_write(path, bytes).map_err(|e| e.to_string())?,
             FileAction::RememberTrust(location) => {
                 write_trust(path, location).map_err(|e| e.to_string())?
+            }
+            FileAction::RememberTrustedFolder(folder) => {
+                write_trusted_folder(path, folder).map_err(|e| e.to_string())?
             }
             FileAction::ForgetLast(expected) => match std::fs::read(path) {
                 Ok(bytes) => {
@@ -299,20 +322,27 @@ fn read_trust(path: &Path) -> std::io::Result<Vec<TrustedRepository>> {
     }
 }
 
-fn write_trust(path: &Path, location: &TrustedRepository) -> std::io::Result<()> {
+/// Locks a file beside `path` until the returned handle drops, so concurrent
+/// GitCrab processes apply their read-modify-write of `path` in turn.
+fn lock_beside(path: &Path) -> std::io::Result<std::fs::File> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
         std::fs::create_dir_all(parent)?;
     }
-    // Lock a separate file so replacing the trust file keeps the lock in place.
+    // Lock a separate file so replacing `path` keeps the lock in place.
     let lock = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .open(path.with_extension("lock"))?;
     lock.lock()?;
+    Ok(lock)
+}
+
+fn write_trust(path: &Path, location: &TrustedRepository) -> std::io::Result<()> {
+    let _lock = lock_beside(path)?;
     let mut trusted: Vec<RepositoryLocation> = read_trust(path)?
         .into_iter()
         .map(RepositoryLocation::from)
@@ -320,6 +350,21 @@ fn write_trust(path: &Path, location: &TrustedRepository) -> std::io::Result<()>
     preferences::remember_trust(&mut trusted, &location.clone().into());
     let stored: Vec<TrustedRepository> = trusted.iter().map(TrustedRepository::from).collect();
     atomic_write(path, &serde_json::to_vec_pretty(&stored)?)
+}
+
+fn read_trusted_folders(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_trusted_folder(path: &Path, folder: &Path) -> std::io::Result<()> {
+    let _lock = lock_beside(path)?;
+    let mut folders = read_trusted_folders(path)?;
+    preferences::remember_trusted_folder(&mut folders, folder);
+    atomic_write(path, &serde_json::to_vec_pretty(&folders)?)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -490,6 +535,23 @@ mod tests {
 
         std::fs::write(&path, b"invalid json").unwrap();
         assert!(read().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn trusted_folders_file_keeps_the_widest_folders() {
+        let root = scratch("trusted-folders");
+        let path = root.join("trusted-folders.json");
+        let projects = root.join("projects");
+
+        assert!(read_trusted_folders(&path).unwrap().is_empty());
+        write_trusted_folder(&path, &projects.join("group")).unwrap();
+        write_trusted_folder(&path, &projects).unwrap();
+        write_trusted_folder(&path, &projects.join("other")).unwrap();
+        assert_eq!(read_trusted_folders(&path).unwrap(), [projects]);
+
+        std::fs::write(&path, b"invalid json").unwrap();
+        assert!(read_trusted_folders(&path).unwrap().is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 

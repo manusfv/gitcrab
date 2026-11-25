@@ -9,6 +9,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use tokio::sync::oneshot;
 
 /// Most repositories kept in the recent list.
@@ -253,6 +254,37 @@ pub fn remember_trust(trusted: &mut Vec<RepositoryLocation>, location: &Reposito
     trusted.push(location.clone());
 }
 
+/// The folder whose repositories the user may trust along with `location`:
+/// the one holding its worktree. `None` when that is a filesystem root,
+/// which is too broad to offer.
+pub fn trust_folder_for(location: &RepositoryLocation) -> Option<&Path> {
+    location
+        .worktree
+        .parent()
+        .filter(|folder| folder.parent().is_some())
+}
+
+/// Whether a trusted folder holds this worktree and both its metadata paths.
+/// Metadata kept outside the folder could configure Git from anywhere, so
+/// it still needs the user's approval.
+pub fn in_trusted_folder(folders: &[PathBuf], location: &RepositoryLocation) -> bool {
+    folders.iter().any(|folder| {
+        [&location.worktree, &location.git_dir, &location.common_dir]
+            .into_iter()
+            .all(|path| path.starts_with(folder))
+    })
+}
+
+/// Records trust in every repository inside `folder`, dropping folders it
+/// now covers. A folder already covered is not added again.
+pub fn remember_trusted_folder(folders: &mut Vec<PathBuf>, folder: &Path) {
+    if folders.iter().any(|known| folder.starts_with(known)) {
+        return;
+    }
+    folders.retain(|known| !known.starts_with(folder));
+    folders.push(folder.to_owned());
+}
+
 /// Completion of a queued settings write or flush.
 pub type PersistenceResult = oneshot::Receiver<Result<(), String>>;
 
@@ -300,6 +332,17 @@ pub trait SettingsStore: Send + Sync {
     ///
     /// Returns a message if the write cannot be queued.
     fn remember_trust(&self, location: &RepositoryLocation) -> Result<PersistenceResult, String>;
+
+    /// Reads every folder whose repositories are all trusted.
+    fn trusted_folders(&self) -> Vec<PathBuf>;
+
+    /// Queues recording trust in every repository inside `folder`, applying
+    /// [`remember_trusted_folder`] to whatever is saved when the write runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the write cannot be queued.
+    fn remember_trusted_folder(&self, folder: &Path) -> Result<PersistenceResult, String>;
 
     /// Queues a barrier after earlier writes and retries any that failed.
     ///
@@ -526,5 +569,53 @@ mod tests {
         remember_trust(&mut trusted, &new_git_dir);
         assert_eq!(trusted, [other_worktree, new_git_dir]);
         assert!(!is_trusted(&trusted, &original));
+    }
+
+    #[test]
+    fn a_trusted_folder_covers_repositories_with_their_metadata_inside() {
+        let folders = vec![PathBuf::from("projects")];
+        let inside = RepositoryLocation::test_path("projects/app");
+        let nested = RepositoryLocation::test_path("projects/group/lib");
+        let outside = RepositoryLocation::test_path("elsewhere/app");
+        let sibling_prefix = RepositoryLocation::test_path("projects-old/app");
+        let metadata_outside = RepositoryLocation {
+            git_dir: "elsewhere/.git".into(),
+            ..inside.clone()
+        };
+        let shared_metadata_outside = RepositoryLocation {
+            common_dir: "elsewhere/.git".into(),
+            ..inside.clone()
+        };
+
+        assert!(in_trusted_folder(&folders, &inside));
+        assert!(in_trusted_folder(&folders, &nested));
+        assert!(!in_trusted_folder(&folders, &outside));
+        assert!(!in_trusted_folder(&folders, &sibling_prefix));
+        assert!(!in_trusted_folder(&folders, &metadata_outside));
+        assert!(!in_trusted_folder(&folders, &shared_metadata_outside));
+        assert!(!in_trusted_folder(&[], &inside));
+    }
+
+    #[test]
+    fn trusting_a_folder_keeps_only_the_widest_entries() {
+        let mut folders = vec![];
+        remember_trusted_folder(&mut folders, Path::new("projects/group"));
+        remember_trusted_folder(&mut folders, Path::new("work"));
+        remember_trusted_folder(&mut folders, Path::new("projects/group/sub"));
+        assert_eq!(folders, [PathBuf::from("projects/group"), "work".into()]);
+        remember_trusted_folder(&mut folders, Path::new("projects"));
+        assert_eq!(folders, [PathBuf::from("work"), "projects".into()]);
+    }
+
+    #[test]
+    fn the_offered_folder_is_the_worktree_parent_but_never_a_root() {
+        let location = RepositoryLocation::test_path(std::env::temp_dir().join("app"));
+        assert_eq!(
+            trust_folder_for(&location),
+            Some(std::env::temp_dir().as_path())
+        );
+        let root = std::env::temp_dir().ancestors().last().unwrap().to_owned();
+        let at_root = RepositoryLocation::test_path(root.join("app"));
+        assert_eq!(trust_folder_for(&at_root), None);
     }
 }
