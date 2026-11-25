@@ -39,7 +39,7 @@ fn column_frame<E: Styled>(el: E, entry: &ColumnLayout) -> E {
 
 impl GitCrab {
     /// Saves the displayed, width-adapted layout as the user's own before editing it.
-    fn materialize_columns(&mut self) {
+    pub(in crate::view) fn materialize_columns(&mut self) {
         if !self.history_columns.customized {
             self.history_columns = self.history_layout.clone();
             self.history_columns.customized = true;
@@ -50,42 +50,34 @@ impl GitCrab {
     /// button. Columns are reordered and resized by dragging their headers.
     pub(super) fn columns_menu(
         weak: WeakEntity<Self>,
-        mut menu: PopupMenu,
-        window: &mut Window,
-        cx: &mut Context<PopupMenu>,
-    ) -> PopupMenu {
-        components::menu::track_open_menu(window, cx);
+        window: &Window,
+        cx: &App,
+    ) -> components::ContextMenu {
+        let menu = components::ContextMenu::new();
         let Some(view) = weak.upgrade() else {
             return menu;
         };
-        let layout = view.read(cx).history_layout.clone();
-        menu = menu.item(PopupMenuItem::label("Show columns"));
-        for column in HistoryColumn::ALL {
-            let weak = weak.clone();
-            let visible = layout
-                .columns
-                .iter()
-                .any(|e| e.column == column && e.visible);
-            menu = menu.item(
-                components::menu_item(column.label(), column != HistoryColumn::Message)
-                    .checked(visible)
-                    .on_click(move |_, w, cx| {
-                        let _ = weak.update(cx, |v, cx| {
-                            v.materialize_columns();
-                            v.history_columns.toggle(column);
-                            v.columns_changed(w, cx);
-                        });
-                    }),
-            );
-        }
-        menu.separator()
+        let layout = &view.read(cx).history_layout;
+        let target = components::MenuTarget::new(window, weak);
+        HistoryColumn::ALL
+            .into_iter()
+            .fold(menu.label("Show columns"), |menu, column| {
+                let visible = layout
+                    .columns
+                    .iter()
+                    .any(|e| e.column == column && e.visible);
+                menu.checked_item(
+                    column.label(),
+                    column != HistoryColumn::Message,
+                    visible,
+                    target.command(MenuCommand::ToggleColumn(column)),
+                )
+            })
+            .separator()
             .item(
-                components::menu_item("Reset columns", true).on_click(move |_, w, cx| {
-                    let _ = weak.update(cx, |v, cx| {
-                        v.history_columns = HistoryColumns::default();
-                        v.columns_changed(w, cx);
-                    });
-                }),
+                "Reset columns",
+                true,
+                target.command(MenuCommand::ResetColumns),
             )
     }
 
@@ -165,7 +157,7 @@ impl GitCrab {
                 el.px(HISTORY_CELL_INSET)
             })
     }
-    fn columns_changed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::view) fn columns_changed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.preference_save = None;
         if let Err(error) = self.save_preferences(false, cx) {
             self.state.error = true;
@@ -449,7 +441,10 @@ impl GitCrab {
                         )
                     }),
             )
-            .context_menu(move |menu, w, cx| Self::columns_menu(weak.clone(), menu, w, cx))
+            .on_mouse_up(MouseButton::Right, move |event, w, cx| {
+                cx.stop_propagation();
+                Self::columns_menu(weak.clone(), w, cx).show(event.position, w, cx, |_| {});
+            })
             .into_any_element()
     }
 }

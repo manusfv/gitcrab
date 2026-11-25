@@ -3,6 +3,8 @@ mod branch_picker;
 mod evidence;
 mod history;
 mod inspector;
+mod menu_actions;
+use menu_actions::MenuCommand;
 mod operations;
 use operations::{BranchPrompt, PendingRun};
 mod repository;
@@ -30,7 +32,7 @@ use gitcrab_core::{
 use gpui::component::{
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
-    menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
+    menu::DropdownMenu,
     resizable::{h_resizable, resizable_panel},
     tooltip::Tooltip,
     Selectable, Sizable, Theme, WindowExt,
@@ -652,6 +654,7 @@ impl GitCrab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        menu_actions::register_menu_actions(cx);
         let draft = cx.new(|cx| InputState::new(window, cx).placeholder("Commit summary"));
         let wip_summary = cx.new(|cx| InputState::new(window, cx).placeholder("// WIP"));
         let description = cx.new(|cx| TextareaState::new(window, cx).placeholder("Description"));

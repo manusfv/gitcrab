@@ -1,5 +1,5 @@
 use super::*;
-use gitcrab_core::history_columns::{HistoryColumn, HistoryColumns};
+use gitcrab_core::history_columns::HistoryColumn;
 mod columns;
 mod graph_scroll;
 pub(super) use graph_scroll::GraphScroll;
@@ -151,10 +151,9 @@ pub(super) struct HistoryHover {
     highlight: Option<RefHighlight>,
     /// Waits out [`REF_DIM_DELAY`] and runs the fade; dropping it cancels both.
     dim_task: Option<Task<()>>,
-    /// Commit row whose context menu is open. It keeps the hover look, and
-    /// the other rows take no hover or pointer until the menu closes.
+    /// Commit row whose context menu is open. It keeps the hover look
+    /// until the menu closes.
     menu_row: Option<usize>,
-    menu_dismissed: Option<Subscription>,
 }
 
 /// The rows on a hovered reference's history.
@@ -519,17 +518,6 @@ impl GitCrab {
             }
             None => self.activate_commit(id, window, cx),
         }
-    }
-
-    /// Holds `row` as the one with an open context menu until `menu` is dismissed.
-    fn hold_row_menu(&mut self, row: usize, menu: &Entity<PopupMenu>, cx: &mut Context<Self>) {
-        self.history_hover.menu_row = Some(row);
-        self.history_hover.menu_dismissed =
-            Some(cx.subscribe(menu, |v, _, _: &DismissEvent, cx| {
-                v.history_hover.menu_row = None;
-                cx.notify();
-            }));
-        cx.notify();
     }
 
     fn hover_history_row(&mut self, row: usize, hovered: bool, cx: &mut Context<Self>) {
@@ -937,19 +925,10 @@ impl GitCrab {
                                 .icon(icon("columns").size(scaled(14.)))
                                 .size(scaled(geometry::SIZE_TARGET_INLINE))
                                 .dropdown_menu(move |menu, w, cx| {
-                                    Self::columns_menu(weak.clone(), menu, w, cx)
+                                    Self::columns_menu(weak.clone(), w, cx).into_popup(menu)
                                 }),
                             )
                     })
-                    .when(self.history_hover.menu_row.is_some(), |history| {
-                        history.child(
-                            div()
-                                .id("history-menu-shield")
-                                .absolute()
-                                .inset_0()
-                                .occlude(),
-                        )
-                    }),
             )
             .when(self.state.limit == HISTORY_MAX && count == HISTORY_MAX, |e| {
                 e.child(
@@ -1745,60 +1724,77 @@ impl GitCrab {
                     .bg_role(Role::ActionPrimary),
             );
         }
-        let view = cx.entity();
         let parents = c.parents.len();
         let stash = c.stash;
         let branch =
             gitcrab_core::presentation::commit_branch(snap, &c.id, self.state.previewed_ref());
-        el.context_menu(move |mut menu, w, cx| {
-            components::menu::track_open_menu(w, cx);
-            let popup = cx.entity();
-            view.update(cx, |v, cx| v.hold_row_menu(i, &popup, cx));
-            let sha = target.clone();
-            menu = menu.item(components::menu_item("Copy commit SHA", true).on_click(
-                move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sha.clone())),
-            ));
-            if stash {
-                return menu;
-            }
-            let commands = view.update(cx, |v, cx| v.command_context(w, cx));
-            menu = menu.separator();
-            let create_view = view.clone();
-            let start = target.clone();
-            menu = menu
-                .item(components::menu_item("Create branch here…", true).on_click(
-                    move |_, w, cx| {
-                        create_view.update(cx, |v, cx| v.prompt_branch(Some(start.clone()), w, cx))
-                    },
-                ))
-                .separator();
-            // The shared command model decides availability, including merge commits.
-            for command in [
-                Command::Checkout,
-                Command::Merge,
-                Command::CherryPick,
-                Command::Revert,
-            ] {
-                let view = view.clone();
-                let (target, name) = match (command, &branch) {
-                    (Command::Checkout | Command::Merge, Some(branch)) => {
-                        (branch.clone(), branch.clone())
-                    }
-                    _ => (target.clone(), short_id(&target).to_owned()),
-                };
-                let enabled = command
-                    .availability_for_commit(&commands, parents)
-                    .enabled();
-                let label = format!("{} {name}", command.label());
-                menu = menu.item(components::menu_item(label, enabled).on_click(
-                    move |_, w, cx| {
-                        view.update(cx, |v, cx| v.run_command(command, target.clone(), w, cx))
-                    },
-                ));
-            }
-            menu
-        })
+        el.on_mouse_up(
+            MouseButton::Right,
+            cx.listener(move |v, event: &MouseUpEvent, w, cx| {
+                cx.stop_propagation();
+                let menu = v.commit_menu(&target, parents, stash, branch.as_deref(), w, cx);
+                v.history_hover.menu_row = Some(i);
+                cx.notify();
+                let view = cx.weak_entity();
+                menu.show(event.position, w, cx, move |cx| {
+                    let _ = view.update(cx, |v, cx| {
+                        v.history_hover.menu_row = None;
+                        cx.notify();
+                    });
+                });
+            }),
+        )
         .into_any_element()
+    }
+
+    /// A commit row's menu: copy its SHA, then Create branch and the
+    /// commands that act on the commit. A stash offers only the copy.
+    fn commit_menu(
+        &self,
+        sha: &str,
+        parents: usize,
+        stash: bool,
+        branch: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> components::ContextMenu {
+        let menu = components::ContextMenu::new().copy("Copy commit SHA", sha);
+        if stash {
+            return menu;
+        }
+        let commands = self.command_context(window, cx);
+        let view = components::MenuTarget::new(window, cx.weak_entity());
+        let mut menu = menu
+            .separator()
+            .item(
+                "Create branch here…",
+                true,
+                view.command(MenuCommand::CreateBranch(sha.to_owned())),
+            )
+            .separator();
+        // The shared command model decides availability, including merge commits.
+        for command in [
+            Command::Checkout,
+            Command::Merge,
+            Command::CherryPick,
+            Command::Revert,
+        ] {
+            let (target, name) = match (command, branch) {
+                (Command::Checkout | Command::Merge, Some(branch)) => {
+                    (branch.to_owned(), branch.to_owned())
+                }
+                _ => (sha.to_owned(), short_id(sha).to_owned()),
+            };
+            let enabled = command
+                .availability_for_commit(&commands, parents)
+                .enabled();
+            menu = menu.item(
+                format!("{} {name}", command.label()),
+                enabled,
+                view.command(MenuCommand::Run(command, target)),
+            );
+        }
+        menu
     }
 }
 

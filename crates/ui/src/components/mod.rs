@@ -7,7 +7,7 @@
 //! - [`list_row`]: rows for lists and trees, with hover, selection and slots.
 //! - [`badge`]: tinted labels for counts, statuses and markers.
 //! - [`layout`]: pane surfaces, header strips, groups and dividers.
-//! - [`menu`]: popup menu entries with the pointer cursor.
+//! - [`menu`]: context menus shown by the operating system, and drawn menu entries.
 //! - [`modal`]: the dialog frame (header, body, footer) and its content pieces.
 //! - [`picker`]: the searchable popup list for choosing a branch, repository or tab.
 //! - [`rail`]: drag-to-reorder for tab strips and column headers.
@@ -23,7 +23,7 @@ pub mod picker;
 pub mod rail;
 
 pub use buttons::*;
-pub use menu::{clip, copy_item, menu_item, open_item, reveal_item, worktree_file};
+pub use menu::{menu_item, worktree_file, ContextMenu, MenuTarget};
 
 /// The components and helpers views use, for a single glob import.
 pub mod prelude {
