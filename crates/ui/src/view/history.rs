@@ -15,6 +15,8 @@ const COMMIT_ROW_LINE_HEIGHT: f32 = 20.;
 const COMMIT_ROW_PADDING: f32 = 8.;
 /// Vertical inset of the branch band from a row's top and bottom edges.
 const BAND_INSET_Y: f32 = 3.;
+/// Side of the square around a graph node that shows its tooltip.
+const GRAPH_NODE_HIT: f32 = 16.;
 /// Expanded reference labels per row in element ids, so ids stay unique per row.
 const REF_IDS_PER_ROW: usize = 64;
 const ANIMATION_FRAME: Duration = Duration::from_millis(16);
@@ -1417,12 +1419,31 @@ impl GitCrab {
                     .into_any_element(),
                     HistoryColumn::Graph => {
                         let outgoing = outgoing.clone();
+                        let scale = window.scale_factor();
+                        let cell = Bounds::new(Point::default(), size(px(entry.width), px(height)));
+                        let lane_x = graph_lane_positions(cell, scale, graph_scrolled)(row.lane);
+                        let (node_x, _) = graph_node_x(cell, lane_x, scale);
+                        let author = SharedString::from(gitcrab_core::presentation::author_label(
+                            &c.author,
+                            &c.author_email,
+                        ));
                         (div()
                             .relative()
                             .w_full()
                             .h(px(height))
                             .flex_none()
                             .on_scroll(cx.listener(Self::scroll_graph))
+                            .child(
+                                div()
+                                    .id(("node", i))
+                                    .absolute()
+                                    .left(node_x - px(GRAPH_NODE_HIT / 2.))
+                                    .top(px((height - GRAPH_NODE_HIT) / 2.))
+                                    .size(px(GRAPH_NODE_HIT))
+                                    .tooltip(move |w, cx| {
+                                        Tooltip::new(author.clone()).build(w, cx)
+                                    }),
+                            )
                             .child(
                                 canvas(
                                     move |_, _, _| (),
@@ -1637,27 +1658,45 @@ impl GitCrab {
                             .tooltip(move |w, cx| Tooltip::new(subject.clone()).build(w, cx)))
                         .into_any_element()
                     }
-                    HistoryColumn::Sha => (div()
-                        .w_full()
-                        .flex_none()
-                        .whitespace_nowrap()
-                        .truncate()
-                        .text_size(scaled(TEXT_SIZE_SMALL))
-                        .font_family(CODE_FONT)
-                        .text_color(ink.meta)
-                        .child(c.id[..8.min(c.id.len())].to_string()))
-                    .into_any_element(),
-                    HistoryColumn::Author => div()
-                        .truncate()
-                        .text_color(ink.meta)
-                        .child(c.author.clone())
-                        .into_any_element(),
-                    HistoryColumn::Date => div()
-                        .truncate()
-                        .text_size(scaled(TEXT_SIZE_SMALL))
-                        .text_color(ink.meta)
-                        .child(display_date(&c.date))
-                        .into_any_element(),
+                    HistoryColumn::Sha => {
+                        let sha = SharedString::from(short_id(&c.id).to_owned());
+                        (div()
+                            .id(("sha", i))
+                            .w_full()
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .text_size(scaled(TEXT_SIZE_SMALL))
+                            .font_family(CODE_FONT)
+                            .text_color(ink.meta)
+                            .child(sha.clone())
+                            .tooltip(move |w, cx| Tooltip::new(sha.clone()).build(w, cx)))
+                        .into_any_element()
+                    }
+                    HistoryColumn::Author => {
+                        let author = SharedString::from(gitcrab_core::presentation::author_label(
+                            &c.author,
+                            &c.author_email,
+                        ));
+                        div()
+                            .id(("author", i))
+                            .truncate()
+                            .text_color(ink.meta)
+                            .child(c.author.clone())
+                            .tooltip(move |w, cx| Tooltip::new(author.clone()).build(w, cx))
+                            .into_any_element()
+                    }
+                    HistoryColumn::Date => {
+                        let date = SharedString::from(display_date(&c.date));
+                        div()
+                            .id(("date", i))
+                            .truncate()
+                            .text_size(scaled(TEXT_SIZE_SMALL))
+                            .text_color(ink.meta)
+                            .child(date.clone())
+                            .tooltip(move |w, cx| Tooltip::new(date.clone()).build(w, cx))
+                            .into_any_element()
+                    }
                 };
                 self.history_cell(entry)
                     // Hover and selection fill only the text columns; a selected row's graph band shows it instead.
