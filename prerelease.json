@@ -1,0 +1,27 @@
+{
+  "version": "0.1.0-alpha.5",
+  "notes": "### macOS signing\n- macOS macos-arm64: unsigned (not notarized)\n- macOS macos-x86_64: unsigned (not notarized)\n\nVerify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.\n\n\n## What's Changed\n* feat(graph): draw each stash as one row on its base commit by @manusfv in https://github.com/manusfv/gitcrab/pull/17\n* feat(ui): consistent dialogs, Clone and Create, GitKraken-style tooltips by @manusfv in https://github.com/manusfv/gitcrab/pull/19\n* fix: safety pass on destructive and conflicted operations by @manusfv in https://github.com/manusfv/gitcrab/pull/20\n* chore(update): add the updater public key by @manusfv in https://github.com/manusfv/gitcrab/pull/21\n* fix(ui): tidy the commit context menu by @manusfv in https://github.com/manusfv/gitcrab/pull/22\n* feat(ui): context menus for the sidebar, file lists and tabs by @manusfv in https://github.com/manusfv/gitcrab/pull/23\n* fix(ui): drop details and Git metadata from the trust modal by @manusfv in https://github.com/manusfv/gitcrab/pull/24\n* Show context menus as native OS menus, and tooltips on every commit row cell by @manusfv in https://github.com/manusfv/gitcrab/pull/26\n* chore: bump version to 0.1.0-alpha.5 by @manusfv in https://github.com/manusfv/gitcrab/pull/25\n\n\n**Full Changelog**: https://github.com/manusfv/gitcrab/compare/v0.1.0-alpha.4...v0.1.0-alpha.5\n",
+  "pub_date": "2026-11-25T04:53:38Z",
+  "platforms": {
+    "windows-x86_64": {
+      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.5/gitcrab-windows-x86_64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDgzaFVGK0R2OTFLMmhHQTgwTU81M3hmQzc4aGN1c0RQdVZsTDhqT1JOWnhiL0U0MEExc3FhekllWE9UK0g5b0RhSmtyRFphUlpKZWEvMXVNTlRtT3dJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTgyMjUxCWZpbGU6Z2l0Y3JhYl8wLjEuMC1hbHBoYS41X3g2NC1zZXR1cC5leGUKcmtQU202ZTdhTUhLQ0FubW4rUzVXNktoZlZZWkpJeE9jUXU0c2QwNUUydEM5ZVJPOTV0ZjNuQS9LcFFjeHliODI4eHlzWlZZUkgrZWFJQXh3aks2RHc9PQo=",
+      "format": "nsis"
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.5/gitcrab-linux-x86_64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDI2Q0lFN2pVRnRDQjVQY3ZibmNERWpGblZEcXkveTdWVml0WlhzNkF3RWVFdFVNa3g1MFBDMy9HVXM3bWVEQTJEbFZDYzBzWkpFVHFXUXlhZVRVS0E4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTgyMTAwCWZpbGU6Z2l0Y3JhYl8wLjEuMC1hbHBoYS41X3g4Nl82NC5BcHBJbWFnZQozbkp4VzBYbXQ5R0o4OXhNcWFZbHB4ZzVsdTBTOVYzZTFnbzVaOHRGdGpRV0E3YzJ5NmdZS3Q2b3pkQkZFOTBpOERFaVNFcVd0VzNreHRjVSsyU2lEZz09Cg==",
+      "format": "appimage"
+    },
+    "macos-aarch64": {
+      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.5/gitcrab-macos-arm64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWHlXVDBrZ2JJR2IxeTVlUEJtL2lvVnJrUWtERk1yRmhOdjcvOXNSSTFnM01JUHcybnQ5MHFNRktYZlMvMHFHTlJGc3g0VzQ5L3ZoSkVYbTdWQ3o5MFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTgyMTYxCWZpbGU6R2l0Q3JhYi5hcHAudGFyLmd6CjdFNFNKd2Q3QjZHOGdRTXkxYnpHdlFDd1RqR3VEM3o5WjNJSWN1Yks2alUvSFhGRkZ2YzNTc3Q0WEFKbUJOK2l3ckpxc2Mvd00yRCtUN0FwblduQ0J3PT0K",
+      "format": "app"
+    },
+    "macos-x86_64": {
+      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.5/gitcrab-macos-x86_64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWHdlSFVQMVdWZWV1MGs1UW82VStaRWRDVXJNc0N0VC9lS215YkJIaGRLbUR4V1QxS1JoeVorRnVxWHBMMktITkR2aFhzQmc4aVd0S0pmUnYzWGdHV2dRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTgyMzIyCWZpbGU6R2l0Q3JhYi5hcHAudGFyLmd6CndvV0pEVkVnVTN3SGh4UHIybjVlQmhvY0JZV2NVZlk1OFVBTzl1TUdwREVNYm51QU84emtUUURhWTJDVU5hTnY1eG5rNFlrMldaVitmTGd0S2xXbEJ3PT0K",
+      "format": "app"
+    }
+  }
+}
