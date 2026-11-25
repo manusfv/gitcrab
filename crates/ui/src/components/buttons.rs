@@ -3,7 +3,7 @@ use crate::theme::Role;
 use crate::theme::*;
 use gpui::component::{
     button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants},
-    Disableable, Sizable, WindowExt,
+    Disableable, Sizable,
 };
 use gpui::{prelude::*, *};
 
@@ -358,16 +358,36 @@ pub fn selector(
         )
 }
 
-/// The Cancel button of a dialog with a custom footer. It closes the dialog,
-/// which runs the dialog's `on_close` callback.
-pub fn dialog_cancel(cx: &App) -> Button {
+/// The Cancel button of a dialog with a custom footer. It cancels the dialog
+/// the way Escape does, running its `on_cancel` and then `on_close` callbacks.
+pub fn dialog_cancel(cx: &App) -> AnyElement {
+    div()
+        .flex_none()
+        .child(
+            gpui::component::dialog::DialogClose::new().trigger(|button| {
+                style(
+                    button
+                        .label("Cancel")
+                        .accessibility_label("Cancel")
+                        .tab_stop(true),
+                    ButtonKind::Secondary,
+                    ControlSize::Regular,
+                    cx,
+                )
+            }),
+        )
+        .into_any_element()
+}
+
+/// A Cancel button styled like [`dialog_cancel`] that only runs `on_click`,
+/// for a dialog whose `on_cancel` may refuse to close.
+pub fn cancel_button(cx: &App) -> Button {
     style(
         Button::new("dialog-cancel").label("Cancel").tab_stop(true),
         ButtonKind::Secondary,
         ControlSize::Regular,
         cx,
     )
-    .on_click(|_, window, cx| window.close_dialog(cx))
 }
 
 /// The Cancel button of a dialog whose confirming action is destructive. It
