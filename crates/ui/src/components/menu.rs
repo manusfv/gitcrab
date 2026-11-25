@@ -348,14 +348,18 @@ mod context_menu_tests {
         assert!(shape(ContextMenu::new().separator()).is_empty());
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn ampersands_show_literally_on_windows() {
+    fn ampersands_show_literally() {
         let MenuItem::Action { name, .. } =
             native_item("Merge a&b".into(), Box::new(NoAction), true, false)
         else {
             panic!("expected an action item");
         };
-        assert_eq!(name, "Merge a&&b");
+        let expected = if cfg!(target_os = "windows") {
+            "Merge a&&b"
+        } else {
+            "Merge a&b"
+        };
+        assert_eq!(name, expected);
     }
 }
