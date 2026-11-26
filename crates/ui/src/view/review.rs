@@ -307,7 +307,7 @@ impl GitCrab {
             if let Some(&row) = self.hunk_rows().get(index) {
                 self.scroll_diff_to(row, ScrollStrategy::Top);
             }
-            cx.notify();
+            self.notify_region(Region::Center, cx);
         }
     }
 
@@ -1350,7 +1350,7 @@ impl GitCrab {
             && !window.has_active_dialog(cx)
         {
             self.pan_diff(after);
-            cx.notify();
+            self.notify_region(Region::Center, cx);
         }
     }
     fn pan_diff(&self, right: bool) {
@@ -1796,7 +1796,7 @@ impl GitCrab {
         .on_mouse_move(cx.listener(move |v, e: &MouseMoveEvent, _, cx| {
             if e.dragging() && v.selection.is_some() {
                 v.selection = Some(v.anchor.min(i)..v.anchor.max(i) + 1);
-                cx.notify();
+                v.notify_region(Region::Center, cx);
             }
         }))
         .into_any_element()
