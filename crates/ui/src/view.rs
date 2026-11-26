@@ -31,6 +31,7 @@ use gitcrab_core::{
 };
 use gpui::component::{
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::DropdownMenu,
     resizable::{h_resizable, resizable_panel},
@@ -596,6 +597,9 @@ pub struct GitCrab {
     update_install: crate::updates::Install,
     last_repository: Option<String>,
     pub(super) awaiting_trust: bool,
+    /// Whether the open trust dialog will also trust the folder holding the
+    /// repository.
+    trust_folder: bool,
     open_failure: Option<OpenFailure>,
     repository_location: Option<gitcrab_core::platform::RepositoryLocation>,
     activity: std::collections::VecDeque<OperationRecord>,
@@ -821,6 +825,7 @@ impl GitCrab {
             update_install: crate::updates::install_state(cx),
             last_repository: crate::preferences::last_repository(cx),
             awaiting_trust: false,
+            trust_folder: false,
             open_failure: None,
             repository_location: None,
             activity: Default::default(),

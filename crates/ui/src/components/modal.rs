@@ -912,6 +912,42 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_cancel_button_cancels_and_closes_the_dialog(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+        let cx = window(cx, 800.);
+        let cancelled = Rc::new(Cell::new(false));
+        let closed = Rc::new(Cell::new(false));
+        let (on_cancel, on_close) = (cancelled.clone(), closed.clone());
+        cx.update(move |window, cx| {
+            window.open_alert(cx, move |dialog, _, cx| {
+                let (on_cancel, on_close) = (on_cancel.clone(), on_close.clone());
+                dialog
+                    .frame(ModalHeader::new("Title"), ModalWidth::Small, cx)
+                    .footer(
+                        ModalFooter::new().action(
+                            div()
+                                .debug_selector(|| "cancel".into())
+                                .child(crate::components::dialog_cancel(cx)),
+                        ),
+                    )
+                    .on_cancel(move |_, _, _| {
+                        on_cancel.set(true);
+                        true
+                    })
+                    .on_close(move |_, _, _| on_close.set(true))
+            })
+        });
+        draw(cx);
+
+        let cancel = bounds(cx, "cancel");
+        cx.simulate_click(cancel.center(), Modifiers::default());
+        draw(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(cancelled.get());
+        assert!(closed.get());
+    }
+
+    #[gpui::test]
     fn a_regular_dialog_scrolls_its_body_the_same_way(cx: &mut TestAppContext) {
         let cx = window(cx, 480.);
         let scroll = ScrollHandle::new();

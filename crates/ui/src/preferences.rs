@@ -99,9 +99,20 @@ pub fn save_changes(
     Ok(result)
 }
 
-/// Checks for saved trust in this exact worktree and its metadata paths.
+/// Checks for saved trust in this exact worktree and its metadata paths, or
+/// in a folder that holds all of them.
 pub fn trusts_repository(location: &RepositoryLocation, cx: &App) -> bool {
-    rules::is_trusted(&store(cx).trusted(), location)
+    let store = store(cx);
+    rules::is_trusted(&store.trusted(), location)
+        || rules::in_trusted_folder(&store.trusted_folders(), location)
+}
+
+/// Queues persistence of the user's trust in every repository inside `folder`.
+pub fn remember_trusted_folder(
+    folder: &std::path::Path,
+    cx: &mut App,
+) -> Result<PersistenceResult, String> {
+    store(cx).remember_trusted_folder(folder)
 }
 
 /// Queues persistence of the user's trust in the worktree and its metadata paths.

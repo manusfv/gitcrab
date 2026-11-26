@@ -313,6 +313,7 @@ pub fn open(kind: Setup, parent: String, on_created: OnCreated, window: &mut Win
         let cancel = form.clone();
         let confirm = form.clone();
         let closed = form.clone();
+        let stop = form.clone();
         let body = modal_body()
             .when(kind == Setup::Clone, |body| {
                 body.child(field("Repository URL", Input::new(&url).disabled(running)))
@@ -367,7 +368,12 @@ pub fn open(kind: Setup, parent: String, on_created: OnCreated, window: &mut Win
                         .child(kind.progress()),
                 )
             })
-            .action(components::dialog_cancel(cx))
+            .action(
+                components::cancel_button(cx).on_click(move |_, window, cx| {
+                    stop.update(cx, |form, _| form.stop());
+                    window.close_dialog(cx);
+                }),
+            )
             .action(
                 components::style(
                     Button::new("setup-submit")
