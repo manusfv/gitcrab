@@ -371,8 +371,9 @@ impl Wrap {
         for (row, segments) in segments.enumerate() {
             starts.push(total);
             total += segments;
-            if row > 0 && hunk_rows.binary_search(&row).is_ok() {
-                total += 1;
+            // Headers are two rows tall, and later ones get a gap row above.
+            if hunk_rows.binary_search(&row).is_ok() {
+                total += if row > 0 { 2 } else { 1 };
             }
         }
         starts.push(total);
@@ -641,13 +642,13 @@ mod tests {
         let content = prepare(parse(
             "@@ -1,3 +1,3 @@ a very long scope line\n keep\n-0123456789\n+short\n tail\n",
         ));
-        // Rows: header, keep, -long/+short, tail.
+        // Rows: header ×2, keep, -long/+short, tail.
         let wrap = Wrap::split(&content, 4);
-        assert_eq!(wrap.rows(), 1 + 1 + 3 + 1);
-        assert_eq!(wrap.first(2), 2);
-        assert_eq!(wrap.first(3), 5);
-        assert_eq!(wrap.locate(4), (2, 2));
-        assert_eq!(wrap.locate(5), (3, 0));
+        assert_eq!(wrap.rows(), 2 + 1 + 3 + 1);
+        assert_eq!(wrap.first(2), 3);
+        assert_eq!(wrap.first(3), 6);
+        assert_eq!(wrap.locate(5), (2, 2));
+        assert_eq!(wrap.locate(6), (3, 0));
         let (prefix, text) = shown_text(&content.lines[2]);
         assert_eq!((prefix, text), (1, "0123456789"));
     }
@@ -656,21 +657,22 @@ mod tests {
     fn later_hunks_get_a_gap_row_above_their_header() {
         let content = prepare(parse("@@ -1 +1 @@\n-a\n+b\n@@ -9 +9 @@\n x\n"));
         let wrap = Wrap::unified(&content);
-        // header, -a, +b, gap, header, x
-        assert_eq!(wrap.rows(), 6);
-        assert_eq!(wrap.first(3), 3);
-        assert_eq!(wrap.locate(4), (3, 1));
-        assert_eq!(wrap.locate(5), (4, 0));
-        let gaps: Vec<_> = (0..6)
+        // header ×2, -a, +b, gap, header ×2, x
+        assert_eq!(wrap.rows(), 8);
+        assert_eq!(wrap.locate(1), (0, 1));
+        assert_eq!(wrap.first(3), 4);
+        assert_eq!(wrap.locate(6), (3, 2));
+        assert_eq!(wrap.locate(7), (4, 0));
+        let gaps: Vec<_> = (0..8)
             .filter(|&v| wrap.is_gap(v, &content.hunk_rows))
             .collect();
-        assert_eq!(gaps, [3]);
+        assert_eq!(gaps, [4]);
 
-        // header, -a/+b, gap, header, x
+        // header ×2, -a/+b, gap, header ×2, x
         let split = Wrap::split(&content, 80);
-        assert_eq!(split.rows(), 5);
-        assert_eq!(split.locate(3), (2, 1));
-        assert!(split.is_gap(2, &content.split_hunk_rows));
+        assert_eq!(split.rows(), 7);
+        assert_eq!(split.locate(5), (2, 2));
+        assert!(split.is_gap(3, &content.split_hunk_rows));
     }
 
     #[test]

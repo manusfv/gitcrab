@@ -75,7 +75,7 @@ impl FileRow {
 }
 
 /// Names the status in text and pairs it with the status color.
-fn status_badge(file: &FileChange, staged: bool) -> impl IntoElement {
+pub(super) fn status_badge(file: &FileChange, staged: bool) -> impl IntoElement {
     let status = if file.index == '?' {
         '?'
     } else if staged {

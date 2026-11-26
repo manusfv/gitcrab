@@ -2462,7 +2462,9 @@ impl GitCrab {
         label: impl Into<SharedString>,
         selected: bool,
     ) -> Button {
+        // Inside its group's border, so the group stands as tall as a button.
         self.button(id, label)
+            .h(scaled(CONTROL_HEIGHT - 2.))
             .selected(selected)
             .when(selected, |button| {
                 button

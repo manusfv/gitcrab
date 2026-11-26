@@ -9,6 +9,8 @@ use gpui::{prelude::*, *};
 
 const COMMAND_ICON_SIZE: f32 = geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_ICON;
 const SELECTOR_PADDING_X: f32 = 8.;
+/// Side padding of Stage, Unstage and Discard buttons at every size.
+const STAGING_PADDING_X: f32 = 10.;
 
 #[derive(Clone, Copy)]
 pub enum ControlSize {
@@ -21,33 +23,45 @@ pub enum ControlSize {
 /// Applies the dimensions and typography for a button's placement.
 pub fn sized(button: Button, size: ControlSize) -> Button {
     use ControlSize::*;
-    let (h, padding, font) = match size {
-        Regular => (geometry::SIZE_TARGET_REGULAR, 12., TEXT_SIZE_BODY),
-        Compact => (geometry::SIZE_TARGET_COMPACT, 8., TEXT_SIZE_SMALL),
+    let (h, padding, font, line) = match size {
+        Regular => (geometry::SIZE_TARGET_REGULAR, 12., TEXT_SIZE_BODY, None),
+        Compact => (geometry::SIZE_TARGET_COMPACT, 8., TEXT_SIZE_SMALL, None),
         DenseBulk => (
             geometry::SIZE_BULK_STAGE_HEIGHT,
             geometry::SIZE_BULK_STAGE_PADDING_X,
             geometry::SIZE_BULK_STAGE_FONT_SIZE,
+            Some(geometry::SIZE_BULK_STAGE_LINE_HEIGHT),
         ),
         DenseHunk => (
             geometry::SIZE_HUNK_ACTION_HEIGHT,
             geometry::SIZE_HUNK_ACTION_PADDING_X,
             geometry::SIZE_HUNK_ACTION_FONT_SIZE,
+            Some(geometry::SIZE_HUNK_ACTION_LINE_HEIGHT),
         ),
-        FileAction => (geometry::SIZE_FILE_ACTION_TARGET, 0., TEXT_SIZE_CAPTION),
+        FileAction => (
+            geometry::SIZE_FILE_ACTION_TARGET,
+            0.,
+            TEXT_SIZE_CAPTION,
+            None,
+        ),
     };
-    button
+    let button = button
         .small()
         .h(scaled(h))
         .px(scaled(padding))
         .text_size(scaled(font))
-        // Library buttons default to a 1.25 line height; GitCrab's two-line
-        // buttons (selectors, recent repositories) are laid out for GPUI's default.
-        .line_height(phi())
         .rounded(px(3.))
         // Enabled buttons show a pointer; `disabled_when` and `set_disabled`
         // swap it for not-allowed.
-        .cursor_pointer()
+        .cursor_pointer();
+    match line {
+        // Dense buttons are barely taller than their text, so a tall line box
+        // would push the label against the border.
+        Some(line) => button.line_height(scaled(line)),
+        // Library buttons default to a 1.25 line height; GitCrab's two-line
+        // buttons (selectors, recent repositories) are laid out for GPUI's default.
+        None => button.line_height(phi()),
+    }
 }
 /// An icon for a button that also has a text label.
 ///
@@ -128,38 +142,31 @@ impl ButtonExt for Button {
 /// reversible, and Discard the warning palette for permanent changes. Every
 /// button of the same role and size is identical.
 pub fn style(button: Button, kind: ButtonKind, size: ControlSize, cx: &App) -> Button {
-    let (fg, bg, border, hover) = match kind {
-        ButtonKind::Stage => (
-            Role::ActionStageFg,
-            Role::ActionStageBg,
-            Role::ActionStageFg,
-            Role::ActionStageBg,
-        ),
-        ButtonKind::Unstage => (
-            Role::TextDefault,
-            Role::SurfaceOverlay,
-            Role::BorderControl,
-            Role::InteractionPressed,
-        ),
-        ButtonKind::Discard => (
-            Role::ActionDiscardFg,
-            Role::ActionDiscardBg,
-            Role::ActionDiscardFg,
-            Role::ActionDiscardBg,
-        ),
+    let (fg, border) = match kind {
+        ButtonKind::Stage => (Role::ActionStageFg, Role::ActionStageFg),
+        ButtonKind::Unstage => (Role::TextDefault, Role::BorderControl),
+        ButtonKind::Discard => (Role::ActionDiscardFg, Role::ActionDiscardFg),
         _ => return basic(button, kind, size),
     };
+    let border: Hsla = role_color(border).into();
     sized(button, size)
+        // The same breathing room at every size, so staging buttons read as one family.
+        .px(scaled(STAGING_PADDING_X))
+        // The library paints a custom button's border in its color on hover,
+        // and its resting fill at a fifth of that color. Using the border
+        // color keeps the outline on hover over a faint tint of the same hue,
+        // which hover and press deepen a little, as GitCrab's neutral
+        // buttons do.
         .custom(
             ButtonCustomVariant::new(cx)
                 .foreground(role_color(fg).into())
-                .color(role_color(bg).into())
-                .hover(role_color(hover).into())
-                .active(role_color(bg).into()),
+                .color(border)
+                .hover(border.opacity(0.3))
+                .active(border.opacity(0.4)),
         )
         // Custom variants no longer carry a border color.
         .border_1()
-        .border_color(role_color(border))
+        .border_color(border)
 }
 
 /// Suppresses a library button's own hover and press fill, for buttons inside
