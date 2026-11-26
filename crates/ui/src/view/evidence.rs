@@ -367,42 +367,97 @@ impl GitCrab {
             window.request_animation_frame();
         }
         if self.evidence_phase == 4 && std::env::var_os("GITCRAB_NATIVE_BENCH").is_some() {
-            if let Some(previous) = self.benchmark.0.replace(std::time::Instant::now()) {
-                self.benchmark
-                    .1
-                    .push(previous.elapsed().as_secs_f64() * 1000.);
-            }
-            if self.benchmark.1.len() < 240 {
-                let i = self.benchmark.1.len();
-                if let Some(p) = &self.state.patch {
-                    self.diff_scroll.scroll_to_item(
-                        (i * 2).min(p.content.lines.len().saturating_sub(1)),
-                        ScrollStrategy::Top,
-                    );
-                } else {
-                    self.history_scroll.scroll_to_item(
-                        (i * 2).min(self.state.graph.rows.len()),
-                        ScrollStrategy::Top,
-                    );
-                }
-                let weak = cx.weak_entity();
-                window.on_next_frame(move |_, cx| {
-                    let _ = weak.update(cx, |_, cx| cx.notify());
-                });
-                window.request_animation_frame();
+            self.evidence_phase = 5;
+            let target = std::env::var("GITCRAB_BENCH_TARGET").unwrap_or_else(|_| "center".into());
+            let size = window.viewport_size();
+            let (width, height) = (f32::from(size.width), f32::from(size.height));
+            let nav = if self.state.diff_context.is_some() {
+                geometry::SIZE_SHELL_RAIL
             } else {
-                self.evidence_phase = 5;
-                let data = serde_json::json!({"samples_ms":self.benchmark.1,"conditions":"240 GPUI render/animation intervals with synthetic scroll; not physical presentation or input latency","loaded":self.state.graph.rows.len(),"diff_rows":self.state.patch.as_ref().map(|p|p.content.lines.len())});
-                let path = format!(
-                    "{}.bench.json",
-                    std::env::var("GITCRAB_NATIVE_READY").unwrap()
-                );
-                let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
-            }
+                self.preferences.nav_width
+            };
+            let inspector = self.preferences.inspector_width;
+            let x = match target.as_str() {
+                "sidebar" => nav / 2.,
+                "inspector" => width - inspector / 2.,
+                _ => nav + (width - nav - inspector) / 2.,
+            };
+            let meta = serde_json::json!({"target":target,"loaded":self.state.graph.rows.len(),"diff_rows":self.state.patch.as_ref().map(|p|p.content.lines.len()),"scale":window.scale_factor()});
+            bench_frame(
+                self.benchmark.clone(),
+                point(px(x), px(height * 0.6)),
+                0,
+                meta,
+                window,
+            );
         }
         if let Some(path) = std::env::var_os("GITCRAB_DRAFT_PROBE") {
             let data = serde_json::json!({"draft":self.state.draft,"revision":self.state.draft_revision,"wip":self.wip_summary.read(cx).value().to_string(),"summary":self.draft.read(cx).value().to_string(),"body":self.description.read(cx).value().to_string(),"wip_focused":self.wip_summary.read(cx).focus_handle(cx).is_focused(window),"summary_focused":self.draft.read(cx).focus_handle(cx).is_focused(window),"activity":self.activity.iter().map(|r|r.summary()).collect::<Vec<_>>()});
             let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
         }
     }
+}
+
+#[cfg(feature = "native-evidence")]
+const BENCH_TICKS: usize = 480;
+
+/// Sends one synthetic wheel step per frame at `position`, down for half the
+/// run and back up for the rest. The root view's last paint stamps the frame's
+/// CPU time from the event to the end of painting; presentation is not timed.
+#[cfg(feature = "native-evidence")]
+fn bench_frame(
+    bench: std::rc::Rc<std::cell::RefCell<FrameBench>>,
+    position: Point<Pixels>,
+    tick: usize,
+    meta: serde_json::Value,
+    window: &mut Window,
+) {
+    window.on_next_frame(move |window, cx| {
+        if tick == BENCH_TICKS {
+            let mut samples = std::mem::take(&mut bench.borrow_mut().samples);
+            let drawn = samples.len();
+            samples.sort_by(f64::total_cmp);
+            let pick = |q: f64| samples.get(((drawn as f64 - 1.) * q) as usize).copied();
+            let data = serde_json::json!({"meta":meta,"ticks":BENCH_TICKS,"frames_drawn":drawn,"p50_ms":pick(0.5),"p90_ms":pick(0.9),"p99_ms":pick(0.99),"max_ms":samples.last(),"conditions":"CPU time from a synthetic wheel event to the end of the root view's paint; excludes GPU presentation"});
+            let path = format!("{}.bench.json", std::env::var("GITCRAB_NATIVE_READY").unwrap());
+            let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
+            return;
+        }
+        let step = if tick < BENCH_TICKS / 2 { -40. } else { 40. };
+        bench.borrow_mut().started = Some(std::time::Instant::now());
+        window.dispatch_event(
+            PlatformInput::Scroll(ScrollEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.), px(step))),
+                ..Default::default()
+            }),
+            cx,
+        );
+        bench_frame(bench, position, tick + 1, meta, window);
+    });
+}
+
+#[cfg(feature = "native-evidence")]
+#[derive(Default)]
+pub(super) struct FrameBench {
+    started: Option<std::time::Instant>,
+    samples: Vec<f64>,
+}
+
+/// Placed last in the root view so it paints after everything else.
+#[cfg(feature = "native-evidence")]
+pub(super) fn frame_bench_stamp(
+    bench: std::rc::Rc<std::cell::RefCell<FrameBench>>,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, _, _| {
+            let mut bench = bench.borrow_mut();
+            if let Some(started) = bench.started.take() {
+                bench.samples.push(started.elapsed().as_secs_f64() * 1000.);
+            }
+        },
+    )
+    .absolute()
+    .size_0()
 }
