@@ -85,6 +85,47 @@ fn diff_highlights(
     highlights
 }
 
+/// Lays a `background` over `marks` on top of `highlights`, splitting spans
+/// so the result stays sorted and non-overlapping, as `StyledText` expects.
+fn mark_ranges(
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+    marks: &[Range<usize>],
+    background: Hsla,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    if marks.is_empty() {
+        return highlights;
+    }
+    let mut cuts: Vec<usize> = highlights
+        .iter()
+        .map(|(range, _)| range)
+        .chain(marks)
+        .flat_map(|range| [range.start, range.end])
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    for piece in cuts.windows(2) {
+        let (start, end) = (piece[0], piece[1]);
+        let mut style = highlights
+            .iter()
+            .find(|(range, _)| range.contains(&start))
+            .map_or_else(HighlightStyle::default, |(_, style)| *style);
+        if marks.iter().any(|range| range.contains(&start)) {
+            style.background_color = Some(background);
+        }
+        if style == HighlightStyle::default() {
+            continue;
+        }
+        match out.last_mut() {
+            Some((range, previous)) if range.end == start && *previous == style => {
+                range.end = end;
+            }
+            _ => out.push((start..end, style)),
+        }
+    }
+    out
+}
+
 impl GitCrab {
     /// Height of one diff row in logical pixels.
     fn diff_row_height(&self) -> f32 {
@@ -1449,6 +1490,13 @@ impl GitCrab {
             .diff_match
             .and_then(|index| self.diff_matches.get(index))
             == Some(&i);
+        let find_marks = found.then(|| {
+            let warning: Hsla = role_color(Role::StatusWarningFg).into();
+            (
+                self.diff_search.read(cx).value().to_string(),
+                warning.opacity(if current_match { 0.55 } else { 0.25 }),
+            )
+        });
         let scale = self.preferences.code_size / BASE_CODE_SIZE;
         let mut el = div()
             .id(("diff-line", visual))
@@ -1585,6 +1633,13 @@ impl GitCrab {
                             let (prefix, shown) = gitcrab_core::diff::shown_text(l);
                             let mut highlights =
                                 diff_highlights(shown, &l.highlights, prefix, self.show_whitespace);
+                            if let Some((query, background)) = &find_marks {
+                                highlights = mark_ranges(
+                                    highlights,
+                                    &gitcrab_core::diff::match_ranges(shown, query),
+                                    *background,
+                                );
+                            }
                             // In Split, this row shows one wrapped segment of the line.
                             let range = match wrap_columns {
                                 Some(columns) => gitcrab_core::diff::wrap_ranges(shown, columns)
@@ -1730,5 +1785,23 @@ mod tests {
         assert!(diff_highlights(text, spans, 1, false)
             .iter()
             .all(|(_, style)| style.underline.is_none()));
+    }
+
+    #[::core::prelude::v1::test]
+    fn find_marks_split_syntax_spans_without_overlap() {
+        let keyword = syntax_style('k');
+        let background: Hsla = gpui::red();
+        let marked = mark_ranges(
+            vec![(0..6, keyword)],
+            std::slice::from_ref(&(4..9)),
+            background,
+        );
+        let mut both = keyword;
+        both.background_color = Some(background);
+        let only = HighlightStyle {
+            background_color: Some(background),
+            ..Default::default()
+        };
+        assert_eq!(marked, [(0..4, keyword), (4..6, both), (6..9, only)]);
     }
 }

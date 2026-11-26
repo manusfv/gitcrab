@@ -493,6 +493,23 @@ pub fn hunk_position(
     Some(around(current, previous))
 }
 
+/// Byte ranges in `text` that match `query`, ignoring case as
+/// [`find_rows`] does.
+pub fn match_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    let query = query.trim().to_lowercase();
+    let lower = text.to_lowercase();
+    // shortcut: offsets come from the lowercased text, so a line whose case
+    // folding changes its byte length gets no inline marks; map offsets per
+    // character if that turns up in practice.
+    if query.is_empty() || lower.len() != text.len() {
+        return vec![];
+    }
+    lower
+        .match_indices(&query)
+        .map(|(start, _)| start..start + query.len())
+        .collect()
+}
+
 /// Lists displayed rows whose text contains `query`, ignoring case.
 ///
 /// Source rows are matched without their diff marker. Hunk headers are
@@ -722,6 +739,12 @@ mod tests {
         assert_eq!(all(Some(1)), position(1, Some(0), Some(2)));
         assert_eq!(all(Some(0)), position(0, None, Some(1)));
         assert!(hunk_position(&[], 0, 0, false, None).is_none());
+    }
+
+    #[test]
+    fn match_ranges_ignore_case() {
+        assert_eq!(match_ranges("Foo foo FOO", " foo "), [0..3, 4..7, 8..11]);
+        assert!(match_ranges("text", "  ").is_empty());
     }
 
     #[test]
