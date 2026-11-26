@@ -62,8 +62,6 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
             button.pt(px(0.)).pb(scaled(LABEL_LIFT * 2.))
         });
     match line {
-        // Dense buttons are barely taller than their text, so a tall line box
-        // would push the label against the border.
         Some(line) => button.line_height(scaled(line)),
         // Library buttons default to a 1.25 line height; GitCrab's two-line
         // buttons (selectors, recent repositories) are laid out for GPUI's default.
@@ -157,7 +155,6 @@ pub fn style(button: Button, kind: ButtonKind, size: ControlSize, cx: &App) -> B
     };
     let border: Hsla = role_color(border).into();
     sized(button, size)
-        // The same breathing room at every size, so staging buttons read as one family.
         .px(scaled(STAGING_PADDING_X))
         // The library paints a custom button's border in its color on hover,
         // and its resting fill at a fifth of that color. Using the border

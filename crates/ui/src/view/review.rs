@@ -487,7 +487,6 @@ impl GitCrab {
             Some(old) => format!("{} → {display}", gitcrab_core::git::display_path(old)),
             None => display.clone(),
         };
-        // File identity, its file action and close, as GitKraken's title row.
         let header = section_bar()
             .child(
                 div()
@@ -650,8 +649,6 @@ impl GitCrab {
         let layout_note =
             (self.split && text && !self.split_active).then_some("Too narrow for Split");
         let has_rows = text && !p.content.lines.is_empty();
-        // GitKraken's controls row: status on the left, the compared side in
-        // the middle, view tools on the right.
         let side = || div().flex_1().min_w_0().flex().items_center().gap_2();
         let tools = side()
             .justify_end()
@@ -1653,8 +1650,6 @@ impl GitCrab {
                 !split || (side == 0) == (self.copy_side == gitcrab_core::diff::Side::Before);
             let highlighted = selected && focused_side && line.is_some();
             let kind = line.map_or(' ', |l| l.kind);
-            // As in GitKraken, numbers and the +/− marker sit in a plain
-            // gutter ruled off from the code, and only the code is tinted.
             let numbers = match line {
                 Some(_) if segment > 0 => String::new(),
                 Some(l) if split => (if side == 0 { l.old } else { l.new })
