@@ -6,7 +6,9 @@ mod inspector;
 mod menu_actions;
 use menu_actions::MenuCommand;
 mod operations;
+mod pane;
 use operations::{BranchPrompt, PendingRun};
+use pane::{Pane, Region};
 mod repository;
 mod review;
 mod settings;
@@ -638,6 +640,8 @@ pub struct GitCrab {
     /// Estimated width of the history pane, in logical pixels.
     history_available: f32,
     author_images: std::collections::HashMap<String, std::path::PathBuf>,
+    /// The sidebar, centre and inspector views, made on first render.
+    panes: Option<[Entity<Pane>; 3]>,
     #[cfg(feature = "native-evidence")]
     evidence_phase: u8,
     #[cfg(feature = "native-evidence")]
@@ -645,7 +649,7 @@ pub struct GitCrab {
     #[cfg(feature = "native-evidence")]
     watch_start: Option<std::time::Instant>,
     #[cfg(feature = "native-evidence")]
-    benchmark: (Option<std::time::Instant>, Vec<f64>),
+    benchmark: std::rc::Rc<std::cell::RefCell<evidence::FrameBench>>,
     /// Scripted stage and unstage writes for the `stagefiles` capture view.
     #[cfg(feature = "native-evidence")]
     stage_bench: evidence::StageBench,
@@ -854,6 +858,7 @@ impl GitCrab {
             history_columns_repository: None,
             history_available: 0.,
             author_images: local_author_images(),
+            panes: None,
             #[cfg(feature = "native-evidence")]
             evidence_phase: 0,
             #[cfg(feature = "native-evidence")]
@@ -861,7 +866,7 @@ impl GitCrab {
             #[cfg(feature = "native-evidence")]
             watch_start: None,
             #[cfg(feature = "native-evidence")]
-            benchmark: (None, vec![]),
+            benchmark: Default::default(),
             #[cfg(feature = "native-evidence")]
             stage_bench: Default::default(),
         };
@@ -2897,16 +2902,10 @@ impl Render for GitCrab {
                 )
                 .into_any_element()
         } else {
-            self.sidebar(window, cx)
+            self.pane(Region::Sidebar, cx)
         };
-        let inspector = self.inspector(window, cx);
-        let center = if self.state.patch.is_some() {
-            self.diff(cx)
-        } else if in_diff {
-            self.review_placeholder(cx)
-        } else {
-            self.history(window, cx)
-        };
+        let inspector = self.pane(Region::Inspector, cx);
+        let center = self.pane(Region::Center, cx);
         let recent_paths = crate::preferences::current(cx)
             .recent
             .iter()
@@ -3431,7 +3430,49 @@ impl Render for GitCrab {
             .children(self.render_branch_prompt(cx))
             .child(main_content)
             .child(self.render_status_bar(cx))
+            .map(|root| {
+                #[cfg(feature = "native-evidence")]
+                let root = root.child(evidence::frame_bench_stamp(self.benchmark.clone()));
+                root
+            })
             .into_any_element()
+    }
+}
+
+impl GitCrab {
+    /// Repaints one region for state only it shows, leaving the others cached.
+    fn notify_region(&self, region: Region, cx: &mut Context<Self>) {
+        match &self.panes {
+            Some(panes) => panes[region as usize].update(cx, |_, cx| cx.notify()),
+            None => cx.notify(),
+        }
+    }
+
+    fn pane(&mut self, region: Region, cx: &mut Context<Self>) -> AnyElement {
+        let owner = cx.entity();
+        let panes = self.panes.get_or_insert_with(|| {
+            [Region::Sidebar, Region::Center, Region::Inspector]
+                .map(|region| Pane::new(&owner, region, cx))
+        });
+        panes[region as usize]
+            .clone()
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element()
+    }
+
+    fn region(
+        &mut self,
+        region: Region,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match region {
+            Region::Sidebar => self.sidebar(window, cx),
+            Region::Inspector => self.inspector(window, cx),
+            Region::Center if self.state.patch.is_some() => self.diff(cx),
+            Region::Center if self.state.diff_context.is_some() => self.review_placeholder(cx),
+            Region::Center => self.history(window, cx),
+        }
     }
 }
 
