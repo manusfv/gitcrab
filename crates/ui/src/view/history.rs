@@ -1041,7 +1041,7 @@ impl GitCrab {
                 .on_hover(cx.listener(|v, hovered: &bool, _, cx| {
                     if v.history_hover.wip != *hovered {
                         v.history_hover.wip = *hovered;
-                        cx.notify();
+                        v.notify_region(Region::Center, cx);
                     }
                 }))
                 .children(self.history_layout.visible().map(|entry| {
