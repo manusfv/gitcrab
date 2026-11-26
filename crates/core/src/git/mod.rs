@@ -237,4 +237,20 @@ mod tests {
         assert_eq!(worktrees[2].label(), "feat/x");
         assert!(worktrees[2].prunable && !worktrees[0].prunable);
     }
+
+    #[test]
+    fn worktree_folder_is_shown_only_when_it_differs_from_the_branch() {
+        let worktree = |path: &str, branch: Option<&str>| Worktree {
+            path: path.into(),
+            branch: branch.map(Into::into),
+            ..Default::default()
+        };
+        assert_eq!(
+            worktree("C:/repo", Some("main")).detail(),
+            Some("repo".into())
+        );
+        assert_eq!(worktree("C:/wt/main", Some("main")).detail(), None);
+        assert_eq!(worktree("C:/wt/feat__x", Some("feat/x")).detail(), None);
+        assert_eq!(worktree("C:/wt/fix", None).detail(), None);
+    }
 }

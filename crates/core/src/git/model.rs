@@ -377,6 +377,14 @@ impl Worktree {
     pub fn label(&self) -> String {
         self.branch.clone().unwrap_or_else(|| self.folder())
     }
+
+    /// The folder, shown beside the branch unless it only repeats the branch
+    /// name, with `/` written as `__` as GitKraken names worktree folders.
+    pub fn detail(&self) -> Option<String> {
+        let branch = self.branch.as_ref()?;
+        let folder = self.folder();
+        (folder != *branch && folder != branch.replace('/', "__")).then_some(folder)
+    }
 }
 
 /// Parses `git worktree list --porcelain -z`, main worktree first.

@@ -537,11 +537,17 @@ impl GitCrab {
             }
 
             // Worktrees.
-            let labels: Vec<String> = s.worktrees.iter().map(|w| w.label()).collect();
+            // The filter box is one line, so a newline keeps a query from
+            // matching across the branch and folder names.
+            let searchable: Vec<String> = s
+                .worktrees
+                .iter()
+                .map(|w| format!("{}\n{}", w.label(), w.folder()))
+                .collect();
             let shown = section(
                 &self.state.path,
                 "Worktrees",
-                labels.iter().map(String::as_str),
+                searchable.iter().map(String::as_str),
                 &self.preferences.collapsed,
                 &filter,
             );
@@ -549,8 +555,7 @@ impl GitCrab {
             for &index in &shown.visible {
                 let worktree = &s.worktrees[index];
                 let path = worktree.path.display().to_string();
-                let folder = worktree.folder();
-                let label = labels[index].clone();
+                let label = worktree.label();
                 let can_open = !worktree.current && !worktree.prunable;
                 let mut tooltip = display_path(&path);
                 if worktree.prunable {
@@ -576,14 +581,8 @@ impl GitCrab {
                             .flex()
                             .gap_1()
                             .min_w_0()
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .max_w_full()
-                                    .truncate()
-                                    .child(label.clone()),
-                            )
-                            .when(worktree.branch.is_some() && folder != label, |content| {
+                            .child(div().flex_shrink_0().max_w_full().truncate().child(label))
+                            .when_some(worktree.detail(), |content, folder| {
                                 content.child(
                                     div()
                                         .flex_1()
