@@ -318,13 +318,17 @@ pub fn wrap_ranges(text: &str, columns: usize) -> Vec<std::ops::Range<usize>> {
     ranges
 }
 
-/// Split rows wrapped to a column width: each split row becomes as many
-/// visual rows as its taller side needs, so both sides stay aligned.
+/// Displayed rows laid out as the visual rows a diff list draws.
+///
+/// Each hunk header after the first is preceded by a blank gap row, which
+/// is its segment 0. In Split, each row also becomes as many visual rows as
+/// its taller side needs once wrapped, so both sides stay aligned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wrap {
-    /// Columns of source text each side shows per visual row.
+    /// Columns of source text each side shows per visual row; `usize::MAX`
+    /// in Unified, which never wraps.
     pub columns: usize,
-    /// First visual row of each split row, followed by the total.
+    /// First visual row of each displayed row, followed by the total.
     starts: Vec<usize>,
 }
 
@@ -342,14 +346,44 @@ impl Wrap {
                 }
             })
         };
-        let mut starts = Vec::with_capacity(content.split.len() + 1);
+        Self::new(
+            columns,
+            content
+                .split
+                .iter()
+                .map(|(before, after)| segments(*before).max(segments(*after))),
+            &content.split_hunk_rows,
+        )
+    }
+
+    /// The unified layout of `content`: one visual row per line.
+    pub fn unified(content: &Content) -> Self {
+        Self::new(
+            usize::MAX,
+            std::iter::repeat_n(1, content.lines.len()),
+            &content.hunk_rows,
+        )
+    }
+
+    fn new(columns: usize, segments: impl Iterator<Item = usize>, hunk_rows: &[usize]) -> Self {
+        let mut starts = Vec::with_capacity(segments.size_hint().0 + 1);
         let mut total = 0;
-        for (before, after) in &content.split {
+        for (row, segments) in segments.enumerate() {
             starts.push(total);
-            total += segments(*before).max(segments(*after));
+            total += segments;
+            // Headers are two rows tall, and later ones get a gap row above.
+            if hunk_rows.binary_search(&row).is_ok() {
+                total += if row > 0 { 2 } else { 1 };
+            }
         }
         starts.push(total);
         Self { columns, starts }
+    }
+
+    /// Whether a visual row is the blank gap above a hunk header.
+    pub fn is_gap(&self, visual: usize, hunk_rows: &[usize]) -> bool {
+        let (row, segment) = self.locate(visual);
+        row > 0 && segment == 0 && hunk_rows.binary_search(&row).is_ok()
     }
 
     /// Number of visual rows.
@@ -421,17 +455,34 @@ pub struct HunkPosition {
     pub next: Option<usize>,
 }
 
-/// Locates the reader among hunk header rows from the first visible row.
+/// Locates the reader among hunk header rows from the visible rows
+/// `top_row..=bottom_row`.
 ///
-/// `at_end` reports that the list cannot scroll further. The last hunk is
-/// then current when its header is on screen, and Next is unavailable.
-/// Previous returns to the current hunk's header when the reader has
-/// scrolled past it.
-pub fn hunk_position(rows: &[usize], top_row: usize, at_end: bool) -> Option<HunkPosition> {
+/// `cursor` is the hunk the arrows last moved to. While its header is on
+/// screen it stays current, so the arrows step through hunks even when the
+/// list cannot scroll to put them at the top. Otherwise the hunk at the top
+/// is current, or the last one when the list is scrolled to the end
+/// (`at_end`) with its header on screen. Previous then returns to the
+/// current hunk's header when the reader has scrolled past it.
+pub fn hunk_position(
+    rows: &[usize],
+    top_row: usize,
+    bottom_row: usize,
+    at_end: bool,
+    cursor: Option<usize>,
+) -> Option<HunkPosition> {
     let last = rows.len().checked_sub(1)?;
+    let around = |current: usize, previous| HunkPosition {
+        current,
+        previous,
+        next: (current < last).then_some(current + 1),
+    };
+    if let Some(cursor) = cursor.filter(|&c| c <= last && (top_row..=bottom_row).contains(&rows[c]))
+    {
+        return Some(around(cursor, cursor.checked_sub(1)));
+    }
     let mut current = rows.iter().rposition(|row| *row <= top_row).unwrap_or(0);
-    let last_on_screen = at_end && rows[last] >= top_row;
-    if last_on_screen {
+    if at_end && rows[last] >= top_row {
         current = last;
     }
     let previous = if top_row > rows[current] {
@@ -439,12 +490,24 @@ pub fn hunk_position(rows: &[usize], top_row: usize, at_end: bool) -> Option<Hun
     } else {
         current.checked_sub(1)
     };
-    let next = (!at_end && current < last).then_some(current + 1);
-    Some(HunkPosition {
-        current,
-        previous,
-        next,
-    })
+    Some(around(current, previous))
+}
+
+/// Byte ranges in `text` that match `query`, ignoring case as
+/// [`find_rows`] does.
+pub fn match_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    let query = query.trim().to_lowercase();
+    let lower = text.to_lowercase();
+    // shortcut: offsets come from the lowercased text, so a line whose case
+    // folding changes its byte length gets no inline marks; map offsets per
+    // character if that turns up in practice.
+    if query.is_empty() || lower.len() != text.len() {
+        return vec![];
+    }
+    lower
+        .match_indices(&query)
+        .map(|(start, _)| start..start + query.len())
+        .collect()
 }
 
 /// Lists displayed rows whose text contains `query`, ignoring case.
@@ -608,15 +671,37 @@ mod tests {
         let content = prepare(parse(
             "@@ -1,3 +1,3 @@ a very long scope line\n keep\n-0123456789\n+short\n tail\n",
         ));
-        // Rows: header, keep, -long/+short, tail.
+        // Rows: header ×2, keep, -long/+short, tail.
         let wrap = Wrap::split(&content, 4);
-        assert_eq!(wrap.rows(), 1 + 1 + 3 + 1);
-        assert_eq!(wrap.first(2), 2);
-        assert_eq!(wrap.first(3), 5);
-        assert_eq!(wrap.locate(4), (2, 2));
-        assert_eq!(wrap.locate(5), (3, 0));
+        assert_eq!(wrap.rows(), 2 + 1 + 3 + 1);
+        assert_eq!(wrap.first(2), 3);
+        assert_eq!(wrap.first(3), 6);
+        assert_eq!(wrap.locate(5), (2, 2));
+        assert_eq!(wrap.locate(6), (3, 0));
         let (prefix, text) = shown_text(&content.lines[2]);
         assert_eq!((prefix, text), (1, "0123456789"));
+    }
+
+    #[test]
+    fn later_hunks_get_a_gap_row_above_their_header() {
+        let content = prepare(parse("@@ -1 +1 @@\n-a\n+b\n@@ -9 +9 @@\n x\n"));
+        let wrap = Wrap::unified(&content);
+        // header ×2, -a, +b, gap, header ×2, x
+        assert_eq!(wrap.rows(), 8);
+        assert_eq!(wrap.locate(1), (0, 1));
+        assert_eq!(wrap.first(3), 4);
+        assert_eq!(wrap.locate(6), (3, 2));
+        assert_eq!(wrap.locate(7), (4, 0));
+        let gaps: Vec<_> = (0..8)
+            .filter(|&v| wrap.is_gap(v, &content.hunk_rows))
+            .collect();
+        assert_eq!(gaps, [4]);
+
+        // header ×2, -a/+b, gap, header ×2, x
+        let split = Wrap::split(&content, 80);
+        assert_eq!(split.rows(), 7);
+        assert_eq!(split.locate(5), (2, 2));
+        assert!(split.is_gap(3, &content.split_hunk_rows));
     }
 
     #[test]
@@ -634,21 +719,32 @@ mod tests {
     }
 
     #[test]
-    fn hunk_position_follows_the_viewport_and_disables_only_at_ends() {
+    fn hunk_position_follows_the_viewport_and_the_arrows() {
         let rows = [0, 10, 20];
-        let at = |top, end| hunk_position(&rows, top, end).unwrap();
+        let at = |top, end, cursor| hunk_position(&rows, top, top + 8, end, cursor).unwrap();
         let position = |current, previous, next| HunkPosition {
             current,
             previous,
             next,
         };
-        assert_eq!(at(0, false), position(0, None, Some(1)));
-        assert_eq!(at(14, false), position(1, Some(1), Some(2)));
-        assert_eq!(at(10, false), position(1, Some(0), Some(2)));
-        // At the bottom, the last visible hunk is current and Next is disabled.
-        assert_eq!(at(15, true), position(2, Some(1), None));
-        assert_eq!(at(25, true), position(2, Some(2), None));
-        assert!(hunk_position(&[], 0, false).is_none());
+        assert_eq!(at(0, false, None), position(0, None, Some(1)));
+        assert_eq!(at(14, false, None), position(1, Some(1), Some(2)));
+        assert_eq!(at(10, false, None), position(1, Some(0), Some(2)));
+        assert_eq!(at(15, true, None), position(2, Some(1), None));
+        assert_eq!(at(25, true, None), position(2, Some(2), None));
+        assert_eq!(at(15, true, Some(1)), position(2, Some(1), None));
+        assert_eq!(at(14, true, Some(2)), position(2, Some(1), None));
+        let all = |cursor| hunk_position(&rows, 0, 30, true, cursor).unwrap();
+        assert_eq!(all(None), position(2, Some(1), None));
+        assert_eq!(all(Some(1)), position(1, Some(0), Some(2)));
+        assert_eq!(all(Some(0)), position(0, None, Some(1)));
+        assert!(hunk_position(&[], 0, 0, false, None).is_none());
+    }
+
+    #[test]
+    fn match_ranges_ignore_case() {
+        assert_eq!(match_ranges("Foo foo FOO", " foo "), [0..3, 4..7, 8..11]);
+        assert!(match_ranges("text", "  ").is_empty());
     }
 
     #[test]

@@ -1562,6 +1562,7 @@ impl Render for Workspace {
                     .min_h_0()
                     .child(active),
             )
+            .child(crate::components::menu_cursor())
     }
 }
 

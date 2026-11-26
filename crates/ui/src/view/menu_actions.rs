@@ -1,4 +1,5 @@
 //! The actions a repository view's context menus dispatch.
+use super::review::DiscardTarget;
 use super::*;
 use components::menu::register;
 use components::MenuTarget;
@@ -19,6 +20,26 @@ pub(super) enum MenuCommand {
     ResetColumns,
     /// Confirms a conflicted file's working-tree content as its resolution.
     Resolve(String),
+    /// Stages or unstages a hunk of the reviewed patch.
+    Hunk {
+        token: u32,
+        index: usize,
+        unstage: bool,
+    },
+    /// Stages or unstages changed lines of the reviewed patch.
+    Lines {
+        token: u32,
+        rows: Vec<usize>,
+        unstage: bool,
+    },
+    /// Asks to discard a hunk or lines of the reviewed patch.
+    Discard {
+        token: u32,
+        target: DiscardTarget,
+    },
+    /// Copies the selected diff rows, as a patch when true.
+    CopyDiff(bool),
+    SelectAllRows,
     Stage {
         change: FileChange,
         unstage: bool,
@@ -40,6 +61,35 @@ impl MenuCommand {
                 v.columns_changed(window, cx);
             }
             Self::Resolve(path) => v.review_resolution(path, window, cx),
+            Self::Hunk {
+                token,
+                index,
+                unstage,
+            } => v.mutate(
+                Action::Hunk {
+                    token,
+                    index,
+                    unstage,
+                },
+                window,
+                cx,
+            ),
+            Self::Lines {
+                token,
+                rows,
+                unstage,
+            } => v.mutate(
+                Action::Lines {
+                    token,
+                    rows,
+                    unstage,
+                },
+                window,
+                cx,
+            ),
+            Self::Discard { token, target } => v.review_discard(token, target, window, cx),
+            Self::CopyDiff(patch) => v.copy_diff(patch, cx),
+            Self::SelectAllRows => v.select_all(&SelectAll, window, cx),
             Self::Stage { change, unstage } => v.mutate(
                 Action::StageFile {
                     reviewed: change,
