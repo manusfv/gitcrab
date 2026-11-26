@@ -1,5 +1,7 @@
 use super::*;
+use crate::workspace::OpenRecent;
 use components::{ContextMenu, MenuTarget};
+use gitcrab_core::presentation::display_path;
 use gitcrab_core::sidebar::{section, section_key, tree_rows, RefFilter, TreeRow};
 use std::rc::Rc;
 
@@ -533,6 +535,118 @@ impl GitCrab {
                     cx,
                 ));
             }
+
+            // Worktrees.
+            let labels: Vec<String> = s.worktrees.iter().map(|w| w.label()).collect();
+            let shown = section(
+                &self.state.path,
+                "Worktrees",
+                labels.iter().map(String::as_str),
+                &self.preferences.collapsed,
+                &filter,
+            );
+            let mut rows = div().flex().flex_col().min_w_0().pb_1();
+            for &index in &shown.visible {
+                let worktree = &s.worktrees[index];
+                let path = worktree.path.display().to_string();
+                let folder = worktree.folder();
+                let label = labels[index].clone();
+                let can_open = !worktree.current && !worktree.prunable;
+                let mut tooltip = display_path(&path);
+                if worktree.prunable {
+                    tooltip.push_str(" (missing)");
+                }
+                let row = ListRow::new(SharedString::from(format!("worktree-{path}")))
+                    .height(ROW_HEIGHT)
+                    .inset(INSET)
+                    .indent(ENTRY_INDENT)
+                    .tab_stop(!self.settings_open)
+                    .foreground(if worktree.current {
+                        Role::TextDefault
+                    } else {
+                        Role::TextMuted
+                    })
+                    .leading(
+                        icon("folder-git-2")
+                            .size(px(ICON_SIZE))
+                            .text_role(Role::TextMuted),
+                    )
+                    .content(
+                        div()
+                            .flex()
+                            .gap_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .max_w_full()
+                                    .truncate()
+                                    .child(label.clone()),
+                            )
+                            .when(worktree.branch.is_some() && folder != label, |content| {
+                                content.child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .font_weight(FontWeight::NORMAL)
+                                        .text_role(Role::TextMuted)
+                                        .child(folder),
+                                )
+                            }),
+                    )
+                    .when(worktree.current, |row| {
+                        row.trailing(
+                            icon("check")
+                                .size(px(ICON_SIZE))
+                                .text_role(Role::StatusSuccessFg),
+                        )
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .background(Role::StatusSuccessBg)
+                    })
+                    .tooltip(tooltip);
+                rows = rows.child(if can_open {
+                    let target = path.clone();
+                    row.on_click(move |e: &ClickEvent, w, cx| {
+                        if e.click_count() == 2 {
+                            w.dispatch_action(Box::new(OpenRecent(target.clone())), cx);
+                        }
+                    })
+                    .context_menu({
+                        let view = view.downgrade();
+                        move |w, _| {
+                            let target = MenuTarget::new(w, view.clone());
+                            ContextMenu::new()
+                                .item(
+                                    "Open this worktree",
+                                    true,
+                                    target.command(MenuCommand::OpenWorktree(path.clone())),
+                                )
+                                .item("Open worktree in new tab", true, OpenRecent(path.clone()))
+                        }
+                    })
+                } else {
+                    row
+                });
+            }
+            let key = shown.key;
+            let header = self
+                .sidebar_header(
+                    "ref-heading-Worktrees",
+                    "folder-git-2",
+                    "Worktrees",
+                    shown.count,
+                    shown.collapsed,
+                )
+                .on_click(cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)));
+            nav = nav.child(self.sidebar_section(
+                "sidebar-worktrees",
+                header,
+                shown.collapsed,
+                rows,
+                window,
+                cx,
+            ));
 
             // Stashes.
             let key = section_key(&self.state.path, "Stashes");

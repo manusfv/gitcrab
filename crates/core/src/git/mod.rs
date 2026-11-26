@@ -223,4 +223,18 @@ mod tests {
             "Outcome uncertain. Refresh and inspect the repository before retrying."
         );
     }
+
+    #[test]
+    fn worktree_list_reads_branches_detached_heads_and_prunable_folders() {
+        let output = "worktree C:/repo\0HEAD aaa\0branch refs/heads/main\0\0\
+            worktree C:/wt/fix\0HEAD bbb\0detached\0\0\
+            worktree C:/gone\0HEAD ccc\0branch refs/heads/feat/x\0prunable gitdir file points to non-existent location\0\0";
+        let worktrees = parse_worktrees(output);
+        assert_eq!(worktrees.len(), 3);
+        assert_eq!(worktrees[0].label(), "main");
+        assert_eq!(worktrees[1].branch, None);
+        assert_eq!(worktrees[1].label(), "fix");
+        assert_eq!(worktrees[2].label(), "feat/x");
+        assert!(worktrees[2].prunable && !worktrees[0].prunable);
+    }
 }

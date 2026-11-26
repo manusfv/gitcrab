@@ -351,6 +351,54 @@ pub struct StashEntry {
     pub date: String,
 }
 
+/// A working tree attached to the repository.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Worktree {
+    /// Root folder as Git reports it.
+    pub path: PathBuf,
+    /// Checked-out branch without `refs/heads/`. `None` when detached or bare.
+    pub branch: Option<String>,
+    /// Whether this is the worktree the tab shows.
+    pub current: bool,
+    /// Whether the folder is gone and `git worktree prune` would remove it.
+    pub prunable: bool,
+}
+
+impl Worktree {
+    /// The folder's last path segment.
+    pub fn folder(&self) -> String {
+        self.path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.path.display().to_string())
+    }
+
+    /// The branch, or the folder when detached.
+    pub fn label(&self) -> String {
+        self.branch.clone().unwrap_or_else(|| self.folder())
+    }
+}
+
+/// Parses `git worktree list --porcelain -z`, main worktree first.
+pub fn parse_worktrees(output: &str) -> Vec<Worktree> {
+    let mut worktrees: Vec<Worktree> = vec![];
+    for field in output.split('\0') {
+        if let Some(path) = field.strip_prefix("worktree ") {
+            worktrees.push(Worktree {
+                path: path.into(),
+                ..Default::default()
+            });
+        } else if let Some(worktree) = worktrees.last_mut() {
+            if let Some(branch) = field.strip_prefix("branch ") {
+                worktree.branch = Some(branch.strip_prefix("refs/heads/").unwrap_or(branch).into());
+            } else if field == "prunable" || field.starts_with("prunable ") {
+                worktree.prunable = true;
+            }
+        }
+    }
+    worktrees
+}
+
 /// Parses `git stash list --format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%ci%x00%gs`,
 /// newest first, into history rows and list entries.
 ///
@@ -451,6 +499,8 @@ pub struct RepoSnapshot {
     /// Message and date of `stash@{0}`, the entry Pop stash reviews.
     #[serde(default)]
     pub latest_stash: Option<StashEntry>,
+    #[serde(default)]
+    pub worktrees: Vec<Worktree>,
     #[serde(default)]
     pub tags: Vec<ReferenceTip>,
     /// Branch name or abbreviated detached HEAD object ID.

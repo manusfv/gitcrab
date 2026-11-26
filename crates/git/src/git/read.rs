@@ -24,6 +24,17 @@ impl Git {
     /// Short names are not requested from Git: `%(refname:short)` looks up
     /// every candidate name of every ref inside Git, which grows with the
     /// number of refs. [`Self::short_ref_names`] derives them from this list.
+    /// Lists the repository's worktrees and marks the one at [`Git::path`].
+    fn worktrees(&self) -> GitResult<Vec<Worktree>> {
+        let mut worktrees =
+            parse_worktrees(&self.run(&["worktree", "list", "--porcelain", "-z"])?);
+        let here = self.path.canonicalize().ok();
+        for worktree in &mut worktrees {
+            worktree.current = here.is_some() && worktree.path.canonicalize().ok() == here;
+        }
+        Ok(worktrees)
+    }
+
     fn read_refs(&self) -> GitResult<String> {
         self.run(&[
             "for-each-ref",
@@ -68,7 +79,7 @@ impl Git {
         // Each Git call costs a process start, so independent reads run side
         // by side. The identity and references are read again at the end to
         // detect a change during the refresh.
-        let (reviewed, metadata, refs, stashes) = std::thread::scope(|scope| {
+        let (reviewed, metadata, refs, stashes, worktrees) = std::thread::scope(|scope| {
             let metadata = scope.spawn(|| self.read_metadata());
             let refs = scope.spawn(|| self.read_refs());
             let stashes = scope.spawn(|| {
@@ -78,11 +89,13 @@ impl Git {
                     "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%ci%x00%gs",
                 ])
             });
+            let worktrees = scope.spawn(|| self.worktrees());
             let reviewed = self.write_identity();
             let metadata = metadata.join().map_err(|_| "Git metadata read failed")?;
             let refs = refs.join().map_err(|_| "Git reference read failed")?;
             let stashes = stashes.join().map_err(|_| "Git stash read failed")?;
-            Ok::<_, String>((reviewed?, metadata?, refs?, stashes?))
+            let worktrees = worktrees.join().map_err(|_| "Git worktree read failed")?;
+            Ok::<_, String>((reviewed?, metadata?, refs?, stashes?, worktrees?))
         })?;
         let head = if let Some(branch) = reviewed.symbolic_head.strip_prefix("refs/heads/") {
             branch.to_string()
@@ -276,6 +289,7 @@ impl Git {
                 branches,
                 stash_count,
                 latest_stash,
+                worktrees,
                 remote_refs,
                 tags,
                 head,

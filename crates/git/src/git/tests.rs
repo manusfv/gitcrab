@@ -1509,6 +1509,37 @@ fn stashes_show_as_one_row_on_their_base_commit() {
 }
 
 #[test]
+fn snapshot_lists_worktrees_and_marks_the_current_one() {
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    fixture.write("a.txt", "base\n");
+    git.run(&["add", "."]).unwrap();
+    git.run(&["commit", "-qm", "base"]).unwrap();
+    let linked = fixture.root().join("linked");
+    let gone = fixture.root().join("gone");
+    for (path, args) in [(&linked, &["-b", "side"][..]), (&gone, &["--detach"])] {
+        let path = path.to_str().unwrap();
+        git.run(&[&["worktree", "add", "-q"][..], args, &[path]].concat())
+            .unwrap();
+    }
+    std::fs::remove_dir_all(&gone).unwrap();
+
+    let worktrees = git.snapshot(50).unwrap().worktrees;
+    let summary: Vec<_> = worktrees
+        .iter()
+        .map(|w| (w.label(), w.current, w.prunable))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("main".into(), true, false),
+            ("gone".into(), false, true),
+            ("side".into(), false, false)
+        ]
+    );
+}
+
+#[test]
 fn stash_rows_follow_date_order_and_wait_for_their_base() {
     let commit = |id: &str, parent: &str, date: &str| Commit {
         id: id.into(),
