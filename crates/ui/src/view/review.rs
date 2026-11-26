@@ -1130,6 +1130,106 @@ impl GitCrab {
         )
     }
 
+    /// The right-click menu for diff row `row`: staging and discard for the
+    /// selected lines and the row's hunk, copying, and the file itself.
+    fn diff_menu(
+        &self,
+        row: usize,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> components::ContextMenu {
+        let mut menu = components::ContextMenu::new();
+        let Some(p) = self.state.patch.as_ref() else {
+            return menu;
+        };
+        let view = components::MenuTarget::new(window, cx.weak_entity());
+        let conflict = p.id.is_none()
+            && self
+                .state
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.status.iter().any(|f| f.path == p.path && f.is_unmerged()));
+        if self.hunk_actions_allowed(p, conflict) {
+            let (token, unstage) = (p.token, p.staged);
+            let ready = self.diff_actions_ready();
+            let discard = ready && p.discard_blocked.is_none();
+            let verb = if unstage { "Unstage" } else { "Stage" };
+            let lines = self.selected_changes();
+            if !lines.is_empty() {
+                let count = lines.len();
+                let noun = if count == 1 { "line" } else { "lines" };
+                menu = menu.item(
+                    format!("{verb} {count} {noun}"),
+                    ready,
+                    view.command(MenuCommand::Lines {
+                        token,
+                        rows: lines.clone(),
+                        unstage,
+                    }),
+                );
+                if !unstage {
+                    menu = menu.item(
+                        format!("Discard {count} {noun}…"),
+                        discard,
+                        view.command(MenuCommand::Discard {
+                            token,
+                            target: DiscardTarget::Lines(lines),
+                        }),
+                    );
+                }
+                menu = menu.separator();
+            }
+            let hunk = self
+                .hunk_rows()
+                .partition_point(|&header| header <= row)
+                .checked_sub(1)
+                .filter(|&index| index < p.hunks.len());
+            if let Some(index) = hunk {
+                menu = menu.item(
+                    format!("{verb} hunk"),
+                    ready,
+                    view.command(MenuCommand::Hunk {
+                        token,
+                        index,
+                        unstage,
+                    }),
+                );
+                if !unstage {
+                    menu = menu.item(
+                        "Discard hunk…",
+                        discard,
+                        view.command(MenuCommand::Discard {
+                            token,
+                            target: DiscardTarget::Hunk(index),
+                        }),
+                    );
+                }
+                menu = menu.separator();
+            }
+        }
+        menu = menu
+            .item("Copy", true, view.command(MenuCommand::CopyDiff(false)))
+            .item(
+                "Copy as patch",
+                true,
+                view.command(MenuCommand::CopyDiff(true)),
+            )
+            .item("Select all", true, view.command(MenuCommand::SelectAllRows))
+            .separator();
+        let path = gitcrab_core::git::display_path(&p.path);
+        match self.repository_identity().filter(|_| p.id.is_none()) {
+            Some(root) => {
+                let full = components::worktree_file(root, &p.path);
+                menu.open(full.clone())
+                    .reveal(full.clone())
+                    .separator()
+                    .copy("Copy file path", path)
+                    .copy("Copy full path", full.to_string_lossy().into_owned())
+            }
+            None => menu.copy("Copy file path", path),
+        }
+    }
+
     /// A Discard button for `p`'s hunks or lines. It is disabled while the
     /// patch is not ready, and also, with the reason as its tooltip, when
     /// Discard does not support this change type.
@@ -1150,7 +1250,7 @@ impl GitCrab {
         }
     }
 
-    fn review_discard(
+    pub(super) fn review_discard(
         &mut self,
         token: u32,
         target: DiscardTarget,
@@ -1682,6 +1782,22 @@ impl GitCrab {
                 cx.notify();
             }),
         )
+        .on_mouse_up(
+            MouseButton::Right,
+            cx.listener(move |v, e: &MouseUpEvent, w, cx| {
+                cx.stop_propagation();
+                v.focus.focus(w, cx);
+                // Right-clicking outside the selection selects that row first,
+                // as editors do, so the menu acts on what was clicked.
+                if !v.selection.as_ref().is_some_and(|range| range.contains(&i)) {
+                    v.anchor = i;
+                    v.selection = Some(i..i + 1);
+                    v.hunk_cursor = None;
+                }
+                cx.notify();
+                v.diff_menu(i, w, cx).show(e.position, w, cx, |_| {});
+            }),
+        )
         .on_mouse_move(cx.listener(move |v, e: &MouseMoveEvent, _, cx| {
             if e.dragging() && v.selection.is_some() {
                 v.selection = Some(v.anchor.min(i)..v.anchor.max(i) + 1);
@@ -1693,8 +1809,8 @@ impl GitCrab {
 }
 
 /// What a working-copy discard removes.
-#[derive(Clone)]
-enum DiscardTarget {
+#[derive(Clone, PartialEq, Debug)]
+pub(super) enum DiscardTarget {
     /// A zero-based hunk of the reviewed patch.
     Hunk(usize),
     /// Changed lines, as indices into the reviewed patch lines.
