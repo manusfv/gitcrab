@@ -11,6 +11,8 @@ const COMMAND_ICON_SIZE: f32 = geometry::SIZE_REPOSITORY_TOOLBAR_COMMAND_ICON;
 const SELECTOR_PADDING_X: f32 = 8.;
 /// Side padding of Stage, Unstage and Discard buttons at every size.
 const STAGING_PADDING_X: f32 = 10.;
+/// How far button labels are raised from the line box's centre.
+const LABEL_LIFT: f32 = 1.;
 
 #[derive(Clone, Copy)]
 pub enum ControlSize {
@@ -53,7 +55,12 @@ pub fn sized(button: Button, size: ControlSize) -> Button {
         .rounded(px(3.))
         // Enabled buttons show a pointer; `disabled_when` and `set_disabled`
         // swap it for not-allowed.
-        .cursor_pointer();
+        .cursor_pointer()
+        // The line box centres on the font's full height, which leaves the
+        // letters about a pixel low, so labels are lifted to sit centred.
+        .when(!matches!(size, FileAction), |button| {
+            button.pt(px(0.)).pb(scaled(LABEL_LIFT * 2.))
+        });
     match line {
         // Dense buttons are barely taller than their text, so a tall line box
         // would push the label against the border.
