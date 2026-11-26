@@ -130,10 +130,28 @@ impl ContextMenu {
             items,
             disabled: false,
         });
-        menu.show(position, window, cx);
-        // The native menu runs from a task it has just queued, and queued
-        // tasks run in order, so this one starts once the menu has closed.
-        cx.spawn(async move |cx| cx.update(on_close)).detach();
+        // Over a native menu, Windows shows the cursor GPUI last stored, such
+        // as a diff row's text cursor, so a frame with the arrow forced
+        // window-wide is drawn before the menu opens. Next-frame callbacks
+        // run before that frame draws, hence the second one.
+        cx.set_global(NativeMenuOpen(true));
+        window.refresh();
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                menu.show(position, window, cx);
+                // The native menu runs from a task it has just queued, and
+                // queued tasks run in order, so this one starts once the menu
+                // has closed.
+                cx.spawn(async move |cx| {
+                    cx.update(|cx| {
+                        cx.set_global(NativeMenuOpen(false));
+                        cx.refresh_windows();
+                        on_close(cx);
+                    })
+                })
+                .detach();
+            });
+        });
     }
 
     /// Fills a drawn popup menu with the same entries, for a dropdown.
@@ -154,6 +172,25 @@ impl ContextMenu {
         }
         menu
     }
+}
+
+/// Whether a native context menu is open.
+struct NativeMenuOpen(bool);
+impl Global for NativeMenuOpen {}
+
+/// Forces the arrow cursor across the window while a native menu is open.
+/// Place one in each window's root.
+pub fn menu_cursor() -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        |_, _, window, cx| {
+            if cx.try_global::<NativeMenuOpen>().is_some_and(|open| open.0) {
+                window.set_window_cursor_style(CursorStyle::Arrow);
+            }
+        },
+    )
+    .absolute()
+    .size_0()
 }
 
 fn native_item(
