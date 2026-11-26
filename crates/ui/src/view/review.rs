@@ -96,14 +96,38 @@ impl GitCrab {
         .max(self.preferences.code_size + DIFF_ROW_LEADING)
     }
 
-    /// Rebuilds the Split wrap layout when the patch, layout or pane width
-    /// changes. Each side wraps its long lines at the columns it can show,
-    /// measured from the code font, as GitHub Desktop's split diff does.
-    pub(super) fn update_split_wrap(&mut self, window: &mut Window) {
-        let Some(p) = self.state.patch.as_ref().filter(|_| self.split_active) else {
-            self.split_wrap = None;
+    /// Height of a hunk header's buttons: as tall as the row allows inside
+    /// its bottom rule, with a pixel to spare.
+    fn hunk_button_height(&self) -> f32 {
+        self.diff_row_height() - 2.
+    }
+
+    /// Width every Unified row shares, so the list scrolls to its longest line.
+    fn unified_row_width(&self, p: &gitcrab_core::controller::Patch) -> f32 {
+        let scale = self.preferences.code_size / BASE_CODE_SIZE;
+        let advance = self.preferences.code_size * CODE_CHAR_WIDTH;
+        (p.content.columns as f32 * advance + UNIFIED_ROW_CHROME * scale).max(UNIFIED_ROW_MIN_WIDTH)
+    }
+
+    /// Rebuilds the diff's visual row layout when the patch, layout or pane
+    /// width changes. In Split, each side wraps its long lines at the columns
+    /// it can show, measured from the code font, as GitHub Desktop's split
+    /// diff does.
+    pub(super) fn update_diff_wrap(&mut self, window: &mut Window) {
+        let Some(p) = self.state.patch.as_ref() else {
+            self.diff_wrap = None;
             return;
         };
+        if !self.split_active {
+            if !self
+                .diff_wrap
+                .as_ref()
+                .is_some_and(|(token, wrap)| *token == p.token && wrap.columns == usize::MAX)
+            {
+                self.diff_wrap = Some((p.token, gitcrab_core::diff::Wrap::unified(&p.content)));
+            }
+            return;
+        }
         let size = self.preferences.code_size;
         let scale = size / BASE_CODE_SIZE;
         let text = window.text_system();
@@ -112,8 +136,9 @@ impl GitCrab {
             .map(|advance| f32::from(advance.width))
             .unwrap_or(size * CODE_CHAR_WIDTH)
             .max(1.);
-        // Each side: 8 px padding on both edges, two 8 px gaps, the line
-        // number and marker columns, and a little slack for rounding.
+        // Each side: 8 px padding on both edges, 16 px around the marker and
+        // gutter rule, the line number and marker columns, and a little slack
+        // for rounding.
         let side = self.history_available / 2.
             - DIFF_SIDE_PADDING
             - DIFF_SIDE_GAPS
@@ -121,28 +146,31 @@ impl GitCrab {
             - 6.;
         let columns = ((side / advance).floor() as usize).max(8);
         if self
-            .split_wrap
+            .diff_wrap
             .as_ref()
             .is_some_and(|(token, wrap)| *token == p.token && wrap.columns == columns)
         {
             return;
         }
-        self.split_wrap = Some((
+        self.diff_wrap = Some((
             p.token,
             gitcrab_core::diff::Wrap::split(&p.content, columns),
         ));
     }
 
-    /// The wrap layout for the patch on screen, when Split is active.
+    /// The visual row layout for the patch and layout on screen.
     fn wrap(&self) -> Option<&gitcrab_core::diff::Wrap> {
         let p = self.state.patch.as_ref()?;
-        self.split_wrap
+        self.diff_wrap
             .as_ref()
-            .filter(|(token, _)| self.split_active && *token == p.token)
+            .filter(|(token, wrap)| {
+                *token == p.token && (wrap.columns == usize::MAX) != self.split_active
+            })
             .map(|(_, wrap)| wrap)
     }
 
-    /// Rows the diff list draws: wrapped visual rows in Split.
+    /// Rows the diff list draws, counting gaps between hunks and, in Split,
+    /// wrapped segments.
     fn diff_visual_rows(&self) -> usize {
         let Some(p) = self.state.patch.as_ref() else {
             return 0;
@@ -483,6 +511,83 @@ impl GitCrab {
                         }),
                 )
             })
+            .when(conflict, |bar| {
+                bar.child(Badge::role("Conflict", Role::StatusConflictFg))
+            })
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(scaled(TEXT_SIZE_SMALL))
+                    .text_role(Role::TextMuted)
+                    .child(self.comparison_label(p, conflict)),
+            )
+            .when(conflict, |el| {
+                let path = p.path.clone();
+                el.child(
+                    self.action_button("resolve-file", "Mark resolved…")
+                        .flex_none()
+                        .disabled_when(self.state.blocking_write())
+                        .on_click(cx.listener(move |v, _, w, cx| {
+                            v.review_resolution(path.clone(), w, cx)
+                        })),
+                )
+            })
+            .when(p.id.is_none() && !conflict, |el| {
+                el.child(
+                    self.semantic_button(
+                        "stage-file",
+                        if staged { "Unstage file" } else { "Stage file" },
+                        if staged {
+                            components::ButtonKind::Unstage
+                        } else {
+                            components::ButtonKind::Stage
+                        },
+                        ControlSize::Compact,
+                        cx,
+                    )
+                    .flex_none()
+                    .icon(components::label_icon("check"))
+                    .tooltip_with_action(
+                        if staged { "Unstage file" } else { "Stage file" },
+                        &StageSelectedFile,
+                        Some(KEY_CONTEXT),
+                    )
+                    .disabled_when(
+                        self.state.blocking_write()
+                            || !self.state.snapshot.as_ref().is_some_and(|s| {
+                                s.status
+                                    .iter()
+                                    .any(|f| f.path == p.path && Controller::on_side(f, staged))
+                            }),
+                    )
+                    .on_click(cx.listener(|v, _, w, cx| {
+                        if let Some(p) = &v.state.patch {
+                            let Some(reviewed) = v
+                                .state
+                                .snapshot
+                                .as_ref()
+                                .and_then(|s| {
+                                    s.status
+                                        .iter()
+                                        .find(|f| f.path == p.path && f.on_side(p.staged))
+                                })
+                                .cloned()
+                            else {
+                                return;
+                            };
+                            v.mutate(
+                                Action::StageFile {
+                                    reviewed,
+                                    unstage: p.staged,
+                                },
+                                w,
+                                cx,
+                            );
+                        }
+                    })),
+                )
+            })
             .when(!self.single_pane, |bar| {
                 bar.child(
                     self.button(
@@ -529,137 +634,83 @@ impl GitCrab {
         });
         let layout_note =
             (self.split && text && !self.split_active).then_some("Too narrow for Split");
-        let comparison =
-            section_bar()
-                .h_auto()
-                .min_h(scaled(SECTION_HEIGHT))
-                .py_1()
-                .flex_wrap()
-                .when(conflict, |bar| {
-                    bar.child(Badge::role("Conflict", Role::StatusConflictFg))
-                })
-                .when_some(source, |bar, source| bar.child(source))
-                .child(
+        let has_rows = text && !p.content.lines.is_empty();
+        // One row of controls under the title, as GitKraken has: what is
+        // compared and hunk tools on the left, view options on the right.
+        let mut controls = section_bar()
+            .h_auto()
+            .min_h(scaled(SECTION_HEIGHT))
+            .py_1()
+            .flex_wrap()
+            .bg_role(Role::SurfaceCanvas)
+            .when_some(source, |bar, source| {
+                bar.child(source)
+                    .when(has_rows, |bar| bar.child(separator()))
+            });
+        controls = if has_rows {
+            self.diff_tools(controls, p, conflict, cx)
+        } else {
+            controls.child(div().flex_1())
+        };
+        let controls = controls
+            .when_some(layout_note, |bar, note| {
+                bar.child(
                     div()
+                        .id("split-fallback")
                         .text_size(scaled(TEXT_SIZE_SMALL))
-                        .text_role(Role::TextMuted)
-                        .child(self.comparison_label(p, conflict)),
+                        .text_role(Role::StatusWarningFg)
+                        .child(note)
+                        .tooltip(|w, cx| {
+                            Tooltip::new(
+                                "Hide details or widen the window to compare side by side.",
+                            )
+                            .build(w, cx)
+                        }),
                 )
-                .child(div().flex_1())
-                .when_some(layout_note, |bar, note| {
-                    bar.child(
-                        div()
-                            .id("split-fallback")
-                            .text_size(scaled(TEXT_SIZE_SMALL))
-                            .text_role(Role::StatusWarningFg)
-                            .child(note)
-                            .tooltip(|w, cx| {
-                                Tooltip::new(
-                                    "Hide details or widen the window to compare side by side.",
-                                )
-                                .build(w, cx)
-                            }),
-                    )
-                })
-                .child(
-                    segmented_group()
-                        .child(
-                            self.segment_button("unified-mode", "Unified", text && !self.split)
-                                .disabled_when(!text)
-                                .when(!text, |button| button.tooltip(TEXT_ONLY_LAYOUTS))
-                                .on_click(cx.listener(|v, _, w, cx| {
-                                    v.split = false;
-                                    v.selection = None;
-                                    v.persist_preferences(w, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            self.segment_button("split-mode", "Split", text && self.split)
-                                .disabled_when(!text)
-                                .when(!text, |button| button.tooltip(TEXT_ONLY_LAYOUTS))
-                                .on_click(cx.listener(|v, _, w, cx| {
-                                    v.split = true;
-                                    v.selection = None;
-                                    v.persist_preferences(w, cx);
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .when(conflict, |el| {
-                    let path = p.path.clone();
-                    el.child(
-                        self.action_button("resolve-file", "Mark resolved…")
-                            .disabled_when(self.state.blocking_write())
-                            .on_click(cx.listener(move |v, _, w, cx| {
-                                v.review_resolution(path.clone(), w, cx)
+            })
+            .child(
+                segmented_group()
+                    .child(
+                        self.segment_button("unified-mode", "Unified", text && !self.split)
+                            .disabled_when(!text)
+                            .when(!text, |button| button.tooltip(TEXT_ONLY_LAYOUTS))
+                            .on_click(cx.listener(|v, _, w, cx| {
+                                v.split = false;
+                                v.selection = None;
+                                v.persist_preferences(w, cx);
+                                cx.notify();
                             })),
                     )
-                })
-                .when(p.id.is_none() && !conflict, |el| {
-                    el.child(
-                        self.semantic_button(
-                            "stage-file",
-                            if staged { "Unstage file" } else { "Stage file" },
-                            if staged {
-                                components::ButtonKind::Unstage
-                            } else {
-                                components::ButtonKind::Stage
-                            },
-                            ControlSize::Compact,
-                            cx,
-                        )
-                        .icon(components::label_icon("check"))
-                        .tooltip_with_action(
-                            if staged { "Unstage file" } else { "Stage file" },
-                            &StageSelectedFile,
-                            Some(KEY_CONTEXT),
-                        )
-                        .disabled_when(
-                            self.state.blocking_write()
-                                || !self.state.snapshot.as_ref().is_some_and(|s| {
-                                    s.status
-                                        .iter()
-                                        .any(|f| f.path == p.path && Controller::on_side(f, staged))
-                                }),
-                        )
-                        .on_click(cx.listener(|v, _, w, cx| {
-                            if let Some(p) = &v.state.patch {
-                                let Some(reviewed) = v
-                                    .state
-                                    .snapshot
-                                    .as_ref()
-                                    .and_then(|s| {
-                                        s.status
-                                            .iter()
-                                            .find(|f| f.path == p.path && f.on_side(p.staged))
-                                    })
-                                    .cloned()
-                                else {
-                                    return;
-                                };
-                                v.mutate(
-                                    Action::StageFile {
-                                        reviewed,
-                                        unstage: p.staged,
-                                    },
-                                    w,
-                                    cx,
-                                );
-                            }
-                        })),
-                    )
-                });
+                    .child(
+                        self.segment_button("split-mode", "Split", text && self.split)
+                            .disabled_when(!text)
+                            .when(!text, |button| button.tooltip(TEXT_ONLY_LAYOUTS))
+                            .on_click(cx.listener(|v, _, w, cx| {
+                                v.split = true;
+                                v.selection = None;
+                                v.persist_preferences(w, cx);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(has_rows, |bar| {
+                bar.child(
+                    self.button("selection-help", "Shortcuts")
+                        .on_click(|_, w, cx| {
+                            let scroll = ScrollHandle::new();
+                            w.open_modal(cx, move |d, _, cx| diff_help(d, &scroll, cx))
+                        }),
+                )
+            });
         let el = panel()
             .bg_role(Role::SurfaceCanvas)
             .child(header)
-            .child(comparison);
-        if !text || p.content.lines.is_empty() {
+            .child(controls);
+        if !has_rows {
             return el.child(self.preview_panel(p, cx)).into_any_element();
         }
         let diff_over = overflows_vertically(&self.diff_scroll);
-        el.child(self.diff_tools(p, conflict, cx))
-            .when(self.diff_find_open, |el| el.child(self.diff_find_bar(cx)))
+        el.when(self.diff_find_open, |el| el.child(self.diff_find_bar(cx)))
             .when(self.split_active, |el| {
                 let (before, after) = self.comparison_sides(p);
                 let label = |text: String| {
@@ -738,20 +789,17 @@ impl GitCrab {
             .into_any_element()
     }
 
-    /// Hunk navigation, actions for the hunk in view, and content tools.
+    /// Adds hunk navigation, actions for the hunk in view, status and content
+    /// tools to the diff's controls row.
     fn diff_tools(
         &self,
+        mut bar: Div,
         p: &gitcrab_core::controller::Patch,
         conflict: bool,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Div {
         let total = self.hunk_rows().len();
         let position = self.viewport_hunk();
-        let mut bar = section_bar()
-            .h_auto()
-            .min_h(scaled(SECTION_HEIGHT))
-            .py_1()
-            .flex_wrap();
         if let Some((position, scrollable)) = position {
             let hunk_nav: [(usize, bool, &str, &str, &dyn gpui::Action, _); 2] = [
                 (
@@ -764,14 +812,14 @@ impl GitCrab {
                 ),
                 (1, true, "down", "Next hunk", &NextHunk, position.next),
             ];
-            for (index, forward, glyph, name, action, target) in hunk_nav {
-                bar = bar.child(
+            bar = bar.child(segmented_group().children(hunk_nav.into_iter().map(
+                |(index, forward, glyph, name, action, target)| {
                     self.icon_button(("hunk-nav", index), glyph, name)
                         .tooltip_with_action(name, action, Some(KEY_CONTEXT))
                         .disabled_when(target.is_none())
-                        .on_click(cx.listener(move |v, _, w, cx| v.step_hunk(forward, w, cx))),
-                );
-            }
+                        .on_click(cx.listener(move |v, _, w, cx| v.step_hunk(forward, w, cx)))
+                },
+            )));
             bar = bar.child(
                 div()
                     .text_size(scaled(TEXT_SIZE_SMALL))
@@ -787,7 +835,14 @@ impl GitCrab {
             let index = position.current;
             let lines = self.selected_changes();
             if self.hunk_actions_allowed(p, conflict) && !lines.is_empty() {
-                bar = self.line_actions(bar.child(separator()), p, lines, "toolbar", cx);
+                bar = self.line_actions(
+                    bar.child(separator()),
+                    p,
+                    lines,
+                    "toolbar",
+                    ControlSize::Compact,
+                    cx,
+                );
             } else if self.hunk_actions_allowed(p, conflict) && index < p.hunks.len() {
                 let token = p.token;
                 let unstage = p.staged;
@@ -903,14 +958,6 @@ impl GitCrab {
                     cx.notify();
                 })),
         )
-        .child(
-            self.button("selection-help", "Shortcuts")
-                .on_click(|_, w, cx| {
-                    let scroll = ScrollHandle::new();
-                    w.open_modal(cx, move |d, _, cx| diff_help(d, &scroll, cx))
-                }),
-        )
-        .into_any_element()
     }
 
     /// The Find in diff field with its match position.
@@ -1086,6 +1133,7 @@ impl GitCrab {
         p: &gitcrab_core::controller::Patch,
         lines: Vec<usize>,
         place: &'static str,
+        size: ControlSize,
         cx: &mut Context<Self>,
     ) -> E {
         let token = p.token;
@@ -1106,9 +1154,12 @@ impl GitCrab {
                 } else {
                     components::ButtonKind::Stage
                 },
-                ControlSize::Compact,
+                size,
                 cx,
             )
+            .when(matches!(size, ControlSize::DenseHunk), |b| {
+                b.h(px(self.hunk_button_height()))
+            })
             .disabled_when(!ready)
             .on_click(cx.listener(move |v, _, w, cx| {
                 v.mutate(
@@ -1127,10 +1178,13 @@ impl GitCrab {
                 self.discard_button(
                     SharedString::from(format!("{place}-lines-discard")),
                     format!("Discard {count} {noun}…"),
-                    ControlSize::Compact,
+                    size,
                     p,
                     cx,
                 )
+                .when(matches!(size, ControlSize::DenseHunk), |b| {
+                    b.h(px(self.hunk_button_height()))
+                })
                 .on_click(cx.listener(move |v, _, w, cx| {
                     v.review_discard(token, DiscardTarget::Lines(lines.clone()), w, cx)
                 })),
@@ -1275,13 +1329,13 @@ impl GitCrab {
         };
         handle.set_offset(offset);
     }
-    /// A hunk header spanning the whole row in either layout. Its actions
-    /// come first so a long scope line or a narrow Split pane cannot hide them.
+    /// A hunk header spanning the whole row in either layout, ruled off from
+    /// its lines as GitKraken's is. The scope truncates first, so a long scope
+    /// line or a narrow Split pane cannot hide the actions.
     fn hunk_header_row(&self, i: usize, line: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = self.state.patch.as_ref().unwrap();
         let l = &p.content.lines[line];
         let index = p.content.hunk_rows.binary_search(&line).ok();
-        let total = p.content.hunk_rows.len();
         let (ranges, scope) = gitcrab_core::diff::hunk_header_parts(&l.text);
         let conflict = self
             .state
@@ -1291,36 +1345,40 @@ impl GitCrab {
         let actions =
             index.filter(|&index| self.hunk_actions_allowed(p, conflict) && index < p.hunks.len());
         let ready = self.diff_actions_ready();
-        let scale = self.preferences.code_size / BASE_CODE_SIZE;
-        let advance = self.preferences.code_size * CODE_CHAR_WIDTH;
+        let unified_width = self.unified_row_width(p);
+        // Buttons sit at the right edge, as GitKraken's do, unless that edge
+        // is scrolled out of the pane by a long unified line.
+        let actions_right = self.split_active || unified_width <= self.history_available;
         let mut row = div()
             .id(("diff-line", i))
             .w_full()
-            .when(!self.split_active, |row| {
-                row.min_w(px((p.content.columns as f32 * advance
-                    + UNIFIED_ROW_CHROME * scale)
-                    .max(UNIFIED_ROW_MIN_WIDTH)))
-            })
+            .when(!self.split_active, |row| row.min_w(px(unified_width)))
             .h(px(self.diff_row_height()))
             .flex()
             .items_center()
             .gap_2()
             .px_2()
             .overflow_hidden()
-            .bg_role(Role::DiffHunkBg)
-            .when(line > 0, |row| {
-                row.border_t_1().border_role(Role::BorderDivider)
-            })
+            .border_b_1()
+            .border_role(Role::BorderDivider)
             .text_size(scaled(TEXT_SIZE_SMALL))
             .child(
                 div()
                     .flex_none()
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_family(CODE_FONT)
+                    .text_size(px(self.preferences.code_size))
+                    .text_role(Role::TextMuted)
+                    .child(format!("@@ {ranges} @@")),
+            )
+            .child(
+                div()
+                    .when(actions_right, |scope| scope.flex_1())
+                    .min_w_0()
+                    .truncate()
+                    .font_family(CODE_FONT)
+                    .text_size(px(self.preferences.code_size))
                     .text_role(Role::TextSecondary)
-                    .child(match index {
-                        Some(index) => format!("Hunk {} of {total}", index + 1),
-                        None => "Hunk".into(),
-                    }),
+                    .child(scope.to_string()),
             );
         let pending = index.and_then(|index| {
             self.pending_on_screen()
@@ -1345,7 +1403,7 @@ impl GitCrab {
                 .filter(|&s| gitcrab_core::diff::hunk_of(&p.content, s) == Some(index))
                 .collect();
             if !selected.is_empty() {
-                row = self.line_actions(row, p, selected, "hunk", cx);
+                row = self.line_actions(row, p, selected, "hunk", ControlSize::DenseHunk, cx);
                 row = row.child(
                     div()
                         .flex_none()
@@ -1371,6 +1429,7 @@ impl GitCrab {
                     ControlSize::DenseHunk,
                     cx,
                 )
+                .h(px(self.hunk_button_height()))
                 .disabled_when(!ready)
                 .on_click(cx.listener(move |v, _, w, cx| {
                     v.mutate(
@@ -1403,30 +1462,14 @@ impl GitCrab {
                             p,
                             cx,
                         )
+                        .h(px(self.hunk_button_height()))
                         .on_click(cx.listener(move |v, _, w, cx| {
                             v.review_discard(token, DiscardTarget::Hunk(index), w, cx)
                         })),
                     );
             }
         }
-        row.child(
-            div()
-                .flex_none()
-                .font_family(CODE_FONT)
-                .text_size(px(self.preferences.code_size))
-                .text_role(Role::TextMuted)
-                .child(format!("@@ {ranges} @@")),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .font_family(CODE_FONT)
-                .text_size(px(self.preferences.code_size))
-                .text_role(Role::TextSecondary)
-                .child(scope.to_string()),
-        )
-        .into_any_element()
+        row.into_any_element()
     }
 
     fn diff_row(&self, visual: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1434,13 +1477,26 @@ impl GitCrab {
         // `i` is the displayed row; `segment` is which wrapped part of it
         // this drawn row shows. Only Split wraps, so Unified segments are 0.
         let (i, segment) = self.row_of_visual(visual);
-        let wrap_columns = self.wrap().map(|wrap| wrap.columns);
-        let header = if self.split_active {
-            p.content.split[i].0
-        } else {
-            Some(i)
+        let split = self.split_active;
+        if self
+            .wrap()
+            .is_some_and(|wrap| wrap.is_gap(visual, self.hunk_rows()))
+        {
+            return div()
+                .id(("diff-line", visual))
+                .w_full()
+                .when(!split, |row| row.min_w(px(self.unified_row_width(p))))
+                .when(split, |row| {
+                    row.flex()
+                        .child(div().flex_1())
+                        .child(div().flex_1().border_l_1().border_role(Role::BorderDivider))
+                })
+                .h(px(self.diff_row_height()))
+                .into_any_element();
         }
-        .filter(|&line| p.content.lines[line].text.starts_with("@@ "));
+        let wrap_columns = self.wrap().map(|wrap| wrap.columns).filter(|_| split);
+        let header = if split { p.content.split[i].0 } else { Some(i) }
+            .filter(|&line| p.content.lines[line].text.starts_with("@@ "));
         if let Some(line) = header {
             return self.hunk_header_row(visual, line, cx);
         }
@@ -1462,18 +1518,12 @@ impl GitCrab {
             .diff_match
             .and_then(|index| self.diff_matches.get(index))
             == Some(&i);
-        let advance = self.preferences.code_size * CODE_CHAR_WIDTH;
         let scale = self.preferences.code_size / BASE_CODE_SIZE;
-        let split = self.split_active;
         let mut el = div()
             .id(("diff-line", visual))
             .cursor_text()
             .w_full()
-            .when(!split, |row| {
-                row.min_w(px((p.content.columns as f32 * advance
-                    + UNIFIED_ROW_CHROME * scale)
-                    .max(UNIFIED_ROW_MIN_WIDTH)))
-            })
+            .when(!split, |row| row.min_w(px(self.unified_row_width(p))))
             .h(px(self.diff_row_height()))
             .flex()
             .items_center()
@@ -1503,9 +1553,9 @@ impl GitCrab {
                 .min_w_0()
                 .h_full()
                 .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
+                .when(side == 1, |cell| {
+                    cell.border_l_1().border_role(Role::BorderDivider)
+                })
                 .when(split, |cell| {
                     // Each side wraps its long lines onto further rows; the
                     // clip only guards against a font wider than measured.
@@ -1522,88 +1572,115 @@ impl GitCrab {
                 });
             let focused_side =
                 !split || (side == 0) == (self.copy_side == gitcrab_core::diff::Side::Before);
-            if let Some(l) = line {
-                cell = cell
-                    .bg(rgb(if selected && focused_side {
-                        semantic(Role::InteractionSelected)
-                    } else {
-                        match l.kind {
-                            '+' => semantic(Role::DiffAddedBg),
-                            '-' => semantic(Role::DiffRemovedBg),
-                            '@' => semantic(Role::DiffHunkBg),
-                            _ => semantic(Role::SurfaceCanvas),
-                        }
-                    }))
-                    .child(
-                        div()
-                            .w(px(if split {
-                                DIFF_SPLIT_NUMBER_WIDTH * scale
-                            } else {
-                                DIFF_UNIFIED_NUMBER_WIDTH * scale
-                            }))
-                            .flex_none()
-                            .whitespace_nowrap()
-                            .text_role(Role::TextMuted)
-                            .child(if segment > 0 {
-                                // Continuation rows of a wrapped line.
-                                String::new()
-                            } else if split {
-                                (if side == 0 { l.old } else { l.new })
-                                    .map(|n| format!("{n:>4}"))
-                                    .unwrap_or_default()
-                            } else {
-                                format!(
-                                    "{:>4} {:>4}",
-                                    l.old.map(|n| n.to_string()).unwrap_or_default(),
-                                    l.new.map(|n| n.to_string()).unwrap_or_default()
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .w(px(DIFF_MARKER_WIDTH * scale))
-                            .flex_none()
-                            .text_color(rgb(match l.kind {
-                                '+' => semantic(Role::StatusSuccessFg),
-                                '-' => semantic(Role::StatusErrorFg),
-                                _ => semantic(Role::TextMuted),
-                            }))
-                            .child(match l.kind {
-                                _ if segment > 0 => "",
-                                '+' => "+",
-                                '-' => "−",
-                                _ => "",
-                            }),
-                    )
-                    .child({
-                        let (prefix, shown) = gitcrab_core::diff::shown_text(l);
-                        let mut highlights =
-                            diff_highlights(shown, &l.highlights, prefix, self.show_whitespace);
-                        // In Split, this row shows one wrapped segment of the line.
-                        let range = match wrap_columns {
-                            Some(columns) => gitcrab_core::diff::wrap_ranges(shown, columns)
-                                .get(segment)
-                                .cloned()
-                                .unwrap_or(shown.len()..shown.len()),
-                            None => 0..shown.len(),
-                        };
-                        if range != (0..shown.len()) {
-                            highlights = highlights
-                                .into_iter()
-                                .filter_map(|(span, style)| {
-                                    let start = span.start.max(range.start);
-                                    let end = span.end.min(range.end);
-                                    (start < end)
-                                        .then(|| (start - range.start..end - range.start, style))
+            let highlighted = selected && focused_side && line.is_some();
+            let kind = line.map_or(' ', |l| l.kind);
+            // As in GitKraken, numbers and the +/− marker sit in a plain
+            // gutter ruled off from the code, and only the code is tinted.
+            let numbers = match line {
+                Some(_) if segment > 0 => String::new(),
+                Some(l) if split => (if side == 0 { l.old } else { l.new })
+                    .map(|n| format!("{n:>4}"))
+                    .unwrap_or_default(),
+                Some(l) => format!(
+                    "{:>4} {:>4}",
+                    l.old.map(|n| n.to_string()).unwrap_or_default(),
+                    l.new.map(|n| n.to_string()).unwrap_or_default()
+                ),
+                None => String::new(),
+            };
+            cell = cell
+                .bg_role(if highlighted {
+                    Role::InteractionSelected
+                } else {
+                    Role::SurfaceCanvas
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .pl_2()
+                        .pr_1()
+                        .border_r_1()
+                        .border_role(Role::BorderDivider)
+                        .child(
+                            div()
+                                .w(px(if split {
+                                    DIFF_SPLIT_NUMBER_WIDTH * scale
+                                } else {
+                                    DIFF_UNIFIED_NUMBER_WIDTH * scale
+                                }))
+                                .flex_none()
+                                .whitespace_nowrap()
+                                .text_role(Role::TextMuted)
+                                .child(numbers),
+                        )
+                        .child(
+                            div()
+                                .w(px(DIFF_MARKER_WIDTH * scale))
+                                .flex_none()
+                                .text_role(match kind {
+                                    '+' => Role::StatusSuccessFg,
+                                    '-' => Role::StatusErrorFg,
+                                    _ => Role::TextMuted,
                                 })
-                                .collect();
-                        }
-                        let text = SharedString::from(shown[range].to_string());
-                        div()
-                            .whitespace_nowrap()
-                            .flex_none()
-                            .child(StyledText::new(text).with_highlights(highlights))
-                    });
+                                .child(match kind {
+                                    _ if segment > 0 => "",
+                                    '+' => "+",
+                                    '-' => "−",
+                                    _ => "",
+                                }),
+                        ),
+                );
+            if let Some(l) = line {
+                let tint = match l.kind {
+                    '+' => Some(Role::DiffAddedBg),
+                    '-' => Some(Role::DiffRemovedBg),
+                    '@' => Some(Role::DiffHunkBg),
+                    _ => None,
+                }
+                .filter(|_| !highlighted);
+                cell = cell.child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .px_2()
+                        .when_some(tint, |code, tint| code.bg_role(tint))
+                        .child({
+                            let (prefix, shown) = gitcrab_core::diff::shown_text(l);
+                            let mut highlights =
+                                diff_highlights(shown, &l.highlights, prefix, self.show_whitespace);
+                            // In Split, this row shows one wrapped segment of the line.
+                            let range = match wrap_columns {
+                                Some(columns) => gitcrab_core::diff::wrap_ranges(shown, columns)
+                                    .get(segment)
+                                    .cloned()
+                                    .unwrap_or(shown.len()..shown.len()),
+                                None => 0..shown.len(),
+                            };
+                            if range != (0..shown.len()) {
+                                highlights = highlights
+                                    .into_iter()
+                                    .filter_map(|(span, style)| {
+                                        let start = span.start.max(range.start);
+                                        let end = span.end.min(range.end);
+                                        (start < end).then(|| {
+                                            (start - range.start..end - range.start, style)
+                                        })
+                                    })
+                                    .collect();
+                            }
+                            let text = SharedString::from(shown[range].to_string());
+                            div()
+                                .whitespace_nowrap()
+                                .flex_none()
+                                .child(StyledText::new(text).with_highlights(highlights))
+                        }),
+                );
             }
             el = el.child(cell);
         }

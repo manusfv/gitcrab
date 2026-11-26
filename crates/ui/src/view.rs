@@ -88,11 +88,11 @@ const GRAPH_EDGE_SHADE: f32 = 18.;
 const CODE_CHAR_WIDTH: f32 = 0.65;
 /// Diff gutter columns at [`BASE_CODE_SIZE`]: line numbers (one in Split, old
 /// and new in Unified) and the change marker.
-const DIFF_SPLIT_NUMBER_WIDTH: f32 = 45.;
-const DIFF_UNIFIED_NUMBER_WIDTH: f32 = 90.;
+const DIFF_SPLIT_NUMBER_WIDTH: f32 = 32.;
+const DIFF_UNIFIED_NUMBER_WIDTH: f32 = 72.;
 const DIFF_MARKER_WIDTH: f32 = 9.;
 const DIFF_SPLIT_GUTTER: f32 = DIFF_SPLIT_NUMBER_WIDTH + DIFF_MARKER_WIDTH;
-/// Each Split side's padding on both edges, and the two gaps between its columns.
+/// Each Split side's outer padding, and the space around its marker and gutter rule.
 const DIFF_SIDE_PADDING: f32 = 16.;
 const DIFF_SIDE_GAPS: f32 = 16.;
 
@@ -545,7 +545,7 @@ pub struct GitCrab {
     /// Split was requested and fits the pane this frame.
     split_active: bool,
     /// Split rows wrapped to the pane, with the patch token they were built for.
-    split_wrap: Option<(u32, gitcrab_core::diff::Wrap)>,
+    diff_wrap: Option<(u32, gitcrab_core::diff::Wrap)>,
     /// Pane that Copy reads in Split.
     copy_side: gitcrab_core::diff::Side,
     /// The patch on screen, kept to follow the selection across reloads.
@@ -781,7 +781,7 @@ impl GitCrab {
             compact: preferences.compact,
             show_whitespace: false,
             split_active: false,
-            split_wrap: None,
+            diff_wrap: None,
             copy_side: Default::default(),
             shown_patch: None,
             diff_updated: false,
@@ -2863,7 +2863,7 @@ impl Render for GitCrab {
             self.selection = None;
             self.update_diff_find(false, cx);
         }
-        self.update_split_wrap(window);
+        self.update_diff_wrap(window);
         let sidebar = if rail {
             div()
                 .flex()

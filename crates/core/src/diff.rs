@@ -318,13 +318,17 @@ pub fn wrap_ranges(text: &str, columns: usize) -> Vec<std::ops::Range<usize>> {
     ranges
 }
 
-/// Split rows wrapped to a column width: each split row becomes as many
-/// visual rows as its taller side needs, so both sides stay aligned.
+/// Displayed rows laid out as the visual rows a diff list draws.
+///
+/// Each hunk header after the first is preceded by a blank gap row, which
+/// is its segment 0. In Split, each row also becomes as many visual rows as
+/// its taller side needs once wrapped, so both sides stay aligned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wrap {
-    /// Columns of source text each side shows per visual row.
+    /// Columns of source text each side shows per visual row; `usize::MAX`
+    /// in Unified, which never wraps.
     pub columns: usize,
-    /// First visual row of each split row, followed by the total.
+    /// First visual row of each displayed row, followed by the total.
     starts: Vec<usize>,
 }
 
@@ -342,14 +346,43 @@ impl Wrap {
                 }
             })
         };
-        let mut starts = Vec::with_capacity(content.split.len() + 1);
+        Self::new(
+            columns,
+            content
+                .split
+                .iter()
+                .map(|(before, after)| segments(*before).max(segments(*after))),
+            &content.split_hunk_rows,
+        )
+    }
+
+    /// The unified layout of `content`: one visual row per line.
+    pub fn unified(content: &Content) -> Self {
+        Self::new(
+            usize::MAX,
+            std::iter::repeat_n(1, content.lines.len()),
+            &content.hunk_rows,
+        )
+    }
+
+    fn new(columns: usize, segments: impl Iterator<Item = usize>, hunk_rows: &[usize]) -> Self {
+        let mut starts = Vec::with_capacity(segments.size_hint().0 + 1);
         let mut total = 0;
-        for (before, after) in &content.split {
+        for (row, segments) in segments.enumerate() {
             starts.push(total);
-            total += segments(*before).max(segments(*after));
+            total += segments;
+            if row > 0 && hunk_rows.binary_search(&row).is_ok() {
+                total += 1;
+            }
         }
         starts.push(total);
         Self { columns, starts }
+    }
+
+    /// Whether a visual row is the blank gap above a hunk header.
+    pub fn is_gap(&self, visual: usize, hunk_rows: &[usize]) -> bool {
+        let (row, segment) = self.locate(visual);
+        row > 0 && segment == 0 && hunk_rows.binary_search(&row).is_ok()
     }
 
     /// Number of visual rows.
@@ -617,6 +650,27 @@ mod tests {
         assert_eq!(wrap.locate(5), (3, 0));
         let (prefix, text) = shown_text(&content.lines[2]);
         assert_eq!((prefix, text), (1, "0123456789"));
+    }
+
+    #[test]
+    fn later_hunks_get_a_gap_row_above_their_header() {
+        let content = prepare(parse("@@ -1 +1 @@\n-a\n+b\n@@ -9 +9 @@\n x\n"));
+        let wrap = Wrap::unified(&content);
+        // header, -a, +b, gap, header, x
+        assert_eq!(wrap.rows(), 6);
+        assert_eq!(wrap.first(3), 3);
+        assert_eq!(wrap.locate(4), (3, 1));
+        assert_eq!(wrap.locate(5), (4, 0));
+        let gaps: Vec<_> = (0..6)
+            .filter(|&v| wrap.is_gap(v, &content.hunk_rows))
+            .collect();
+        assert_eq!(gaps, [3]);
+
+        // header, -a/+b, gap, header, x
+        let split = Wrap::split(&content, 80);
+        assert_eq!(split.rows(), 5);
+        assert_eq!(split.locate(3), (2, 1));
+        assert!(split.is_gap(2, &content.split_hunk_rows));
     }
 
     #[test]
