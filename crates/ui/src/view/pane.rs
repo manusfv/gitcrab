@@ -10,9 +10,6 @@ pub(super) enum Region {
     Inspector,
 }
 
-/// Renders one region of its tab. A notify on the tab re-renders every
-/// region; a notify from inside a region (a scroll, a hover) re-renders only
-/// that one.
 pub(super) struct Pane {
     owner: WeakEntity<GitCrab>,
     region: Region,

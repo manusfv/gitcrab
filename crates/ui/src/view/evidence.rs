@@ -368,7 +368,7 @@ impl GitCrab {
         }
         if self.evidence_phase == 4 && std::env::var_os("GITCRAB_NATIVE_BENCH").is_some() {
             self.evidence_phase = 5;
-            let target = std::env::var("GITCRAB_BENCH_TARGET").unwrap_or_else(|_| "history".into());
+            let target = std::env::var("GITCRAB_BENCH_TARGET").unwrap_or_else(|_| "center".into());
             let size = window.viewport_size();
             let (width, height) = (f32::from(size.width), f32::from(size.height));
             let nav = if self.state.diff_context.is_some() {
