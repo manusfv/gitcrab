@@ -563,6 +563,8 @@ pub struct GitCrab {
     diff_find_open: bool,
     diff_matches: Vec<usize>,
     diff_match: Option<usize>,
+    /// The hunk the arrows last moved to, with its patch token.
+    hunk_cursor: Option<(u32, usize)>,
     /// The inspector is hidden while reviewing a diff.
     inspector_collapsed: bool,
     running: Option<RunningWrite>,
@@ -792,6 +794,7 @@ impl GitCrab {
             diff_find_open: false,
             diff_matches: vec![],
             diff_match: None,
+            hunk_cursor: None,
             inspector_collapsed: false,
             running: None,
             loading_since: None,
@@ -2402,6 +2405,7 @@ impl GitCrab {
             return;
         }
         if let Some(p) = &self.state.patch {
+            self.hunk_cursor = None;
             self.selection = Some(
                 0..if self.split_active {
                     p.content.split.len()

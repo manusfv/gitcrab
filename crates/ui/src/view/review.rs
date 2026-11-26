@@ -197,45 +197,62 @@ impl GitCrab {
         }
     }
 
-    /// Locates the reader among hunks from the diff's scroll position.
-    ///
-    /// Returns the position and whether the diff can scroll at all. Wheel and
-    /// keyboard scrolling move the position as well as the hunk arrows.
-    fn viewport_hunk(&self) -> Option<(gitcrab_core::diff::HunkPosition, bool)> {
-        let rows = self.hunk_rows();
-        let (offset, max) = {
+    /// The hunk being worked in: the one holding the active end of the line
+    /// selection, the row last clicked or dragged to, as an editor's caret.
+    /// Without a selection, the hunk the arrows last moved to.
+    fn hunk_focus(&self) -> Option<usize> {
+        let p = self.state.patch.as_ref()?;
+        if let Some(range) = &self.selection {
+            let active = if self.anchor <= range.start {
+                range.end.saturating_sub(1)
+            } else {
+                range.start
+            };
+            return self
+                .hunk_rows()
+                .partition_point(|&row| row <= active)
+                .checked_sub(1);
+        }
+        self.hunk_cursor
+            .filter(|(token, _)| *token == p.token)
+            .map(|(_, index)| index)
+    }
+
+    /// Locates the reader among hunks from the diff's scroll position and
+    /// the hunk the arrows last moved to.
+    fn viewport_hunk(&self) -> Option<gitcrab_core::diff::HunkPosition> {
+        let (offset, max, height) = {
             let state = self.diff_scroll.0.borrow();
             let handle = &state.base_handle;
             (
                 -f32::from(handle.offset().y),
                 f32::from(handle.max_offset().y),
+                f32::from(handle.bounds().size.height),
             )
         };
-        if max <= 0.5 {
-            // Every row is on screen, so there is nowhere to move.
-            return rows.first().map(|_| {
-                (
-                    gitcrab_core::diff::HunkPosition {
-                        current: 0,
-                        previous: None,
-                        next: None,
-                    },
-                    false,
-                )
-            });
-        }
-        let top = (offset / self.diff_row_height() + 0.5).floor().max(0.) as usize;
-        let top = self.row_of_visual(top).0;
-        gitcrab_core::diff::hunk_position(rows, top, offset >= max - 1.)
-            .map(|position| (position, true))
+        let row = self.diff_row_height();
+        let top = (offset / row + 0.5).floor().max(0.) as usize;
+        let bottom = ((offset + height) / row).floor().max(0.) as usize;
+        let cursor = self.hunk_focus();
+        gitcrab_core::diff::hunk_position(
+            self.hunk_rows(),
+            self.row_of_visual(top).0,
+            self.row_of_visual(bottom.saturating_sub(1)).0,
+            max > 0.5 && offset >= max - 1.,
+            cursor,
+        )
     }
 
-    /// Scrolls to the next or previous hunk relative to the viewport.
+    /// Moves to the next or previous hunk, scrolling its header to the top
+    /// as far as the list allows.
     pub(super) fn step_hunk(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.settings_open || window.has_active_dialog(cx) || self.state.patch.is_none() {
+        if self.settings_open || window.has_active_dialog(cx) {
             return;
         }
-        let Some((position, _)) = self.viewport_hunk() else {
+        let (Some(position), Some(token)) = (
+            self.viewport_hunk(),
+            self.state.patch.as_ref().map(|p| p.token),
+        ) else {
             return;
         };
         let target = if forward {
@@ -243,8 +260,12 @@ impl GitCrab {
         } else {
             position.previous
         };
-        if let Some(row) = target.and_then(|index| self.hunk_rows().get(index).copied()) {
-            self.scroll_diff_to(row, ScrollStrategy::Top);
+        if let Some(index) = target {
+            self.hunk_cursor = Some((token, index));
+            self.selection = None;
+            if let Some(&row) = self.hunk_rows().get(index) {
+                self.scroll_diff_to(row, ScrollStrategy::Top);
+            }
             cx.notify();
         }
     }
@@ -817,7 +838,7 @@ impl GitCrab {
                         })),
                 ),
         );
-        let Some((position, _)) = self.viewport_hunk() else {
+        let Some(position) = self.viewport_hunk() else {
             return bar;
         };
         let hunk_nav: [(usize, bool, &str, &str, &dyn gpui::Action, _); 2] = [
@@ -1228,6 +1249,14 @@ impl GitCrab {
             index.filter(|&index| self.hunk_actions_allowed(p, conflict) && index < p.hunks.len());
         let ready = self.diff_actions_ready();
         let unified_width = self.unified_row_width(p);
+        // The hunk being worked in gets an accent rule, not a fill, so it
+        // cannot be mistaken for selected lines.
+        let focused = index.is_some_and(|index| {
+            self.hunk_focus() == Some(index)
+                && self
+                    .viewport_hunk()
+                    .is_some_and(|position| position.current == index)
+        });
         // Buttons sit at the right edge, as GitKraken's do, unless that edge
         // is scrolled out of the pane by a long unified line.
         let actions_right = self.split_active || unified_width <= self.history_available;
@@ -1242,14 +1271,22 @@ impl GitCrab {
             .px_2()
             .overflow_hidden()
             .border_b_1()
-            .border_role(Role::BorderDivider)
+            .border_role(if focused {
+                Role::InteractionFocus
+            } else {
+                Role::BorderDivider
+            })
             .text_size(scaled(TEXT_SIZE_SMALL))
             .child(
                 div()
                     .flex_none()
                     .font_family(CODE_FONT)
                     .text_size(px(self.preferences.code_size))
-                    .text_role(Role::TextMuted)
+                    .text_role(if focused {
+                        Role::InteractionFocus
+                    } else {
+                        Role::TextMuted
+                    })
                     .child(format!("@@ {ranges} @@")),
             )
             .child(
@@ -1586,6 +1623,7 @@ impl GitCrab {
                     v.anchor = i;
                 }
                 v.selection = Some(v.anchor.min(i)..v.anchor.max(i) + 1);
+                v.hunk_cursor = None;
                 cx.notify();
             }),
         )

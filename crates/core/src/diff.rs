@@ -455,17 +455,34 @@ pub struct HunkPosition {
     pub next: Option<usize>,
 }
 
-/// Locates the reader among hunk header rows from the first visible row.
+/// Locates the reader among hunk header rows from the visible rows
+/// `top_row..=bottom_row`.
 ///
-/// `at_end` reports that the list cannot scroll further. The last hunk is
-/// then current when its header is on screen, and Next is unavailable.
-/// Previous returns to the current hunk's header when the reader has
-/// scrolled past it.
-pub fn hunk_position(rows: &[usize], top_row: usize, at_end: bool) -> Option<HunkPosition> {
+/// `cursor` is the hunk the arrows last moved to. While its header is on
+/// screen it stays current, so the arrows step through hunks even when the
+/// list cannot scroll to put them at the top. Otherwise the hunk at the top
+/// is current, or the last one when the list is scrolled to the end
+/// (`at_end`) with its header on screen. Previous then returns to the
+/// current hunk's header when the reader has scrolled past it.
+pub fn hunk_position(
+    rows: &[usize],
+    top_row: usize,
+    bottom_row: usize,
+    at_end: bool,
+    cursor: Option<usize>,
+) -> Option<HunkPosition> {
     let last = rows.len().checked_sub(1)?;
+    let around = |current: usize, previous| HunkPosition {
+        current,
+        previous,
+        next: (current < last).then_some(current + 1),
+    };
+    if let Some(cursor) = cursor.filter(|&c| c <= last && (top_row..=bottom_row).contains(&rows[c]))
+    {
+        return Some(around(cursor, cursor.checked_sub(1)));
+    }
     let mut current = rows.iter().rposition(|row| *row <= top_row).unwrap_or(0);
-    let last_on_screen = at_end && rows[last] >= top_row;
-    if last_on_screen {
+    if at_end && rows[last] >= top_row {
         current = last;
     }
     let previous = if top_row > rows[current] {
@@ -473,12 +490,7 @@ pub fn hunk_position(rows: &[usize], top_row: usize, at_end: bool) -> Option<Hun
     } else {
         current.checked_sub(1)
     };
-    let next = (!at_end && current < last).then_some(current + 1);
-    Some(HunkPosition {
-        current,
-        previous,
-        next,
-    })
+    Some(around(current, previous))
 }
 
 /// Lists displayed rows whose text contains `query`, ignoring case.
@@ -690,21 +702,26 @@ mod tests {
     }
 
     #[test]
-    fn hunk_position_follows_the_viewport_and_disables_only_at_ends() {
+    fn hunk_position_follows_the_viewport_and_the_arrows() {
         let rows = [0, 10, 20];
-        let at = |top, end| hunk_position(&rows, top, end).unwrap();
+        let at = |top, end, cursor| hunk_position(&rows, top, top + 8, end, cursor).unwrap();
         let position = |current, previous, next| HunkPosition {
             current,
             previous,
             next,
         };
-        assert_eq!(at(0, false), position(0, None, Some(1)));
-        assert_eq!(at(14, false), position(1, Some(1), Some(2)));
-        assert_eq!(at(10, false), position(1, Some(0), Some(2)));
-        // At the bottom, the last visible hunk is current and Next is disabled.
-        assert_eq!(at(15, true), position(2, Some(1), None));
-        assert_eq!(at(25, true), position(2, Some(2), None));
-        assert!(hunk_position(&[], 0, false).is_none());
+        assert_eq!(at(0, false, None), position(0, None, Some(1)));
+        assert_eq!(at(14, false, None), position(1, Some(1), Some(2)));
+        assert_eq!(at(10, false, None), position(1, Some(0), Some(2)));
+        assert_eq!(at(15, true, None), position(2, Some(1), None));
+        assert_eq!(at(25, true, None), position(2, Some(2), None));
+        assert_eq!(at(15, true, Some(1)), position(2, Some(1), None));
+        assert_eq!(at(14, true, Some(2)), position(2, Some(1), None));
+        let all = |cursor| hunk_position(&rows, 0, 30, true, cursor).unwrap();
+        assert_eq!(all(None), position(2, Some(1), None));
+        assert_eq!(all(Some(1)), position(1, Some(0), Some(2)));
+        assert_eq!(all(Some(0)), position(0, None, Some(1)));
+        assert!(hunk_position(&[], 0, 0, false, None).is_none());
     }
 
     #[test]
