@@ -1,9 +1,10 @@
+use super::stashes::stash_menu;
 use super::worktrees::{worktree_menu, WorktreeCommand};
 use super::*;
 use crate::workspace::OpenRecent;
 use components::{ContextMenu, MenuTarget};
 use gitcrab_core::presentation::display_path;
-use gitcrab_core::sidebar::{section, section_key, tree_rows, RefFilter, TreeRow};
+use gitcrab_core::sidebar::{section, tree_rows, RefFilter, TreeRow};
 use std::rc::Rc;
 
 /// Horizontal inset shared by every sidebar row, header and the filter box.
@@ -734,48 +735,68 @@ impl GitCrab {
                 cx,
             ));
 
-            // Stashes.
-            let key = section_key(&self.state.path, "Stashes");
-            let collapsed = self.preferences.collapsed.contains(&key);
-            let header = self
-                .sidebar_header(
-                    "ref-heading-Stashes",
-                    "stash",
+            // Stashes, shown like GitKraken only when there are some.
+            if !s.stashes.is_empty() {
+                let shown = section(
+                    &self.state.path,
                     "Stashes",
-                    s.stash_count.to_string(),
-                    collapsed,
-                )
-                .on_click(cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)))
-                .context_menu({
-                    let menu = command_menu(view.clone(), &[Command::Stash, Command::PopStash]);
-                    move |w, cx| menu(w, cx)
-                });
-            let latest = div().when_some(s.latest_stash.as_ref(), |section, stash| {
-                // Pop stash acts on this entry, so name it where the button is.
-                section.child(
-                    div()
-                        .pl(scaled(INSET + ENTRY_INDENT))
-                        .pr(scaled(INSET))
-                        .pb_2()
-                        .flex()
-                        .flex_col()
-                        .text_size(scaled(TEXT_SIZE_SMALL))
-                        .child(div().truncate().child(format!("Latest: {}", stash.message)))
-                        .child(
-                            div()
-                                .text_role(Role::TextMuted)
-                                .child(display_date(&stash.date)),
-                        ),
-                )
-            });
-            nav = nav.child(self.sidebar_section(
-                "sidebar-stashes",
-                header,
-                collapsed,
-                latest,
-                window,
-                cx,
-            ));
+                    s.stashes.iter().map(|stash| stash.message.as_str()),
+                    &self.preferences.collapsed,
+                    &filter,
+                );
+                let mut rows = div().flex().flex_col().min_w_0().pb_1();
+                for &index in &shown.visible {
+                    let stash = &s.stashes[index];
+                    let id = stash.id.clone();
+                    let selected = self.state.selected.as_ref() == Some(&stash.id);
+                    rows = rows.child(
+                        ListRow::new(SharedString::from(format!("stash-{id}")))
+                            .height(ROW_HEIGHT)
+                            .inset(INSET)
+                            .indent(ENTRY_INDENT)
+                            .tab_stop(!self.settings_open)
+                            .foreground(Role::TextMuted)
+                            .leading(icon("stash").size(px(ICON_SIZE)).text_role(Role::TextMuted))
+                            .label(stash.message.clone())
+                            .highlighted(selected)
+                            .tooltip(format!("{}\n{}", stash.message, display_date(&stash.date)))
+                            .on_click(
+                                cx.listener(move |v, _, w, cx| {
+                                    v.activate_commit(id.clone(), w, cx)
+                                }),
+                            )
+                            .context_menu({
+                                let view = view.downgrade();
+                                let stash = stash.clone();
+                                move |w, _| stash_menu(view.clone(), &stash, w)
+                            }),
+                    );
+                }
+                let key = shown.key;
+                let header = self
+                    .sidebar_header(
+                        "ref-heading-Stashes",
+                        "stash",
+                        "Stashes",
+                        shown.count,
+                        shown.collapsed,
+                    )
+                    .on_click(
+                        cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)),
+                    )
+                    .context_menu({
+                        let menu = command_menu(view.clone(), &[Command::Stash, Command::PopStash]);
+                        move |w, cx| menu(w, cx)
+                    });
+                nav = nav.child(self.sidebar_section(
+                    "sidebar-stashes",
+                    header,
+                    shown.collapsed,
+                    rows,
+                    window,
+                    cx,
+                ));
+            }
         }
         div()
             .size_full()

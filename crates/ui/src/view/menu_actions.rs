@@ -17,6 +17,7 @@ pub(super) enum MenuCommand {
     /// Prompts for a branch starting at the reference or commit.
     CreateBranch(String),
     Worktree(super::worktrees::WorktreeCommand),
+    Stash(super::stashes::StashCommand),
     ToggleColumn(HistoryColumn),
     ResetColumns,
     /// Confirms a conflicted file's working-tree content as its resolution.
@@ -53,6 +54,7 @@ impl MenuCommand {
             Self::Run(command, target) => v.run_command(command, target, window, cx),
             Self::CreateBranch(start) => v.prompt_branch(Some(start), window, cx),
             Self::Worktree(command) => v.run_worktree_command(command, window, cx),
+            Self::Stash(command) => v.run_stash_command(command, window, cx),
             Self::ToggleColumn(column) => {
                 v.materialize_columns();
                 v.history_columns.toggle(column);

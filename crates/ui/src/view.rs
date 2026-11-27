@@ -13,6 +13,7 @@ mod repository;
 mod review;
 mod settings;
 mod sidebar;
+mod stashes;
 mod worktrees;
 pub use super::components::KEY_CONTEXT;
 use super::components::{self, modal, prelude::*};

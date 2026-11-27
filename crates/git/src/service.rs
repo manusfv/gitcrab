@@ -115,7 +115,16 @@ impl OperationRun for ReviewedOperation {
             Operation::Checkout | Operation::Merge | Operation::CherryPick | Operation::Revert => {
                 Some(target.clone())
             }
-            Operation::PopStash => Some("refs/stash".to_owned()),
+            Operation::PopStash if target.is_empty() => Some("refs/stash".to_owned()),
+            Operation::PopStash | Operation::ApplyStash => {
+                if !git.stash_entries()?.iter().any(|(id, _)| *id == target) {
+                    return Err(
+                        "That stash is no longer in the stash list. Refresh and choose it again."
+                            .into(),
+                    );
+                }
+                Some(target.clone())
+            }
             _ => None,
         };
         // Each read is a Git process, so every read the resolution may need
@@ -292,6 +301,14 @@ impl OperationRun for ReviewedOperation {
                     })
                     .map_err(|error| operation_failure(git, error, &self.destination))
             }
+            Operation::ApplyStash => {
+                return git
+                    .stash_apply_with_index(id)
+                    .map(|restored| Ran {
+                        staging_dropped: !restored,
+                    })
+                    .map_err(|error| operation_failure(git, error, &self.destination))
+            }
             Operation::Abort => sequence().and_then(|sequence| git.abort_sequence(sequence)),
             Operation::Continue { message } => {
                 sequence().and_then(|sequence| git.continue_sequence(sequence, message.as_deref()))
@@ -388,6 +405,14 @@ fn operation_message(reviewed: &ReviewedOperation, head: &(String, String), ran:
                 format!("{popped} {}", crate::git::POP_STAGING_DROPPED)
             } else {
                 popped.to_owned()
+            }
+        }
+        Operation::ApplyStash => {
+            let applied = "Stash applied. It stays in the stash list.";
+            if ran.staging_dropped {
+                format!("{applied} {}", crate::git::POP_STAGING_DROPPED)
+            } else {
+                applied.to_owned()
             }
         }
         Operation::Pull { .. }
@@ -814,6 +839,7 @@ impl Session {
                 | Action::Operation { .. }
                 | Action::RunOperation { .. }
                 | Action::Worktree(_)
+                | Action::DropStash { .. }
         );
         let keeps_patch = self
             .patch
@@ -1168,6 +1194,13 @@ impl Session {
                 message: g.change_worktree(&change, None)?,
                 committed_draft: None,
             },
+            Action::DropStash { id, message } => {
+                g.drop_stash_object(&id)?;
+                Reply::Done {
+                    message: format!("Deleted stash \"{message}\""),
+                    committed_draft: None,
+                }
+            }
             Action::Open { .. }
             | Action::Refresh { .. }
             | Action::RefreshWorktree { .. }
@@ -2213,6 +2246,67 @@ mod tests {
     }
 
     #[test]
+    fn any_listed_stash_can_be_applied_popped_or_deleted() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("a.txt", "base\n");
+        fixture.write("b.txt", "base\n");
+        git.stage("a.txt").unwrap();
+        git.stage("b.txt").unwrap();
+        git.commit("base").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        fixture.write("a.txt", "older\n");
+        run_local(&mut session, Operation::Stash, "older").unwrap();
+        fixture.write("b.txt", "newer\n");
+        run_local(&mut session, Operation::Stash, "newer").unwrap();
+        let ids = |git: &Git| -> Vec<String> {
+            git.stash_entries()
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let [newer, older] = <[String; 2]>::try_from(ids(git)).unwrap();
+
+        let applied = run_local(&mut session, Operation::ApplyStash, &older).unwrap();
+        assert!(applied.starts_with("Stash applied"), "{applied}");
+        assert_eq!(
+            std::fs::read_to_string(fixture.root().join("repo/a.txt")).unwrap(),
+            "older\n"
+        );
+        assert_eq!(ids(git), [newer.clone(), older.clone()]);
+        git.reset_tracked_to_head().unwrap();
+
+        run_local(&mut session, Operation::PopStash, &older).unwrap();
+        assert_eq!(ids(git), std::slice::from_ref(&newer));
+        git.reset_tracked_to_head().unwrap();
+
+        let base = git.resolve_commit("HEAD").unwrap();
+        let refused = run_local(&mut session, Operation::ApplyStash, &base).unwrap_err();
+        assert!(
+            refused.message.contains("no longer in the stash list"),
+            "{}",
+            refused.message
+        );
+
+        session
+            .run(
+                1,
+                2,
+                Action::DropStash {
+                    id: newer,
+                    message: "newer".into(),
+                },
+            )
+            .unwrap();
+        assert!(ids(git).is_empty());
+    }
+
+    #[test]
     fn pop_stash_restores_the_staged_split_and_conflicts_keep_the_stash() {
         let fixture = Fixture::new();
         let git = &fixture.git;
@@ -2765,6 +2859,9 @@ mod tests {
         }
         assert!(Operation::Stash.validate_target("").is_ok());
         assert!(Operation::PopStash.validate_target("").is_ok());
+        assert!(Operation::ApplyStash.validate_target("").is_err());
+        assert!(Operation::ApplyStash.validate_target("abc123").is_ok());
+        assert!(Operation::PopStash.validate_target("--index").is_err());
     }
     #[test]
     fn hunk_tokens_expire_after_mutations_and_failures_refresh() {

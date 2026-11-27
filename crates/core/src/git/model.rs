@@ -352,6 +352,9 @@ pub enum ReferenceKind {
 /// A stash list entry as people identify it.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct StashEntry {
+    /// The stash commit, which also names its history row.
+    #[serde(default)]
+    pub id: String,
     /// Reflog subject, such as `On main: message`.
     pub message: String,
     /// Creation date in Git's ISO-like format.
@@ -532,6 +535,7 @@ pub fn parse_stashes(output: &str) -> Vec<(Commit, StashEntry)> {
             }
             .index_search();
             let entry = StashEntry {
+                id: id.to_owned(),
                 message: message.to_owned(),
                 date: created.to_owned(),
             };
@@ -604,9 +608,9 @@ pub struct RepoSnapshot {
     pub remote_refs: Vec<ReferenceTip>,
     #[serde(default)]
     pub stash_count: usize,
-    /// Message and date of `stash@{0}`, the entry Pop stash reviews.
+    /// The stash list, newest (`stash@{0}`) first.
     #[serde(default)]
-    pub latest_stash: Option<StashEntry>,
+    pub stashes: Vec<StashEntry>,
     #[serde(default)]
     pub worktrees: Vec<Worktree>,
     #[serde(default)]

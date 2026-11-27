@@ -105,6 +105,8 @@ pub enum Action {
     Fetch,
     /// Adds, removes, locks, unlocks or prunes worktrees.
     Worktree(crate::worktree::WorktreeChange),
+    /// Removes the stash entry holding commit `id` from the stash list.
+    DropStash { id: String, message: String },
 }
 
 /// Worker read category used for cancellation and replacement.
@@ -140,6 +142,7 @@ impl Action {
             Self::RunOperation { op, .. } => op.label(),
             Self::Fetch => "Fetch",
             Self::Worktree(change) => change.label(),
+            Self::DropStash { .. } => "Delete stash",
             Self::Open { .. } => "Open repository",
             Self::Refresh { .. } | Self::RefreshWorktree { .. } => "Refresh",
             Self::LoadMore { .. } => "Load more history",
@@ -158,6 +161,7 @@ impl Action {
             Self::Commit { message, .. } => message.lines().next().map(str::to_owned),
             Self::Fetch => Some("all remotes".into()),
             Self::Worktree(change) => change.path().map(crate::presentation::display_location),
+            Self::DropStash { message, .. } => Some(message.clone()),
             Self::RunOperation { target, .. } if !target.trim().is_empty() => Some(target.clone()),
             Self::Operation { reviewed } if reviewed.network.is_some() => reviewed.refs(),
             Self::Operation {
@@ -232,8 +236,11 @@ pub enum Operation {
     /// Stashes tracked changes with an optional message.
     Stash,
     /// Applies the reviewed stash, then removes its entry from the stash list.
-    /// A conflicting apply keeps the entry.
+    /// A conflicting apply keeps the entry. The target is the stash commit,
+    /// or empty for the latest stash.
     PopStash,
+    /// Applies the stash commit the target names and keeps its entry.
+    ApplyStash,
     /// Pulls the checked-out branch's upstream with the chosen integration.
     Pull {
         #[serde(default)]
@@ -463,6 +470,9 @@ impl ReviewedOperation {
             Operation::PopStash => {
                 format!("Pop stash {id}: apply it to the working tree of {here}, then remove it from the stash list. If the changes conflict, the stash stays in the list.")
             }
+            Operation::ApplyStash => {
+                format!("Apply stash {id} to the working tree of {here}. The stash stays in the list.")
+            }
             Operation::Undo | Operation::Redo => self
                 .journal
                 .as_ref()
@@ -516,6 +526,7 @@ impl Operation {
             Self::Revert => "Revert",
             Self::Stash => "Stash",
             Self::PopStash => "Pop stash",
+            Self::ApplyStash => "Apply stash",
             Self::Pull { mode } => mode.label(),
             Self::Push => "Push",
             Self::Undo => "Undo",
@@ -546,12 +557,17 @@ impl Operation {
         matches!(self, Self::Pull { .. } | Self::Push)
     }
 
-    /// Whether the dialog asks for a target. Pop stash, Pull and Push act on
-    /// the latest stash or the checked-out branch instead.
+    /// Whether the dialog asks for a target. Pop and Apply stash, Pull and
+    /// Push act on a listed stash or the checked-out branch instead.
     pub fn takes_target(&self) -> bool {
         !matches!(
             self,
-            Self::PopStash | Self::Pull { .. } | Self::Push | Self::Undo | Self::Redo
+            Self::PopStash
+                | Self::ApplyStash
+                | Self::Pull { .. }
+                | Self::Push
+                | Self::Undo
+                | Self::Redo
         )
     }
 
@@ -573,9 +589,17 @@ impl Operation {
     pub fn validate_target(&self, target: &str) -> Result<(), String> {
         if matches!(
             self,
-            Self::Stash | Self::PopStash | Self::Pull { .. } | Self::Push | Self::Undo | Self::Redo
+            Self::Stash | Self::Pull { .. } | Self::Push | Self::Undo | Self::Redo
         ) {
             return Ok(());
+        }
+        if matches!(self, Self::PopStash | Self::ApplyStash) {
+            return match target {
+                "" if matches!(self, Self::PopStash) => Ok(()),
+                "" => Err("Choose a stash to apply.".into()),
+                id if id.chars().all(|c| c.is_ascii_hexdigit()) => Ok(()),
+                _ => Err("Choose a stash from the list.".into()),
+            };
         }
         if self.finishes_sequence() {
             return match crate::git::Sequence::from_name(target) {
@@ -621,6 +645,7 @@ impl Operation {
             Self::CreateBranch | Self::CreateBranchAt { .. } => "feature/branch-name",
             Self::Stash => "Optional message",
             Self::PopStash
+            | Self::ApplyStash
             | Self::Pull { .. }
             | Self::Push
             | Self::Undo
@@ -640,6 +665,9 @@ impl Operation {
             Self::Stash => "Stashes tracked changes. Untracked files stay in the working tree.",
             Self::PopStash => {
                 "Applies the reviewed stash and removes it from the stash list. If the changes conflict, the stash is kept and the conflicts remain visible in Working changes."
+            }
+            Self::ApplyStash => {
+                "Applies the stash and keeps it in the stash list. Conflicts remain visible in Working changes."
             }
             Self::Pull { .. } => {
                 "Git signs in through your credential helper or SSH agent. You can cancel while it runs. Conflicts appear in Working changes."
