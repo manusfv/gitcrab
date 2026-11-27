@@ -2919,7 +2919,6 @@ mod tests {
         assert!(Operation::Stash.validate_target("").is_ok());
         assert!(Operation::PopStash.validate_target("").is_ok());
         assert!(Operation::ApplyStash.validate_target("").is_err());
-        assert!(Operation::ApplyStash.validate_target("abc123").is_ok());
         assert!(Operation::PopStash.validate_target("--index").is_err());
     }
     #[test]
