@@ -538,7 +538,7 @@ impl GitCrab {
                 hover.refs_row = None;
                 self.update_ref_highlight(cx);
             }
-            cx.notify();
+            self.notify_region(Region::Center, cx);
         }
     }
 
@@ -589,7 +589,7 @@ impl GitCrab {
                             if let Some(h) = v.history_hover.highlight.as_mut() {
                                 h.dim = t;
                             }
-                            cx.notify();
+                            v.notify_region(Region::Center, cx);
                         });
                         if updated.is_err() || t >= 1. {
                             break;
@@ -599,7 +599,7 @@ impl GitCrab {
                 }));
             }
         }
-        cx.notify();
+        self.notify_region(Region::Center, cx);
     }
 
     /// The decorated row whose history hovering `row`'s references highlights.
@@ -1041,7 +1041,7 @@ impl GitCrab {
                 .on_hover(cx.listener(|v, hovered: &bool, _, cx| {
                     if v.history_hover.wip != *hovered {
                         v.history_hover.wip = *hovered;
-                        cx.notify();
+                        v.notify_region(Region::Center, cx);
                     }
                 }))
                 .children(self.history_layout.visible().map(|entry| {
