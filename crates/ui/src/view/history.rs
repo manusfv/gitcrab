@@ -748,7 +748,7 @@ impl GitCrab {
                         .child(
                             div()
                                 .id(("ref-expanded-list", row))
-                                .occlude()
+                                .block_mouse_except_scroll()
                                 .flex()
                                 .flex_col()
                                 .items_start()
