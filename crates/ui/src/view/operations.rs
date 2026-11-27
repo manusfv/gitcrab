@@ -54,7 +54,7 @@ fn operation_command(op: &Operation) -> Option<Command> {
         Operation::CherryPick => Command::CherryPick,
         Operation::Revert => Command::Revert,
         Operation::Stash => Command::Stash,
-        Operation::PopStash => Command::PopStash,
+        Operation::PopStash | Operation::ApplyStash => Command::PopStash,
         Operation::Pull { .. } => Command::Pull,
         Operation::Push => Command::Push,
         Operation::Undo => Command::Undo,

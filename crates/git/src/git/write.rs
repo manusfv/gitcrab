@@ -814,6 +814,25 @@ impl Git {
         self.drop_stash_entry(&before, index)
     }
 
+    /// Gives the stash entry holding commit `id` the reflog subject
+    /// `subject`. Git cannot edit an entry in place, so the commit is stored
+    /// again under the new subject, which puts it at the top of the list as
+    /// GitKraken's edit does, and the old entry is dropped. No files change.
+    pub(crate) fn rename_stash(&self, id: &str, subject: &str) -> Result<(), WriteError> {
+        let before = self.stash_entries().map_err(WriteError::inspect)?;
+        if !before.iter().any(|(entry, _)| entry == id) {
+            return Err(WriteError::git(
+                "That stash is no longer in the stash list. Refresh and choose it again.".into(),
+            ));
+        }
+        self.stash_store(subject, id)?;
+        let after = self.stash_entries().map_err(WriteError::inspect)?;
+        match after.iter().skip(1).position(|(entry, _)| entry == id) {
+            Some(old) => self.drop_stash_entry(&after, old + 1),
+            None => Ok(()),
+        }
+    }
+
     /// Drops `stash@{index}`, which `before` says holds the entry to remove,
     /// then restores any other entry the drop removed instead.
     pub(super) fn drop_stash_entry(

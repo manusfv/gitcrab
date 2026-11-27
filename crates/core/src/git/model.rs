@@ -352,6 +352,9 @@ pub enum ReferenceKind {
 /// A stash list entry as people identify it.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct StashEntry {
+    /// The stash commit, which also names its history row.
+    #[serde(default)]
+    pub id: String,
     /// Reflog subject, such as `On main: message`.
     pub message: String,
     /// Creation date in Git's ISO-like format.
@@ -507,6 +510,40 @@ pub fn parse_worktrees(output: &str) -> Vec<Worktree> {
     worktrees
 }
 
+impl StashEntry {
+    /// The stash's own message and the branch it was made on, as GitKraken
+    /// shows them. `On main: idea` is `("idea", Some("main"))`; Git's default
+    /// `WIP on main: abc1234 subject` has no message of its own. Branch names
+    /// cannot contain `:`, so the first `": "` ends the branch.
+    pub fn parts(&self) -> (&str, Option<&str>) {
+        stash_parts(&self.message)
+    }
+
+    /// The stash's own message, or the whole subject when it has none.
+    pub fn name(&self) -> &str {
+        match self.parts() {
+            ("", _) => &self.message,
+            (own, _) => own,
+        }
+    }
+}
+
+fn stash_parts(subject: &str) -> (&str, Option<&str>) {
+    if let Some((branch, message)) = subject
+        .strip_prefix("On ")
+        .and_then(|rest| rest.split_once(": "))
+    {
+        return (message, Some(branch));
+    }
+    if let Some((branch, _)) = subject
+        .strip_prefix("WIP on ")
+        .and_then(|rest| rest.split_once(": "))
+    {
+        return ("", Some(branch));
+    }
+    (subject, None)
+}
+
 /// Parses `git stash list --format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%ci%x00%gs`,
 /// newest first, into history rows and list entries.
 ///
@@ -520,10 +557,15 @@ pub fn parse_stashes(output: &str) -> Vec<(Commit, StashEntry)> {
             let [id, parents, author, author_email, date, created, message] =
                 std::array::from_fn(|_| fields.next().unwrap_or_default());
             let base = parents.split_whitespace().next()?;
+            let entry = StashEntry {
+                id: id.to_owned(),
+                message: message.to_owned(),
+                date: created.to_owned(),
+            };
             let row = Commit {
                 id: id.to_owned(),
                 parents: vec![base.to_owned()],
-                subject: message.to_owned(),
+                subject: entry.name().to_owned(),
                 author: author.to_owned(),
                 author_email: author_email.to_owned(),
                 date: date.to_owned(),
@@ -531,10 +573,6 @@ pub fn parse_stashes(output: &str) -> Vec<(Commit, StashEntry)> {
                 ..Default::default()
             }
             .index_search();
-            let entry = StashEntry {
-                message: message.to_owned(),
-                date: created.to_owned(),
-            };
             Some((row, entry))
         })
         .collect()
@@ -602,11 +640,9 @@ pub struct RepoSnapshot {
     pub branches: Vec<LocalBranch>,
     #[serde(default)]
     pub remote_refs: Vec<ReferenceTip>,
+    /// The stash list, newest (`stash@{0}`) first.
     #[serde(default)]
-    pub stash_count: usize,
-    /// Message and date of `stash@{0}`, the entry Pop stash reviews.
-    #[serde(default)]
-    pub latest_stash: Option<StashEntry>,
+    pub stashes: Vec<StashEntry>,
     #[serde(default)]
     pub worktrees: Vec<Worktree>,
     #[serde(default)]
