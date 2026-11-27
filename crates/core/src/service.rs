@@ -103,6 +103,8 @@ pub enum Action {
     },
     /// Fetches every remote with pruning. Runs off the worker and can be cancelled.
     Fetch,
+    /// Adds, removes, locks, unlocks or prunes worktrees.
+    Worktree(crate::worktree::WorktreeChange),
 }
 
 /// Worker read category used for cancellation and replacement.
@@ -137,6 +139,7 @@ impl Action {
             Self::Operation { reviewed } => reviewed.title(),
             Self::RunOperation { op, .. } => op.label(),
             Self::Fetch => "Fetch",
+            Self::Worktree(change) => change.label(),
             Self::Open { .. } => "Open repository",
             Self::Refresh { .. } | Self::RefreshWorktree { .. } => "Refresh",
             Self::LoadMore { .. } => "Load more history",
@@ -154,6 +157,7 @@ impl Action {
             Self::StageAll { .. } => Some("whole worktree".into()),
             Self::Commit { message, .. } => message.lines().next().map(str::to_owned),
             Self::Fetch => Some("all remotes".into()),
+            Self::Worktree(change) => change.path().map(crate::presentation::display_location),
             Self::RunOperation { target, .. } if !target.trim().is_empty() => Some(target.clone()),
             Self::Operation { reviewed } if reviewed.network.is_some() => reviewed.refs(),
             Self::Operation {
@@ -183,6 +187,7 @@ impl Action {
         match self {
             Self::Fetch => true,
             Self::Operation { reviewed } => reviewed.op.is_network(),
+            Self::Worktree(change) => change.is_network(),
             _ => false,
         }
     }
@@ -874,6 +879,7 @@ mod tests {
                 .map(|name| LocalBranch {
                     name: (*name).to_owned(),
                     tip: String::new(),
+                    upstream: None,
                 })
                 .collect(),
             ..Default::default()

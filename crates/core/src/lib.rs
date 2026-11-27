@@ -34,6 +34,7 @@ pub mod sidebar;
 pub mod tabs;
 pub mod updates;
 pub mod watch;
+pub mod worktree;
 
 #[rustfmt::skip]
 pub mod design_tokens;

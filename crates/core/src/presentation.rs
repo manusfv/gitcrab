@@ -710,6 +710,7 @@ mod tests {
         let branch = |name: &str| LocalBranch {
             name: name.into(),
             tip: String::new(),
+            upstream: None,
         };
         let mut snapshot = RepoSnapshot {
             branches: vec![branch("feature/a"), branch("feature/b"), branch("main")],
@@ -775,6 +776,7 @@ mod tests {
             branches: vec![LocalBranch {
                 name: "main".into(),
                 tip: String::new(),
+                upstream: None,
             }],
             remote_refs: vec![tip("origin/main", "refs/remotes/origin/main")],
             tags: vec![tip("v1", "refs/tags/v1")],
@@ -824,6 +826,7 @@ mod tests {
             branches: vec![LocalBranch {
                 name: "feature/clean".into(),
                 tip: "c1".into(),
+                upstream: None,
             }],
             remote_refs: vec![origin_head, remote("origin/main"), {
                 let mut topic = remote("origin/topic");

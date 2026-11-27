@@ -46,6 +46,7 @@ mod read;
 pub mod setup;
 #[cfg(test)]
 mod tests;
+mod worktree;
 mod write;
 
 #[cfg(test)]
@@ -478,6 +479,8 @@ pub(crate) struct HistoryCache {
     /// `commits` with the stash entries placed among them.
     pub(super) rows: Vec<Commit>,
     pub(super) graph: crate::graph::Graph,
+    /// Worktrees as last read, whose change counts later reads reuse.
+    pub(super) worktrees: Vec<Worktree>,
     pub(super) metadata: u64,
 }
 

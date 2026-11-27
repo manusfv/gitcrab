@@ -1251,6 +1251,7 @@ impl GitCrab {
         };
         let c = &snap.commits[i];
         let id = c.id.clone();
+        let worktree_path = c.worktree.as_ref().map(|p| p.display().to_string());
         let target = c.id.clone();
         let selected = self.state.selected.as_ref() == Some(&c.id);
         let matched = c.matches_search(&self.search_query);
@@ -1315,6 +1316,7 @@ impl GitCrab {
         };
         let color = row.color;
         let stash = c.stash;
+        let worktree_row = c.worktree.is_some();
         let junction = if link_above && row.lane == 0 {
             let mut joined = incoming.clone();
             joined.push(gitcrab_core::graph::Edge {
@@ -1591,6 +1593,25 @@ impl GitCrab {
                                                 lanes()[color % lanes().len()],
                                                 cx,
                                             );
+                                        } else if worktree_row {
+                                            // Filled so the lane stops at the dashed edge.
+                                            let radius = px(WIP_RADIUS);
+                                            w.paint_quad(
+                                                fill(
+                                                    Bounds::new(
+                                                        point(center_x - radius, y - radius),
+                                                        size(radius * 2., radius * 2.),
+                                                    ),
+                                                    rgb(semantic(Role::SurfaceCanvas)),
+                                                )
+                                                .corner_radii(radius),
+                                            );
+                                            paint_dashed_circle(
+                                                w,
+                                                point(center_x, y),
+                                                radius,
+                                                lanes()[color % lanes().len()],
+                                            );
                                         } else if junction {
                                             let radius = px(6.);
                                             let mut diamond = PathBuilder::fill();
@@ -1750,7 +1771,14 @@ impl GitCrab {
                     .child(cell)
                     .into_any_element()
             }))
-            .on_click(cx.listener(move |v, _, w, cx| v.activate_commit(id.clone(), w, cx)));
+            .on_click(cx.listener(
+                move |v, e: &ClickEvent, w, cx| match worktree_path.clone() {
+                    Some(path) if e.click_count() == 2 => {
+                        w.dispatch_action(Box::new(crate::workspace::OpenRecent(path)), cx)
+                    }
+                    _ => v.activate_commit(id.clone(), w, cx),
+                },
+            ));
         if c.id == snap.head_id {
             // Paint the marker over the row so it cannot shift the lane origin.
             el = el.relative().child(
@@ -1765,13 +1793,27 @@ impl GitCrab {
         }
         let parents = c.parents.len();
         let stash = c.stash;
+        let worktree = c.worktree.clone();
         let branch =
             gitcrab_core::presentation::commit_branch(snap, &c.id, self.state.previewed_ref());
         el.on_mouse_up(
             MouseButton::Right,
             cx.listener(move |v, event: &MouseUpEvent, w, cx| {
                 cx.stop_propagation();
-                let menu = v.commit_menu(&target, parents, stash, branch.as_deref(), w, cx);
+                let held = worktree.as_ref().and_then(|path| {
+                    let snapshot = v.state.snapshot.as_ref()?;
+                    let worktree = snapshot.worktrees.iter().find(|w| &w.path == path)?;
+                    Some(super::worktrees::worktree_menu(
+                        cx.weak_entity(),
+                        worktree,
+                        snapshot,
+                        w,
+                    ))
+                });
+                let menu = match held {
+                    Some(menu) => menu,
+                    None => v.commit_menu(&target, parents, stash, branch.as_deref(), w, cx),
+                };
                 v.history_hover.menu_row = Some(i);
                 cx.notify();
                 let view = cx.weak_entity();
@@ -1810,6 +1852,13 @@ impl GitCrab {
                 true,
                 view.command(MenuCommand::CreateBranch(sha.to_owned())),
             )
+            .item(
+                "Create worktree from this commit",
+                true,
+                view.command(MenuCommand::Worktree(
+                    super::worktrees::WorktreeCommand::Create(Some(sha.to_owned())),
+                )),
+            )
             .separator();
         // The shared command model decides availability, including merge commits.
         for command in [
@@ -1827,6 +1876,25 @@ impl GitCrab {
             let enabled = command
                 .availability_for_commit(&commands, parents)
                 .enabled();
+            let held = self
+                .state
+                .snapshot
+                .as_ref()
+                .filter(|_| command == Command::Checkout)
+                .zip(branch)
+                .and_then(|(s, branch)| gitcrab_core::worktree::holding(s, branch));
+            if let Some(worktree) = held {
+                menu = menu.item(
+                    format!("Open worktree from {name}"),
+                    true,
+                    view.command(MenuCommand::Worktree(
+                        super::worktrees::WorktreeCommand::Open(
+                            worktree.path.display().to_string(),
+                        ),
+                    )),
+                );
+                continue;
+            }
             menu = menu.item(
                 format!("{} {name}", command.label()),
                 enabled,

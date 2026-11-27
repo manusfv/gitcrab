@@ -1776,3 +1776,177 @@ fn a_sequence_between_picks_is_named_from_its_todo_list() {
         ["cherry-pick", "sequencer"]
     );
 }
+
+#[test]
+fn worktree_changes_add_lock_remove_and_prune() {
+    use gitcrab_core::worktree::WorktreeChange;
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    fixture.write("a.txt", "base\n");
+    git.run(&["add", "."]).unwrap();
+    git.run(&["commit", "-qm", "base"]).unwrap();
+    let wt = fixture.root().join("repo.worktrees").join("topic");
+    let change = |change: WorktreeChange| git.change_worktree(&change, None);
+    change(WorktreeChange::Add {
+        path: wt.clone(),
+        start: "main".into(),
+        branch: Some("topic".into()),
+    })
+    .unwrap();
+    let listed = |git: &Git| git.snapshot(10).unwrap().worktrees;
+    let added = listed(git);
+    assert_eq!(added[1].branch.as_deref(), Some("topic"));
+    assert_eq!(added[1].changes, Some(WorktreeChanges::default()));
+
+    std::fs::write(wt.join("a.txt"), "edit\n").unwrap();
+    std::fs::write(wt.join("new.txt"), "new\n").unwrap();
+    std::fs::remove_file(wt.join("a.txt")).unwrap();
+    std::fs::write(wt.join("b.txt"), "b\n").unwrap();
+    let changes = listed(git)[1].changes.unwrap();
+    assert_eq!(
+        (changes.added, changes.modified, changes.deleted),
+        (2, 0, 1)
+    );
+
+    change(WorktreeChange::Lock {
+        path: wt.clone(),
+        reason: "busy".into(),
+    })
+    .unwrap();
+    assert!(listed(git)[1].locked);
+    let remove = |force| WorktreeChange::Remove {
+        path: wt.clone(),
+        force,
+        delete_branch: Some("topic".into()),
+        delete_remote: None,
+    };
+    assert!(change(remove(false)).is_err());
+    let bad_branch = WorktreeChange::Remove {
+        path: wt.clone(),
+        force: true,
+        delete_branch: Some("-bad".into()),
+        delete_remote: None,
+    };
+    assert!(change(bad_branch).is_err());
+    assert!(wt.exists(), "a refused branch name keeps the worktree");
+    change(WorktreeChange::Unlock { path: wt.clone() }).unwrap();
+    assert!(!listed(git)[1].locked);
+    assert!(change(remove(false)).is_err(), "dirty worktree needs force");
+    change(remove(true)).unwrap();
+    assert_eq!(listed(git).len(), 1);
+    assert!(git.run(&["rev-parse", "--verify", "-q", "topic"]).is_err());
+
+    let gone = fixture.root().join("gone");
+    change(WorktreeChange::Add {
+        path: gone.clone(),
+        start: "HEAD".into(),
+        branch: Some("gone".into()),
+    })
+    .unwrap();
+    std::fs::remove_dir_all(&gone).unwrap();
+    assert!(listed(git)[1].prunable);
+    change(WorktreeChange::Prune).unwrap();
+    assert_eq!(listed(git).len(), 1);
+}
+
+#[test]
+fn worktree_changes_ignore_a_planted_git_pointer() {
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    fixture.write("a.txt", "base\n");
+    git.run(&["add", "."]).unwrap();
+    git.run(&["commit", "-qm", "base"]).unwrap();
+    let linked = fixture.root().join("linked");
+    git.run(&[
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        linked.to_str().unwrap(),
+    ])
+    .unwrap();
+    let elsewhere = Fixture::new();
+    let pointer = elsewhere.git.path.join(".git").canonicalize().unwrap();
+    std::fs::write(
+        linked.join(".git"),
+        format!("gitdir: {}\n", pointer.display()),
+    )
+    .unwrap();
+    assert_eq!(git.snapshot(10).unwrap().worktrees[1].changes, None);
+}
+
+#[test]
+fn removing_a_worktree_can_delete_its_branch_on_the_remote() {
+    use gitcrab_core::worktree::WorktreeChange;
+    let (local, _) = network::network_tests::connected();
+    let git = &local.git;
+    let wt = local.root().join("topic");
+    git.change_worktree(
+        &WorktreeChange::Add {
+            path: wt.clone(),
+            start: "main".into(),
+            branch: Some("topic".into()),
+        },
+        None,
+    )
+    .unwrap();
+    git.run(&["push", "-q", "origin", "topic"]).unwrap();
+    let message = git
+        .change_worktree(
+            &WorktreeChange::Remove {
+                path: wt,
+                force: false,
+                delete_branch: Some("topic".into()),
+                delete_remote: Some(("origin".into(), "topic".into())),
+            },
+            Some(&network::network_tests::scope()),
+        )
+        .unwrap();
+    assert!(message.ends_with("and origin/topic"), "{message}");
+    assert!(git
+        .run(&["ls-remote", "--heads", "origin", "topic"])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn a_changed_worktree_gets_a_history_row_above_its_head() {
+    let fixture = Fixture::new();
+    let git = &fixture.git;
+    fixture.write("a.txt", "base\n");
+    git.run(&["add", "."]).unwrap();
+    git.run(&["commit", "-qm", "base"]).unwrap();
+    fixture.write("a.txt", "next\n");
+    git.run(&["commit", "-qam", "next"]).unwrap();
+    let linked = fixture.root().join("old");
+    git.run(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "old",
+        linked.to_str().unwrap(),
+        "HEAD~1",
+    ])
+    .unwrap();
+    let base = git.run(&["rev-parse", "HEAD~1"]).unwrap().trim().to_owned();
+    let mut cache = None;
+    let read = |mode, cache: &mut _| git.snapshot_cached(10, mode, cache).unwrap().0.commits;
+    assert!(read(HistoryRead::Full, &mut cache)
+        .iter()
+        .all(|c| c.worktree.is_none()));
+
+    std::fs::write(linked.join("a.txt"), "dirty\n").unwrap();
+    let ids = |rows: &[Commit]| rows.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+    assert_eq!(
+        read(HistoryRead::Worktree, &mut cache).len(),
+        2,
+        "a worktree read reuses the last counts"
+    );
+    let rows = read(HistoryRead::Full, &mut cache);
+    let wip = rows.iter().position(|c| c.worktree.is_some()).unwrap();
+    assert_eq!(ids(&rows)[wip + 1], base);
+    assert_eq!(rows[wip].parents, [base]);
+    assert_eq!(rows[wip].subject, "WIP on old");
+    assert_eq!(rows[wip].body_preview, "1 modified");
+}

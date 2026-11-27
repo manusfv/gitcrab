@@ -248,6 +248,27 @@ pub fn is_trusted(trusted: &[RepositoryLocation], location: &RepositoryLocation)
     trusted.contains(location)
 }
 
+/// Whether `location` is another worktree of a repository the user trusted,
+/// as GitKraken opens a trusted repository's worktrees without asking. It
+/// must be the main worktree holding the shared metadata, or a linked one
+/// whose registration (`registered`, read from its metadata) points back at
+/// it, so a folder whose `.git` file merely names the trusted metadata
+/// still asks.
+pub fn is_trusted_sibling(
+    trusted: &[RepositoryLocation],
+    location: &RepositoryLocation,
+    registered: Option<&Path>,
+) -> bool {
+    let main = location.git_dir == location.common_dir
+        && location.common_dir == location.worktree.join(".git");
+    let linked = location.git_dir.parent() == Some(&location.common_dir.join("worktrees"))
+        && registered == Some(location.worktree.as_path());
+    (main || linked)
+        && trusted
+            .iter()
+            .any(|entry| entry.common_dir == location.common_dir)
+}
+
 /// Records trust in `location`, replacing earlier trust in the same worktree.
 pub fn remember_trust(trusted: &mut Vec<RepositoryLocation>, location: &RepositoryLocation) {
     trusted.retain(|entry| entry.worktree != location.worktree);
@@ -569,6 +590,41 @@ mod tests {
         remember_trust(&mut trusted, &new_git_dir);
         assert_eq!(trusted, [other_worktree, new_git_dir]);
         assert!(!is_trusted(&trusted, &original));
+    }
+
+    #[test]
+    fn worktrees_of_a_trusted_repository_are_trusted_when_registered() {
+        let common = PathBuf::from("repo/.git");
+        let main = RepositoryLocation::test_path("repo");
+        let linked = RepositoryLocation {
+            worktree: "repo.worktrees/fix".into(),
+            git_dir: common.join("worktrees/fix"),
+            common_dir: common.clone(),
+        };
+        let trusted = vec![main.clone()];
+        let fix = Path::new("repo.worktrees/fix");
+        assert!(is_trusted_sibling(&trusted, &linked, Some(fix)));
+        assert!(!is_trusted_sibling(&trusted, &linked, None));
+        let planted = RepositoryLocation {
+            worktree: "elsewhere".into(),
+            ..linked.clone()
+        };
+        assert!(!is_trusted_sibling(&trusted, &planted, Some(fix)));
+        let pointer_to_main = RepositoryLocation {
+            worktree: "elsewhere".into(),
+            ..main.clone()
+        };
+        assert!(!is_trusted_sibling(&trusted, &pointer_to_main, None));
+        assert!(is_trusted_sibling(
+            std::slice::from_ref(&linked),
+            &main,
+            None
+        ));
+        assert!(!is_trusted_sibling(
+            &[RepositoryLocation::test_path("other")],
+            &linked,
+            Some(fix)
+        ));
     }
 
     #[test]

@@ -120,6 +120,9 @@ impl GitCrab {
                 .as_ref()
                 .and_then(|s| s.commits.iter().enumerate().find(|(_, c)| &c.id == id))
             {
+                if let Some(path) = &c.worktree {
+                    return self.worktree_details(el, path, c, cx).into_any_element();
+                }
                 let commands = self.command_context(window, cx);
                 el = self.commit_details(el, window, index, c, &commands, cx);
             }

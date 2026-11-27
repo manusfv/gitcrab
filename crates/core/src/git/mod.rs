@@ -251,6 +251,11 @@ mod tests {
         );
         assert_eq!(worktree("C:/wt/main", Some("main")).detail(), None);
         assert_eq!(worktree("C:/wt/feat__x", Some("feat/x")).detail(), None);
+        assert_eq!(worktree("C:/wt/feat/x", Some("feat/x")).detail(), None);
+        assert_eq!(
+            worktree("C:/wt/fix", Some("feat/x")).detail(),
+            Some("fix".into())
+        );
         assert_eq!(worktree("C:/wt/fix", None).detail(), None);
     }
 }

@@ -21,6 +21,7 @@ actions!(
     [
         NewTab,
         CloseTab,
+        CloseDuplicateTab,
         NextTab,
         PreviousTab,
         MoveTabLeft,
@@ -509,6 +510,29 @@ impl Workspace {
             return;
         }
         self.close_after_flush(index, window, cx);
+    }
+
+    /// Closes the active tab when another tab shows the same worktree,
+    /// leaving that one active.
+    fn close_duplicate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.active;
+        let Some(identity) = self.tabs[active]
+            .read(cx)
+            .repository_identity()
+            .map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        let Some(other) = self.tabs.iter().enumerate().position(|(index, tab)| {
+            index != active && tab.read(cx).repository_identity() == Some(identity.as_path())
+        }) else {
+            return;
+        };
+        if let Some(notice) = self.tabs[active].read(cx).success_notice() {
+            self.tabs[other].update(cx, |tab, cx| tab.adopt_notice(notice, cx));
+        }
+        self.activate(other, window, cx);
+        self.close(active, window, cx);
     }
 
     /// Closes several tabs with one draft confirmation and one settings
@@ -1059,7 +1083,19 @@ impl Workspace {
             return None;
         }
         if self.tabs[self.active].read(cx).has_repository() {
-            self.add(None, window, cx);
+            // As GitKraken groups worktree tabs.
+            match self
+                .tabs
+                .iter()
+                .rposition(|tab| tab.read(cx).shares_repository(&location.worktree))
+            {
+                Some(index) => {
+                    self.tabs
+                        .insert(index + 1, Self::create_tab(None, false, window, cx));
+                    self.activate(index + 1, window, cx);
+                }
+                None => self.add(None, window, cx),
+            }
         }
         Some(self.tabs[self.active].clone())
     }
@@ -1520,6 +1556,7 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|v, _: &CloseTab, w, cx| v.close(v.active, w, cx)))
+            .on_action(cx.listener(|v, _: &CloseDuplicateTab, w, cx| v.close_duplicate(w, cx)))
             .on_action(cx.listener(|v, _: &NextTab, w, cx| v.cycle(1, w, cx)))
             .on_action(cx.listener(|v, _: &PreviousTab, w, cx| v.cycle(-1, w, cx)))
             .on_action(cx.listener(|v, _: &MoveTabLeft, w, cx| v.move_active_tab(-1, w, cx)))
