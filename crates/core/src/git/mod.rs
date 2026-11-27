@@ -239,6 +239,27 @@ mod tests {
     }
 
     #[test]
+    fn stash_subjects_split_into_message_and_branch() {
+        let parts = |message: &str| {
+            let entry = StashEntry {
+                message: message.into(),
+                ..Default::default()
+            };
+            let (own, branch) = entry.parts();
+            (own.to_owned(), branch.map(str::to_owned))
+        };
+        assert_eq!(
+            parts("On feat/login: login: second idea"),
+            ("login: second idea".into(), Some("feat/login".into()))
+        );
+        assert_eq!(
+            parts("WIP on main: 57761cf first commit"),
+            (String::new(), Some("main".into()))
+        );
+        assert_eq!(parts("odd subject"), ("odd subject".into(), None));
+    }
+
+    #[test]
     fn worktree_folder_is_shown_only_when_it_differs_from_the_branch() {
         let worktree = |path: &str, branch: Option<&str>| Worktree {
             path: path.into(),

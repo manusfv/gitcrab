@@ -62,9 +62,12 @@ impl GitCrab {
         window.open_alert(cx, move |dialog, _, cx| {
             let weak = weak.clone();
             let stash = stash.clone();
+            let name = match stash.parts() {
+                ("", _) => stash.message.as_str(),
+                (own, _) => own,
+            };
             let message = format!(
-                "This is a destructive operation, are you sure you want to delete stash with message \"{}\"?",
-                stash.message
+                "This is a destructive operation, are you sure you want to delete stash with message \"{name}\"?"
             );
             let delete = components::style(
                 Button::new("stash-delete").label("Delete").tab_stop(true),

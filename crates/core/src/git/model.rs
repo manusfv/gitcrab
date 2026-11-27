@@ -510,6 +510,32 @@ pub fn parse_worktrees(output: &str) -> Vec<Worktree> {
     worktrees
 }
 
+impl StashEntry {
+    /// The stash's own message and the branch it was made on, as GitKraken
+    /// shows them. `On main: idea` is `("idea", Some("main"))`; Git's default
+    /// `WIP on main: abc1234 subject` has no message of its own. Branch names
+    /// cannot contain `:`, so the first `": "` ends the branch.
+    pub fn parts(&self) -> (&str, Option<&str>) {
+        stash_parts(&self.message)
+    }
+}
+
+fn stash_parts(subject: &str) -> (&str, Option<&str>) {
+    if let Some((branch, message)) = subject
+        .strip_prefix("On ")
+        .and_then(|rest| rest.split_once(": "))
+    {
+        return (message, Some(branch));
+    }
+    if let Some((branch, _)) = subject
+        .strip_prefix("WIP on ")
+        .and_then(|rest| rest.split_once(": "))
+    {
+        return ("", Some(branch));
+    }
+    (subject, None)
+}
+
 /// Parses `git stash list --format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%ci%x00%gs`,
 /// newest first, into history rows and list entries.
 ///
@@ -523,10 +549,14 @@ pub fn parse_stashes(output: &str) -> Vec<(Commit, StashEntry)> {
             let [id, parents, author, author_email, date, created, message] =
                 std::array::from_fn(|_| fields.next().unwrap_or_default());
             let base = parents.split_whitespace().next()?;
+            let subject = match stash_parts(message) {
+                ("", _) => message,
+                (own, _) => own,
+            };
             let row = Commit {
                 id: id.to_owned(),
                 parents: vec![base.to_owned()],
-                subject: message.to_owned(),
+                subject: subject.to_owned(),
                 author: author.to_owned(),
                 author_email: author_email.to_owned(),
                 date: date.to_owned(),

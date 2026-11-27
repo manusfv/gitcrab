@@ -749,6 +749,37 @@ impl GitCrab {
                     let stash = &s.stashes[index];
                     let id = stash.id.clone();
                     let selected = self.state.selected.as_ref() == Some(&stash.id);
+                    let (own, branch) = stash.parts();
+                    let tooltip = match (own, branch) {
+                        (_, None) => own.to_owned(),
+                        ("", Some(branch)) => format!("On: {branch}"),
+                        (_, Some(branch)) => format!("{own} on: {branch}"),
+                    };
+                    let name = div()
+                        .flex()
+                        .gap_1()
+                        .min_w_0()
+                        .when(!own.is_empty(), |name| {
+                            name.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .max_w_full()
+                                    .truncate()
+                                    .child(own.to_owned()),
+                            )
+                        })
+                        .when_some(branch, |name, branch| {
+                            name.child(div().flex_none().child("on:")).child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(FontWeight::NORMAL)
+                                    .text_size(scaled(TEXT_SIZE_SMALL))
+                                    .text_role(Role::TextDisabled)
+                                    .child(branch.to_owned()),
+                            )
+                        });
                     rows = rows.child(
                         ListRow::new(SharedString::from(format!("stash-{id}")))
                             .height(ROW_HEIGHT)
@@ -757,9 +788,9 @@ impl GitCrab {
                             .tab_stop(!self.settings_open)
                             .foreground(Role::TextMuted)
                             .leading(icon("stash").size(px(ICON_SIZE)).text_role(Role::TextMuted))
-                            .label(stash.message.clone())
+                            .content(name)
                             .highlighted(selected)
-                            .tooltip(format!("{}\n{}", stash.message, display_date(&stash.date)))
+                            .tooltip(tooltip)
                             .on_click(
                                 cx.listener(move |v, _, w, cx| {
                                     v.activate_commit(id.clone(), w, cx)

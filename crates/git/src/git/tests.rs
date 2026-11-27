@@ -1497,7 +1497,8 @@ fn stashes_show_as_one_row_on_their_base_commit() {
     assert_eq!(stash_rows.len(), 1);
     assert_eq!(stash_rows[0].id, stash);
     assert_eq!(stash_rows[0].parents, std::slice::from_ref(&side));
-    assert_eq!(stash_rows[0].subject, "On side: on side");
+    assert_eq!(stash_rows[0].subject, "on side");
+    assert_eq!(snapshot.stashes[0].parts(), ("on side", Some("side")));
     let position = |id: &str| snapshot.commits.iter().position(|c| c.id == id).unwrap();
     assert!(position(&stash) < position(&side));
     assert_eq!(snapshot.commits.len(), 3);
