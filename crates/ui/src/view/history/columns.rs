@@ -134,7 +134,7 @@ impl GitCrab {
             return;
         }
         if self.graph_scroll.scroll_by(-dx) {
-            cx.notify();
+            self.notify_region(Region::Center, cx);
         }
         cx.stop_propagation();
     }
