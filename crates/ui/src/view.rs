@@ -13,6 +13,7 @@ mod repository;
 mod review;
 mod settings;
 mod sidebar;
+mod worktrees;
 pub use super::components::KEY_CONTEXT;
 use super::components::{self, modal, prelude::*};
 use super::preferences::Preferences;
@@ -542,6 +543,12 @@ pub struct GitCrab {
     /// The branch just created and being switched to, whose checkout result
     /// is worded as both steps.
     switching_to_new_branch: Option<String>,
+    /// A worktree being created, offered to open once it exists.
+    worktree_created: Option<std::path::PathBuf>,
+    pending_worktree_removal: Option<worktrees::PendingRemoval>,
+    /// Whether this tab moved to the main worktree to remove the one it
+    /// showed, and so closes once the removal lands if another tab shows main.
+    close_if_duplicate: bool,
     split: bool,
     compact: bool,
     show_whitespace: bool,
@@ -787,6 +794,9 @@ impl GitCrab {
             branch_prompt: None,
             switch_after_branch: None,
             switching_to_new_branch: None,
+            worktree_created: None,
+            pending_worktree_removal: None,
+            close_if_duplicate: false,
             split: preferences.split,
             compact: preferences.compact,
             show_whitespace: false,
@@ -1132,7 +1142,15 @@ impl GitCrab {
                 }) => {
                     self.start_operation(op, target, then_switch, window, cx);
                 }
-                None => {}
+                None => {
+                    self.resume_worktree_removal(window, cx);
+                    if !self.state.busy && std::mem::take(&mut self.close_if_duplicate) {
+                        let focus = self.focus.clone();
+                        window.defer(cx, move |w, cx| {
+                            focus.dispatch_action(&super::workspace::CloseDuplicateTab, w, cx)
+                        });
+                    }
+                }
             }
         }
         #[cfg(feature = "native-evidence")]
@@ -1337,6 +1355,16 @@ impl GitCrab {
             .map(|snapshot| snapshot.worktree_id.as_path())
     }
 
+    /// Whether `worktree`, a canonical folder, is one of the worktrees of
+    /// the repository this tab shows.
+    pub fn shares_repository(&self, worktree: &std::path::Path) -> bool {
+        self.state.snapshot.as_ref().is_some_and(|s| {
+            s.worktrees
+                .iter()
+                .any(|w| w.path.canonicalize().ok().as_deref() == Some(worktree))
+        })
+    }
+
     /// Reports whether a repository is loaded or a snapshot request is active.
     pub fn has_repository(&self) -> bool {
         self.state.snapshot.is_some() || self.state.loading()
@@ -1349,6 +1377,16 @@ impl GitCrab {
     /// Reports whether a write finished while this tab was inactive.
     pub fn unread_result(&self) -> bool {
         self.unread_result
+    }
+
+    /// The status line, unless it reports a failure.
+    pub fn success_notice(&self) -> Option<String> {
+        (!self.state.error && !self.state.notice.is_empty()).then(|| self.state.notice.clone())
+    }
+
+    pub fn adopt_notice(&mut self, message: String, cx: &mut Context<Self>) {
+        self.state.adopt_operation_notice(message);
+        cx.notify();
     }
 
     pub fn mutating(&self) -> bool {

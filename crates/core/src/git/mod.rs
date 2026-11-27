@@ -223,4 +223,39 @@ mod tests {
             "Outcome uncertain. Refresh and inspect the repository before retrying."
         );
     }
+
+    #[test]
+    fn worktree_list_reads_branches_detached_heads_and_prunable_folders() {
+        let output = "worktree C:/repo\0HEAD aaa\0branch refs/heads/main\0\0\
+            worktree C:/wt/fix\0HEAD bbb\0detached\0\0\
+            worktree C:/gone\0HEAD ccc\0branch refs/heads/feat/x\0prunable gitdir file points to non-existent location\0\0";
+        let worktrees = parse_worktrees(output);
+        assert_eq!(worktrees.len(), 3);
+        assert_eq!(worktrees[0].label(), "main");
+        assert_eq!(worktrees[1].branch, None);
+        assert_eq!(worktrees[1].label(), "fix");
+        assert_eq!(worktrees[2].label(), "feat/x");
+        assert!(worktrees[2].prunable && !worktrees[0].prunable);
+    }
+
+    #[test]
+    fn worktree_folder_is_shown_only_when_it_differs_from_the_branch() {
+        let worktree = |path: &str, branch: Option<&str>| Worktree {
+            path: path.into(),
+            branch: branch.map(Into::into),
+            ..Default::default()
+        };
+        assert_eq!(
+            worktree("C:/repo", Some("main")).detail(),
+            Some("repo".into())
+        );
+        assert_eq!(worktree("C:/wt/main", Some("main")).detail(), None);
+        assert_eq!(worktree("C:/wt/feat__x", Some("feat/x")).detail(), None);
+        assert_eq!(worktree("C:/wt/feat/x", Some("feat/x")).detail(), None);
+        assert_eq!(
+            worktree("C:/wt/fix", Some("feat/x")).detail(),
+            Some("fix".into())
+        );
+        assert_eq!(worktree("C:/wt/fix", None).detail(), None);
+    }
 }

@@ -19,7 +19,8 @@ impl Git {
             .map(|(snapshot, _, _)| snapshot)
     }
 
-    /// Lists refs as `object NUL peeled-object NUL full-name` lines.
+    /// Lists refs as `object NUL peeled-object NUL full-name NUL
+    /// upstream-remote NUL upstream-ref` lines.
     ///
     /// Short names are not requested from Git: `%(refname:short)` looks up
     /// every candidate name of every ref inside Git, which grows with the
@@ -27,7 +28,7 @@ impl Git {
     fn read_refs(&self) -> GitResult<String> {
         self.run(&[
             "for-each-ref",
-            "--format=%(objectname)%00%(*objectname)%00%(refname)",
+            "--format=%(objectname)%00%(*objectname)%00%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)",
         ])
     }
 
@@ -68,7 +69,13 @@ impl Git {
         // Each Git call costs a process start, so independent reads run side
         // by side. The identity and references are read again at the end to
         // detect a change during the refresh.
-        let (reviewed, metadata, refs, stashes) = std::thread::scope(|scope| {
+        // Other worktrees' changes are counted on a full refresh and for
+        // worktrees not seen before; other reads reuse the last counts.
+        let known = match (mode, cache.as_ref()) {
+            (HistoryRead::Full, _) | (_, None) => None,
+            (_, Some(cached)) => Some(cached.worktrees.as_slice()),
+        };
+        let (reviewed, metadata, refs, stashes, worktrees) = std::thread::scope(|scope| {
             let metadata = scope.spawn(|| self.read_metadata());
             let refs = scope.spawn(|| self.read_refs());
             let stashes = scope.spawn(|| {
@@ -78,11 +85,13 @@ impl Git {
                     "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%ci%x00%gs",
                 ])
             });
+            let worktrees = scope.spawn(|| self.worktrees(known));
             let reviewed = self.write_identity();
             let metadata = metadata.join().map_err(|_| "Git metadata read failed")?;
             let refs = refs.join().map_err(|_| "Git reference read failed")?;
             let stashes = stashes.join().map_err(|_| "Git stash read failed")?;
-            Ok::<_, String>((reviewed?, metadata?, refs?, stashes?))
+            let worktrees = worktrees.join().map_err(|_| "Git worktree read failed")?;
+            Ok::<_, String>((reviewed?, metadata?, refs?, stashes?, worktrees?))
         })?;
         let head = if let Some(branch) = reviewed.symbolic_head.strip_prefix("refs/heads/") {
             branch.to_string()
@@ -95,16 +104,16 @@ impl Git {
         let mut branches = Vec::new();
         let mut remote_refs = Vec::new();
         let mut tags = Vec::new();
-        let listed: Vec<[&str; 3]> = refs
+        let listed: Vec<[&str; 5]> = refs
             .lines()
             .filter_map(|line| {
                 let mut fields = line.split('\0');
-                let fields = [fields.next()?, fields.next()?, fields.next()?];
-                Some(fields)
+                let mut next = || fields.next();
+                Some([next()?, next()?, next()?, next()?, next()?])
             })
             .collect();
         let short = self.short_ref_names(&listed.iter().map(|f| f[2]).collect::<Vec<_>>());
-        for (&[object, peeled, full], short) in listed.iter().zip(short) {
+        for (&[object, peeled, full, remote, remote_ref], short) in listed.iter().zip(short) {
             if full == "refs/stash" {
                 continue;
             }
@@ -113,6 +122,10 @@ impl Git {
                 branches.push(LocalBranch {
                     name: name.into(),
                     tip: object.into(),
+                    upstream: remote_ref
+                        .strip_prefix("refs/heads/")
+                        .filter(|_| !remote.is_empty())
+                        .map(|branch| (remote.into(), branch.into())),
                 });
             } else if let Some(list) = if full.starts_with("refs/remotes/") {
                 Some(&mut remote_refs)
@@ -145,6 +158,8 @@ impl Git {
                 && cached.head == reviewed.head
                 && cached.metadata == metadata.history_stamp
                 && cached.stashes == stashes
+                && super::worktree::wip_rows(&cached.worktrees)
+                    == super::worktree::wip_rows(&worktrees)
         });
         let reuse = previous.is_some_and(|cached| match mode {
             HistoryRead::Full => false,
@@ -215,6 +230,7 @@ impl Git {
                 refs: labels.remove(f[0]).unwrap_or_default(),
                 search_key: String::new(),
                 stash: false,
+                worktree: None,
             })
             .map(Commit::index_search)
             .collect();
@@ -246,7 +262,10 @@ impl Git {
         let latest_stash = stash_list.first().map(|(_, entry)| entry.clone());
         let upstream_context = remote.context(&reviewed);
         let next = (!reuse).then(|| {
-            let rows = with_stashes(&commits, stash_list.into_iter().map(|(row, _)| row));
+            let rows = with_worktree_rows(
+                with_stashes(&commits, stash_list.into_iter().map(|(row, _)| row)),
+                &worktrees,
+            );
             HistoryCache {
                 refs,
                 head: reviewed.head.clone(),
@@ -259,6 +278,7 @@ impl Git {
                 stashes,
                 rows,
                 metadata: metadata.history_stamp,
+                worktrees: worktrees.clone(),
             }
         });
         if let Some(scope) = &self.read_scope {
@@ -269,6 +289,7 @@ impl Git {
         }
         let history = cache.as_mut().expect("successful snapshot has history");
         history.limit = limit;
+        history.worktrees = worktrees.clone();
         Ok((
             RepoSnapshot {
                 worktree_id: self.path.clone(),
@@ -276,6 +297,7 @@ impl Git {
                 branches,
                 stash_count,
                 latest_stash,
+                worktrees,
                 remote_refs,
                 tags,
                 head,

@@ -623,6 +623,7 @@ impl NetworkJob {
         let start = std::time::Instant::now();
         let result = match &self.action {
             Action::Fetch => self.git.fetch(&self.scope),
+            Action::Worktree(change) => self.git.change_worktree(change, Some(&self.scope)),
             Action::Operation { reviewed } => {
                 reviewed
                     .execute_network(&self.git, &self.scope)
@@ -812,6 +813,7 @@ impl Session {
                 | Action::Commit { .. }
                 | Action::Operation { .. }
                 | Action::RunOperation { .. }
+                | Action::Worktree(_)
         );
         let keeps_patch = self
             .patch
@@ -1162,6 +1164,10 @@ impl Session {
                 self.operation_done(g, &reviewed, before, ran)
             }
             Action::Fetch => return Err("Fetch runs as a network operation.".into()),
+            Action::Worktree(change) => Reply::Done {
+                message: g.change_worktree(&change, None)?,
+                committed_draft: None,
+            },
             Action::Open { .. }
             | Action::Refresh { .. }
             | Action::RefreshWorktree { .. }

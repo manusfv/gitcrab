@@ -291,7 +291,7 @@ impl Git {
     /// Runs a network command under `scope`, which can stop it and its helpers.
     /// Without a scope, Git runs to completion, for steps that change the
     /// branch, index or working tree and must not be stopped halfway.
-    fn network(
+    pub(super) fn network(
         &self,
         args: &[&str],
         scope: Option<&ReadScope>,

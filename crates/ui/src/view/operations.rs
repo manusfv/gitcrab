@@ -357,6 +357,10 @@ impl GitCrab {
     /// changes no files because the branch points at HEAD. The switch's
     /// result then names both steps.
     pub(super) fn after_mutation(&mut self, ok: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.worktree_created.take().filter(|_| ok) {
+            self.prompt_open_created(path, window, cx);
+        }
+        self.close_if_duplicate &= ok;
         if let Some(branch) = self.switching_to_new_branch.take().filter(|_| ok) {
             self.state.reword_operation_notice(
                 &format!("Checked out {branch}"),

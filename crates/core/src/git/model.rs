@@ -28,6 +28,10 @@ pub struct Commit {
     /// Git keeps for the index and untracked files are not part of history.
     #[serde(default)]
     pub stash: bool,
+    /// The folder of another worktree whose uncommitted changes this row
+    /// stands for. Its only parent is that worktree's HEAD.
+    #[serde(default)]
+    pub worktree: Option<PathBuf>,
 }
 
 impl Commit {
@@ -317,11 +321,14 @@ pub struct CommitSummary {
     pub parents: usize,
 }
 /// Local branch and the commit it points to.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct LocalBranch {
     /// Branch name without the `refs/heads/` prefix.
     pub name: String,
     pub tip: String,
+    /// The remote and the branch name there that it tracks.
+    #[serde(default)]
+    pub upstream: Option<(String, String)>,
 }
 /// Remote-tracking ref or tag and its target object.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -349,6 +356,155 @@ pub struct StashEntry {
     pub message: String,
     /// Creation date in Git's ISO-like format.
     pub date: String,
+}
+
+/// A working tree attached to the repository.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Worktree {
+    /// Root folder as Git reports it.
+    pub path: PathBuf,
+    /// Checked-out branch without `refs/heads/`. `None` when detached or bare.
+    pub branch: Option<String>,
+    /// Whether this is the worktree the tab shows.
+    pub current: bool,
+    /// Whether the folder is gone and `git worktree prune` would remove it.
+    pub prunable: bool,
+    /// The repository's first worktree, which cannot be removed.
+    pub main: bool,
+    /// Whether `git worktree lock` protects it from removal and pruning.
+    pub locked: bool,
+    /// Checked-out commit. Empty for a bare repository.
+    pub head: String,
+    /// Uncommitted changes, read for worktrees other than the current one.
+    pub changes: Option<WorktreeChanges>,
+}
+
+/// Counts of uncommitted paths in a worktree, as GitKraken shows them.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorktreeChanges {
+    pub added: usize,
+    pub modified: usize,
+    pub deleted: usize,
+}
+
+impl WorktreeChanges {
+    /// Counts the entries of `git status --porcelain=v1 -z`.
+    pub fn count(status: &[FileChange]) -> Self {
+        let mut changes = Self::default();
+        for file in status {
+            match (file.index, file.worktree) {
+                ('?', _) | ('A', _) | (_, 'A') => changes.added += 1,
+                ('D', _) | (_, 'D') => changes.deleted += 1,
+                _ => changes.modified += 1,
+            }
+        }
+        changes
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Such as `2 added, 1 deleted`, leaving out zero counts.
+    pub fn summary(&self) -> String {
+        [
+            (self.added, "added"),
+            (self.modified, "modified"),
+            (self.deleted, "deleted"),
+        ]
+        .iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, what)| format!("{count} {what}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
+}
+
+impl Worktree {
+    /// The folder's last path segment.
+    pub fn folder(&self) -> String {
+        self.path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.path.display().to_string())
+    }
+
+    /// The branch, or the folder when detached.
+    pub fn label(&self) -> String {
+        self.branch.clone().unwrap_or_else(|| self.folder())
+    }
+
+    /// The folder, shown beside the branch unless it only repeats the branch
+    /// name: whole, its last segment, or with `/` written as `__` as
+    /// GitKraken names worktree folders.
+    pub fn detail(&self) -> Option<String> {
+        let branch = self.branch.as_ref()?;
+        let folder = self.folder();
+        let repeats = folder == *branch
+            || folder == branch.replace('/', "__")
+            || branch.ends_with(&format!("/{folder}"));
+        (!repeats).then_some(folder)
+    }
+}
+
+/// One history row per other worktree with uncommitted changes, placed just
+/// above the commit it has checked out. A worktree whose HEAD is not among
+/// `rows` gets none.
+pub fn with_worktree_rows(mut rows: Vec<Commit>, worktrees: &[Worktree]) -> Vec<Commit> {
+    for worktree in worktrees {
+        let Some(changes) = worktree.changes.filter(|c| !c.is_empty()) else {
+            continue;
+        };
+        if worktree.current {
+            continue;
+        }
+        let Some(at) = rows.iter().position(|row| row.id == worktree.head) else {
+            continue;
+        };
+        let date = rows[at].date.clone();
+        rows.insert(
+            at,
+            Commit {
+                id: format!(
+                    "{}{}",
+                    crate::controller::WORKTREE_ROW,
+                    worktree.path.display()
+                ),
+                parents: vec![worktree.head.clone()],
+                subject: format!("WIP on {}", worktree.label()),
+                body_preview: changes.summary(),
+                date,
+                worktree: Some(worktree.path.clone()),
+                ..Default::default()
+            },
+        );
+    }
+    rows
+}
+
+/// Parses `git worktree list --porcelain -z`, main worktree first.
+pub fn parse_worktrees(output: &str) -> Vec<Worktree> {
+    let mut worktrees: Vec<Worktree> = vec![];
+    for field in output.split('\0') {
+        if let Some(path) = field.strip_prefix("worktree ") {
+            worktrees.push(Worktree {
+                path: path.into(),
+                main: worktrees.is_empty(),
+                ..Default::default()
+            });
+        } else if let Some(worktree) = worktrees.last_mut() {
+            if let Some(branch) = field.strip_prefix("branch ") {
+                worktree.branch = Some(branch.strip_prefix("refs/heads/").unwrap_or(branch).into());
+            } else if let Some(head) = field.strip_prefix("HEAD ") {
+                worktree.head = head.into();
+            } else if field == "prunable" || field.starts_with("prunable ") {
+                worktree.prunable = true;
+            } else if field == "locked" || field.starts_with("locked ") {
+                worktree.locked = true;
+            }
+        }
+    }
+    worktrees
 }
 
 /// Parses `git stash list --format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%ci%x00%gs`,
@@ -451,6 +607,8 @@ pub struct RepoSnapshot {
     /// Message and date of `stash@{0}`, the entry Pop stash reviews.
     #[serde(default)]
     pub latest_stash: Option<StashEntry>,
+    #[serde(default)]
+    pub worktrees: Vec<Worktree>,
     #[serde(default)]
     pub tags: Vec<ReferenceTip>,
     /// Branch name or abbreviated detached HEAD object ID.

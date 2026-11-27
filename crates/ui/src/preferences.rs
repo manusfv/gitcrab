@@ -100,11 +100,24 @@ pub fn save_changes(
 }
 
 /// Checks for saved trust in this exact worktree and its metadata paths, or
-/// in a folder that holds all of them.
+/// in a folder that holds all of them, or in another worktree of the same
+/// repository.
 pub fn trusts_repository(location: &RepositoryLocation, cx: &App) -> bool {
     let store = store(cx);
-    rules::is_trusted(&store.trusted(), location)
+    let trusted = store.trusted();
+    rules::is_trusted(&trusted, location)
         || rules::in_trusted_folder(&store.trusted_folders(), location)
+        || rules::is_trusted_sibling(&trusted, location, registered_worktree(location).as_deref())
+}
+
+/// The folder a linked worktree's metadata says it belongs to: its `gitdir`
+/// file names that folder's `.git` file.
+fn registered_worktree(location: &RepositoryLocation) -> Option<std::path::PathBuf> {
+    let pointer = std::fs::read_to_string(location.git_dir.join("gitdir")).ok()?;
+    std::path::Path::new(pointer.trim())
+        .parent()?
+        .canonicalize()
+        .ok()
 }
 
 /// Queues persistence of the user's trust in every repository inside `folder`.

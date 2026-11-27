@@ -241,12 +241,24 @@ impl Default for Controller {
         }
     }
 }
+/// Prefix of the IDs of history rows that stand for another worktree's
+/// uncommitted changes.
+pub const WORKTREE_ROW: &str = "worktree:";
+
 impl Controller {
     /// Clears the current notice and its retained operation feedback.
     pub fn dismiss_notice(&mut self) {
         self.notice.clear();
         self.error = false;
         self.operation_notice = None;
+    }
+
+    /// Shows the successful result of a Git operation another tab ran on
+    /// this repository before it closed.
+    pub fn adopt_operation_notice(&mut self, message: String) {
+        self.operation_notice = Some((message.clone(), false));
+        self.notice = message;
+        self.error = false;
     }
 
     /// Replaces `prefix` at the start of the last successful operation's
@@ -394,7 +406,16 @@ impl Controller {
         self.patch = None;
         self.diff_context = None;
         self.reopen = None;
-        id.and_then(|id| self.read(Lane::Details, Action::Details { id }))
+        id.and_then(|id| self.read_details(id))
+    }
+
+    /// Reads a commit's details. Another worktree's changes row is not a
+    /// commit Git can describe, so it reads nothing.
+    fn read_details(&mut self, id: String) -> Option<(Lane, Request)> {
+        if id.starts_with(WORKTREE_ROW) {
+            return None;
+        }
+        self.read(Lane::Details, Action::Details { id })
     }
 
     /// Selects a reference's tip when it is in the loaded history.
@@ -1044,8 +1065,7 @@ impl Controller {
                             .any(|c| c.id == id)
                         {
                             if self.details_loaded.as_ref() != Some(&id) {
-                                if let Some(job) = self.read(Lane::Details, Action::Details { id })
-                                {
+                                if let Some(job) = self.read_details(id) {
                                     jobs.push(job);
                                 }
                             }
@@ -1315,7 +1335,7 @@ impl Controller {
                 if let Some(id) = self.selected.clone().filter(|id| {
                     fresh && self.details_loaded.as_ref() != Some(id) && !self.details_loading()
                 }) {
-                    jobs.extend(self.read(Lane::Details, Action::Details { id }));
+                    jobs.extend(self.read_details(id));
                 }
             }
             self.keep_patch_on_refresh = false;
@@ -2731,6 +2751,7 @@ mod tests {
                 .map(|name| LocalBranch {
                     name: name.into(),
                     tip: "tip".into(),
+                    upstream: None,
                 })
                 .to_vec(),
             ..Default::default()
@@ -2774,6 +2795,38 @@ mod tests {
         // Selecting the same commit in the graph is not a branch preview.
         c.select(Some("tip".into()));
         assert!(!c.is_previewing(ReferenceKind::LocalBranch, "feature"));
+    }
+
+    #[test]
+    fn a_selected_worktree_row_reads_no_details_after_a_refresh() {
+        use crate::git::Commit;
+        let row = format!("{WORKTREE_ROW}C:/wt/fix");
+        let snapshot = RepoSnapshot {
+            commits: vec![Commit {
+                id: row.clone(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut c = Controller {
+            snapshot: Some(snapshot.clone()),
+            ..Default::default()
+        };
+        assert!(c.select(Some(row.clone())).is_none());
+        let (_, refresh) = c.refresh().unwrap().dispatch.unwrap();
+        let jobs = c.complete(
+            Lane::Snapshot,
+            reply(
+                &refresh,
+                Ok(Reply::Snapshot {
+                    path: "repo".into(),
+                    snapshot,
+                    graph: Default::default(),
+                }),
+            ),
+        );
+        assert!(jobs.iter().all(|(lane, _)| *lane != Lane::Details));
+        assert_eq!(c.selected.as_deref(), Some(row.as_str()));
     }
 
     #[test]
@@ -3149,6 +3202,7 @@ mod tests {
             branches: vec![LocalBranch {
                 name: "old".into(),
                 tip: "c700".into(),
+                upstream: None,
             }],
             ..Default::default()
         };

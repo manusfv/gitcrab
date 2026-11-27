@@ -1,5 +1,8 @@
+use super::worktrees::{worktree_menu, WorktreeCommand};
 use super::*;
+use crate::workspace::OpenRecent;
 use components::{ContextMenu, MenuTarget};
+use gitcrab_core::presentation::display_path;
 use gitcrab_core::sidebar::{section, section_key, tree_rows, RefFilter, TreeRow};
 use std::rc::Rc;
 
@@ -17,6 +20,22 @@ const ENTRY_INDENT: f32 = 18.;
 
 type EntryClick = Rc<dyn Fn(&mut GitCrab, &ClickEvent, &mut Window, &mut Context<GitCrab>)>;
 type EntryMenu = Rc<dyn Fn(&mut Window, &mut App) -> ContextMenu>;
+
+/// A worktree's uncommitted changes as GitKraken shows them: added,
+/// modified and deleted counts, each only when there are some.
+fn change_counts(changes: gitcrab_core::git::WorktreeChanges) -> Div {
+    let count = |n: usize, sign: &str, role: Role| {
+        (n > 0).then(|| div().text_role(role).child(format!("{sign}{n}")))
+    };
+    div()
+        .flex_none()
+        .flex()
+        .gap_1()
+        .text_size(scaled(TEXT_SIZE_SMALL))
+        .children(count(changes.added, "+", Role::StatusSuccessFg))
+        .children(count(changes.modified, "~", Role::StatusWarningFg))
+        .children(count(changes.deleted, "-", Role::ActionDiscardFg))
+}
 
 /// The reference a sidebar context menu acts on.
 struct MenuReference {
@@ -48,13 +67,21 @@ fn command_item(
 /// Checkout, Merge, Pull and Push for a branch or tag, then Create branch and copy actions.
 fn reference_menu(view: Entity<GitCrab>, reference: MenuReference) -> EntryMenu {
     Rc::new(move |w, cx| {
-        let (commands, head) = view.update(cx, |v, cx| {
-            let head = v
-                .state
-                .snapshot
-                .as_ref()
-                .and_then(|s| s.checked_out_branch().map(str::to_owned));
-            (v.command_context(w, cx), head)
+        let (commands, head, held, in_worktree) = view.update(cx, |v, cx| {
+            let snapshot = v.state.snapshot.as_ref();
+            let head = snapshot.and_then(|s| s.checked_out_branch().map(str::to_owned));
+            let local = reference.kind == ReferenceKind::LocalBranch;
+            let held = snapshot
+                .filter(|_| local)
+                .and_then(|s| gitcrab_core::worktree::holding(s, &reference.label))
+                .map(|w| w.path.display().to_string());
+            let in_worktree = local
+                && snapshot.is_some_and(|s| {
+                    s.worktrees
+                        .iter()
+                        .any(|w| w.branch.as_deref() == Some(reference.label.as_str()))
+                });
+            (v.command_context(w, cx), head, held, in_worktree)
         });
         let target_view = MenuTarget::new(w, view.downgrade());
         let MenuReference {
@@ -78,14 +105,21 @@ fn reference_menu(view: Entity<GitCrab>, reference: MenuReference) -> EntryMenu 
             }
         } else {
             let into = head.as_deref().unwrap_or("HEAD");
-            menu = command_item(
-                menu,
-                &target_view,
-                &commands,
-                Command::Checkout,
-                format!("Checkout {label}"),
-                target.clone(),
-            );
+            menu = match &held {
+                Some(path) => menu.item(
+                    format!("Open worktree from {label}"),
+                    true,
+                    target_view.command(MenuCommand::Worktree(WorktreeCommand::Open(path.clone()))),
+                ),
+                None => command_item(
+                    menu,
+                    &target_view,
+                    &commands,
+                    Command::Checkout,
+                    format!("Checkout {label}"),
+                    target.clone(),
+                ),
+            };
             menu = command_item(
                 menu,
                 &target_view,
@@ -100,13 +134,21 @@ fn reference_menu(view: Entity<GitCrab>, reference: MenuReference) -> EntryMenu 
         } else {
             "branch"
         };
-        menu.separator()
-            .item(
-                "Create branch here…",
+        menu = menu.separator().item(
+            "Create branch here…",
+            true,
+            target_view.command(MenuCommand::CreateBranch(target.clone())),
+        );
+        if *kind != ReferenceKind::Tag && !in_worktree {
+            menu = menu.item(
+                format!("Create worktree from {label}"),
                 true,
-                target_view.command(MenuCommand::CreateBranch(target.clone())),
-            )
-            .separator()
+                target_view.command(MenuCommand::Worktree(WorktreeCommand::Create(Some(
+                    label.clone(),
+                )))),
+            );
+        }
+        menu.separator()
             .copy(format!("Copy {noun} name"), label.clone())
             .copy("Copy commit SHA", tip.clone())
     })
@@ -177,6 +219,18 @@ impl GitCrab {
                     .text_role(Role::TextMuted)
                     .child(count),
             )
+    }
+
+    /// A small icon button at the right of a section header.
+    fn header_button(&self, id: &'static str, glyph: &str, name: &'static str) -> Button {
+        Button::new(id)
+            .ghost()
+            .icon(icon(glyph).size(px(ICON_SIZE)))
+            .size(px(HEADER_HEIGHT - 6.))
+            .px_0()
+            .flex_none()
+            .tab_stop(!self.settings_open)
+            .tooltip(name)
     }
 
     /// One reference section. Open sections share the sidebar's height evenly
@@ -420,10 +474,18 @@ impl GitCrab {
                         previewed,
                         tooltip: name.clone(),
                         on_click: Rc::new(move |v, e, w, cx| {
-                            if e.click_count() == 2 {
-                                v.run_operation(Operation::Checkout, name.clone(), w, cx);
-                            } else {
-                                v.preview_ref(ReferenceKind::LocalBranch, &name, w, cx);
+                            let held = v.state.snapshot.as_ref().and_then(|s| {
+                                gitcrab_core::worktree::holding(s, &name)
+                                    .map(|w| w.path.display().to_string())
+                            });
+                            match (e.click_count(), held) {
+                                (2, Some(path)) => {
+                                    w.dispatch_action(Box::new(OpenRecent(path)), cx)
+                                }
+                                (2, None) => {
+                                    v.run_operation(Operation::Checkout, name.clone(), w, cx)
+                                }
+                                _ => v.preview_ref(ReferenceKind::LocalBranch, &name, w, cx),
                             }
                         }),
                     }
@@ -533,6 +595,144 @@ impl GitCrab {
                     cx,
                 ));
             }
+
+            // Worktrees.
+            // The filter box is one line, so a newline keeps a query from
+            // matching across the branch and folder names.
+            let searchable: Vec<String> = s
+                .worktrees
+                .iter()
+                .map(|w| format!("{}\n{}", w.label(), w.folder()))
+                .collect();
+            let shown = section(
+                &self.state.path,
+                "Worktrees",
+                searchable.iter().map(String::as_str),
+                &self.preferences.collapsed,
+                &filter,
+            );
+            let mut rows = div().flex().flex_col().min_w_0().pb_1();
+            for &index in &shown.visible {
+                let worktree = &s.worktrees[index];
+                let path = worktree.path.display().to_string();
+                let label = worktree.label();
+                let can_open = !worktree.current && !worktree.prunable;
+                let mut tooltip = display_path(&path);
+                if worktree.prunable {
+                    tooltip.push_str(" (missing)");
+                }
+                let row = ListRow::new(SharedString::from(format!("worktree-{path}")))
+                    .height(ROW_HEIGHT)
+                    .inset(INSET)
+                    .indent(ENTRY_INDENT)
+                    .tab_stop(!self.settings_open)
+                    .foreground(if worktree.current {
+                        Role::TextDefault
+                    } else {
+                        Role::TextMuted
+                    })
+                    .leading(
+                        icon("folder-git-2")
+                            .size(px(ICON_SIZE))
+                            .text_role(Role::TextMuted),
+                    )
+                    .content(
+                        div()
+                            .flex()
+                            .gap_1()
+                            .min_w_0()
+                            .child(div().flex_shrink_0().max_w_full().truncate().child(label))
+                            .when_some(
+                                if worktree.prunable {
+                                    Some("missing".to_owned())
+                                } else {
+                                    worktree.detail()
+                                },
+                                |content, folder| {
+                                    content.child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .font_weight(FontWeight::NORMAL)
+                                            .text_role(Role::TextMuted)
+                                            .child(folder),
+                                    )
+                                },
+                            ),
+                    )
+                    .when_some(
+                        worktree.changes.filter(|c| !c.is_empty()),
+                        |row, changes| row.trailing(change_counts(changes)),
+                    )
+                    .when(worktree.locked, |row| {
+                        row.trailing(icon("lock").size(px(ICON_SIZE)).text_role(Role::TextMuted))
+                    })
+                    .when(worktree.current, |row| {
+                        row.trailing(
+                            icon("check")
+                                .size(px(ICON_SIZE))
+                                .text_role(Role::StatusSuccessFg),
+                        )
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .background(Role::StatusSuccessBg)
+                    })
+                    .tooltip(tooltip)
+                    .context_menu({
+                        let view = view.downgrade();
+                        let (worktree, snapshot) = (worktree.clone(), s.clone());
+                        move |w, _| worktree_menu(view.clone(), &worktree, &snapshot, w)
+                    });
+                rows = rows.child(if can_open {
+                    row.on_click(move |e: &ClickEvent, w, cx| {
+                        if e.click_count() == 2 {
+                            w.dispatch_action(Box::new(OpenRecent(path.clone())), cx);
+                        }
+                    })
+                } else {
+                    row
+                });
+            }
+            let key = shown.key;
+            let header = self
+                .sidebar_header(
+                    "ref-heading-Worktrees",
+                    "folder-git-2",
+                    "Worktrees",
+                    shown.count,
+                    shown.collapsed,
+                )
+                .on_click(cx.listener(move |v, _, w, cx| Self::toggle_collapsed(v, &key, w, cx)))
+                .end(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_0p5()
+                        .pr(scaled(INSET / 2.))
+                        .child(
+                            self.header_button("worktree-add", "plus", "Add a new worktree")
+                                .on_click(cx.listener(|v, _, w, cx| {
+                                    cx.stop_propagation();
+                                    v.create_worktree(None, w, cx)
+                                })),
+                        )
+                        .child(
+                            self.header_button("worktree-refresh", "refresh", "Refresh WIPs")
+                                .set_disabled(s.worktrees.len() <= 1)
+                                .on_click(cx.listener(|v, _, w, cx| {
+                                    cx.stop_propagation();
+                                    v.refresh(&Refresh, w, cx)
+                                })),
+                        ),
+                );
+            nav = nav.child(self.sidebar_section(
+                "sidebar-worktrees",
+                header,
+                shown.collapsed,
+                rows,
+                window,
+                cx,
+            ));
 
             // Stashes.
             let key = section_key(&self.state.path, "Stashes");
