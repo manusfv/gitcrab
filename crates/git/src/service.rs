@@ -840,6 +840,7 @@ impl Session {
                 | Action::RunOperation { .. }
                 | Action::Worktree(_)
                 | Action::DropStash { .. }
+                | Action::RenameStash { .. }
         );
         let keeps_patch = self
             .patch
@@ -1198,6 +1199,20 @@ impl Session {
                 g.drop_stash_object(&id)?;
                 Reply::Done {
                     message: format!("Deleted stash \"{message}\""),
+                    committed_draft: None,
+                }
+            }
+            Action::RenameStash { id, subject } => {
+                if subject.trim().is_empty() || subject.contains(['\n', '\r', '\0']) {
+                    return Err("Type a one-line stash message.".into());
+                }
+                g.rename_stash(&id, &subject)?;
+                let renamed = gitcrab_core::git::StashEntry {
+                    message: subject,
+                    ..Default::default()
+                };
+                Reply::Done {
+                    message: format!("Renamed stash to \"{}\"", renamed.name()),
                     committed_draft: None,
                 }
             }
@@ -2304,6 +2319,50 @@ mod tests {
             )
             .unwrap();
         assert!(ids(git).is_empty());
+    }
+
+    #[test]
+    fn editing_a_stash_message_keeps_its_commit_and_moves_it_to_the_top() {
+        let fixture = Fixture::new();
+        let git = &fixture.git;
+        fixture.write("a.txt", "base\n");
+        git.stage("a.txt").unwrap();
+        git.commit("base").unwrap();
+        let mut session = Session {
+            repo: Some(git.clone()),
+            epoch: 1,
+            ..Default::default()
+        };
+        fixture.write("a.txt", "older\n");
+        run_local(&mut session, Operation::Stash, "older").unwrap();
+        fixture.write("a.txt", "newer\n");
+        run_local(&mut session, Operation::Stash, "newer").unwrap();
+        fixture.write("a.txt", "working\n");
+        let older = git.stash_entries().unwrap()[1].0.clone();
+
+        let rename = |session: &mut Session, subject: &str| {
+            session.run(
+                1,
+                2,
+                Action::RenameStash {
+                    id: older.clone(),
+                    subject: subject.into(),
+                },
+            )
+        };
+        let Reply::Done { message, .. } = rename(&mut session, "On main: renamed").unwrap() else {
+            panic!("expected a result");
+        };
+        assert_eq!(message, "Renamed stash to \"renamed\"");
+        let entries = git.stash_entries().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], (older.clone(), "On main: renamed".to_owned()));
+        assert_eq!(entries[1].1, "On main: newer");
+        assert_eq!(
+            std::fs::read_to_string(fixture.root().join("repo/a.txt")).unwrap(),
+            "working\n"
+        );
+        assert!(rename(&mut session, "two\nlines").is_err());
     }
 
     #[test]

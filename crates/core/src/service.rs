@@ -108,6 +108,9 @@ pub enum Action {
     /// Removes the stash entry holding commit `id` from the stash list.
     /// `message` names it in the result.
     DropStash { id: String, message: String },
+    /// Gives the stash entry holding commit `id` the new reflog subject
+    /// `subject`, such as `On main: new message`.
+    RenameStash { id: String, subject: String },
 }
 
 /// Worker read category used for cancellation and replacement.
@@ -144,6 +147,7 @@ impl Action {
             Self::Fetch => "Fetch",
             Self::Worktree(change) => change.label(),
             Self::DropStash { .. } => "Delete stash",
+            Self::RenameStash { .. } => "Edit stash message",
             Self::Open { .. } => "Open repository",
             Self::Refresh { .. } | Self::RefreshWorktree { .. } => "Refresh",
             Self::LoadMore { .. } => "Load more history",
@@ -163,6 +167,7 @@ impl Action {
             Self::Fetch => Some("all remotes".into()),
             Self::Worktree(change) => change.path().map(crate::presentation::display_location),
             Self::DropStash { message, .. } => Some(message.clone()),
+            Self::RenameStash { subject, .. } => Some(subject.clone()),
             Self::RunOperation { target, .. } if !target.trim().is_empty() => Some(target.clone()),
             Self::Operation { reviewed } if reviewed.network.is_some() => reviewed.refs(),
             Self::Operation {

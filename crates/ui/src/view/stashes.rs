@@ -10,6 +10,7 @@ pub(super) enum StashCommand {
     Apply(String),
     Pop(String),
     Delete(StashEntry),
+    EditMessage(StashEntry),
 }
 
 /// Builds the menu GitKraken shows for a stash.
@@ -32,6 +33,12 @@ pub(super) fn stash_menu(
             true,
             run(StashCommand::Delete(stash.clone())),
         )
+        .separator()
+        .item(
+            "Edit stash message",
+            true,
+            run(StashCommand::EditMessage(stash.clone())),
+        )
 }
 
 impl GitCrab {
@@ -45,7 +52,84 @@ impl GitCrab {
             StashCommand::Apply(id) => self.run_operation(Operation::ApplyStash, id, window, cx),
             StashCommand::Pop(id) => self.run_operation(Operation::PopStash, id, window, cx),
             StashCommand::Delete(stash) => self.confirm_drop_stash(stash, window, cx),
+            StashCommand::EditMessage(stash) => self.prompt_stash_message(stash, window, cx),
         }
+    }
+
+    /// Asks for a stash's new message, keeping the branch Git recorded.
+    fn prompt_stash_message(
+        &mut self,
+        stash: StashEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (own, branch) = stash.parts();
+        let branch = branch.map(str::to_owned);
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Stash title")
+                .default_value(own.to_owned())
+        });
+        let first = input.clone();
+        let weak = cx.weak_entity();
+        let scroll = ScrollHandle::new();
+        window.open_alert(cx, move |dialog, _, cx| {
+            let save = {
+                let weak = weak.clone();
+                let input = input.clone();
+                let id = stash.id.clone();
+                let branch = branch.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    let message = input.read(cx).value().trim().to_owned();
+                    if message.is_empty() {
+                        return false;
+                    }
+                    let subject = match &branch {
+                        Some(branch) => format!("On {branch}: {message}"),
+                        None => message,
+                    };
+                    let action = Action::RenameStash {
+                        id: id.clone(),
+                        subject,
+                    };
+                    let _ = weak.update(cx, |v, cx| v.mutate(action, window, cx));
+                    true
+                }
+            };
+            let click = save.clone();
+            dialog
+                .frame(
+                    ModalHeader::new("Edit stash message"),
+                    ModalWidth::Small,
+                    cx,
+                )
+                .body(
+                    &scroll,
+                    modal_body().child(modal::field("Message", Input::new(&input))),
+                )
+                .on_ok(move |_, window, cx| save(window, cx))
+                .footer(
+                    ModalFooter::new()
+                        .action(components::cancel_button(cx).on_click(|_, w, cx| {
+                            w.close_dialog(cx);
+                        }))
+                        .action(
+                            components::style(
+                                Button::new("stash-rename").label("Save").tab_stop(true),
+                                ButtonKind::Primary,
+                                ControlSize::Regular,
+                                cx,
+                            )
+                            .on_click(move |_, w, cx| {
+                                if click(w, cx) {
+                                    w.close_dialog(cx);
+                                }
+                            }),
+                        ),
+                )
+        });
+        window
+            .on_next_frame(move |window, cx| first.update(cx, |input, cx| input.focus(window, cx)));
     }
 
     /// Asks before deleting a stash, with GitKraken's wording.
