@@ -380,6 +380,18 @@ impl GitCrab {
             let x = match target.as_str() {
                 "sidebar" => nav / 2.,
                 "inspector" => width - inspector / 2.,
+                "graph" => {
+                    let mut left = nav;
+                    let mut graph = 0.;
+                    for entry in self.history_layout.visible() {
+                        if entry.column == gitcrab_core::history_columns::HistoryColumn::Graph {
+                            graph = entry.width;
+                            break;
+                        }
+                        left += entry.width;
+                    }
+                    left + graph / 2.
+                }
                 _ => nav + (width - nav - inspector) / 2.,
             };
             let meta = serde_json::json!({"target":target,"loaded":self.state.graph.rows.len(),"diff_rows":self.state.patch.as_ref().map(|p|p.content.lines.len()),"scale":window.scale_factor()});
@@ -423,12 +435,17 @@ fn bench_frame(
             let _ = std::fs::write(path, serde_json::to_vec_pretty(&data).unwrap());
             return;
         }
-        let step = if tick < BENCH_TICKS / 2 { -40. } else { 40. };
+        let step = px(if tick < BENCH_TICKS / 2 { -40. } else { 40. });
+        let delta = if std::env::var("GITCRAB_BENCH_AXIS").as_deref() == Ok("x") {
+            point(step, px(0.))
+        } else {
+            point(px(0.), step)
+        };
         bench.borrow_mut().started = Some(std::time::Instant::now());
         window.dispatch_event(
             PlatformInput::Scroll(ScrollEvent {
                 position,
-                delta: ScrollDelta::Pixels(point(px(0.), px(step))),
+                delta: ScrollDelta::Pixels(delta),
                 ..Default::default()
             }),
             cx,
