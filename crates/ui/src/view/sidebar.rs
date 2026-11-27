@@ -776,7 +776,9 @@ impl GitCrab {
                                     .truncate()
                                     .font_weight(FontWeight::NORMAL)
                                     .text_size(scaled(TEXT_SIZE_SMALL))
-                                    .text_role(Role::TextDisabled)
+                                    .text_role(Role::TextMuted)
+                                    // The dark theme's disabled grey equals muted.
+                                    .opacity(0.7)
                                     .child(branch.to_owned()),
                             )
                         });
