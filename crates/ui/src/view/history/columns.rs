@@ -122,15 +122,19 @@ impl GitCrab {
             return;
         }
         let delta = event.delta.pixel_delta(window.line_height());
-        let dx = if delta.x != px(0.) {
-            delta.x
-        } else if event.modifiers.shift {
-            delta.y
+        let (dx, dy) = if delta.x == px(0.) && event.modifiers.shift {
+            (f32::from(delta.y), 0.)
         } else {
-            return;
+            (f32::from(delta.x), f32::from(delta.y))
         };
-        if self.graph_scroll.scroll_by(-f32::from(dx)) {
-            cx.notify();
+        if !self
+            .graph_rails
+            .is_horizontal(dx, dy, std::time::Instant::now())
+        {
+            return;
+        }
+        if self.graph_scroll.scroll_by(-dx) {
+            self.notify_region(Region::Center, cx);
         }
         cx.stop_propagation();
     }

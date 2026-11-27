@@ -587,6 +587,7 @@ pub struct GitCrab {
     /// Width of the history table, measured when it paints.
     history_viewport: std::rc::Rc<std::cell::Cell<f32>>,
     graph_scroll: history::GraphScroll,
+    graph_rails: history::ScrollRails,
     history_column_drag:
         Option<components::rail::RailDrag<gitcrab_core::history_columns::HistoryColumn>>,
     history_column_drag_start: Option<(gitcrab_core::history_columns::HistoryColumn, Pixels)>,
@@ -822,6 +823,7 @@ impl GitCrab {
             history_scroll: UniformListScrollHandle::new(),
             history_viewport: Default::default(),
             graph_scroll: history::GraphScroll::default(),
+            graph_rails: history::ScrollRails::default(),
             history_column_drag: None,
             history_column_drag_start: None,
             history_column_resize: None,

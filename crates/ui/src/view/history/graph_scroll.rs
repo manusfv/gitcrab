@@ -7,6 +7,40 @@ use gpui::component::scroll::ScrollbarHandle;
 use gpui::{point, px, size, Bounds, Pixels, Point, Size};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+/// A pause this long between scroll events starts a new gesture.
+const GESTURE_GAP: Duration = Duration::from_millis(200);
+
+/// Locks a scroll gesture to the axis it has mostly moved along, so a
+/// vertical swipe doesn't drift sideways.
+///
+/// Chromium (and so GitKraken) gets this from the Windows touchpad's rails.
+/// gpui gets plain wheel messages, each moving along one axis only, so the
+/// lock comes from the distance travelled on each axis since the gesture began.
+#[derive(Default)]
+pub(crate) struct ScrollRails {
+    last: Option<Instant>,
+    x: f32,
+    y: f32,
+}
+
+impl ScrollRails {
+    /// Records a scroll event and returns whether its gesture is horizontal.
+    /// Events across the gesture's axis should be dropped.
+    pub(crate) fn is_horizontal(&mut self, dx: f32, dy: f32, now: Instant) -> bool {
+        if self
+            .last
+            .is_none_or(|last| now.duration_since(last) >= GESTURE_GAP)
+        {
+            (self.x, self.y) = (0., 0.);
+        }
+        self.last = Some(now);
+        self.x += dx.abs();
+        self.y += dy.abs();
+        self.x > self.y
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Extent {
@@ -118,6 +152,20 @@ mod tests {
         assert_eq!(scroll.scrolled(), 30.);
         scroll.set_extent(100., 80.);
         assert_eq!((scroll.scrolled(), scroll.max()), (0., 0.));
+    }
+
+    #[test]
+    fn rails_hold_a_gesture_to_its_main_axis() {
+        let mut rails = ScrollRails::default();
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        assert!(!rails.is_horizontal(0., 30., at(0)));
+        assert!(!rails.is_horizontal(4., 0., at(10)));
+        assert!(!rails.is_horizontal(0., 30., at(20)));
+        assert!(!rails.is_horizontal(20., 0., at(30)));
+        // After a pause, a sideways swipe is its own gesture.
+        assert!(rails.is_horizontal(20., 0., at(300)));
+        assert!(rails.is_horizontal(0., 5., at(310)));
     }
 
     #[test]

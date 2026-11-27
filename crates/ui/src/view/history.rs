@@ -2,7 +2,7 @@ use super::*;
 use gitcrab_core::history_columns::HistoryColumn;
 mod columns;
 mod graph_scroll;
-pub(super) use graph_scroll::GraphScroll;
+pub(super) use graph_scroll::{GraphScroll, ScrollRails};
 
 const HISTORY_CELL_INSET: Rems = Rems(0.5);
 const HISTORY_HEADER_HEIGHT: f32 = 28.;
