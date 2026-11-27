@@ -735,7 +735,7 @@ impl GitCrab {
                 cx,
             ));
 
-            // Stashes, shown like GitKraken only when there are some.
+            // Stashes. GitKraken hides the section when there are none.
             if !s.stashes.is_empty() {
                 let shown = section(
                     &self.state.path,

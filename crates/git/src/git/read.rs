@@ -258,7 +258,6 @@ impl Git {
             return Err("References changed during refresh. Refresh again.".into());
         }
         let conflict_markers = self.conflict_marker_paths(&status);
-        let stash_count = stash_list.len();
         let (stash_rows, stash_entries): (Vec<_>, Vec<_>) = stash_list.into_iter().unzip();
         let upstream_context = remote.context(&reviewed);
         let next = (!reuse).then(|| {
@@ -292,7 +291,6 @@ impl Git {
                 worktree_id: self.path.clone(),
                 commits: history.rows.clone(),
                 branches,
-                stash_count,
                 stashes: stash_entries,
                 worktrees,
                 remote_refs,

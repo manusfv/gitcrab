@@ -1506,7 +1506,7 @@ fn stashes_show_as_one_row_on_their_base_commit() {
         .commits
         .iter()
         .all(|c| c.refs.iter().all(|r| r != "stash")));
-    assert_eq!(snapshot.stash_count, 1);
+    assert_eq!(snapshot.stashes.len(), 1);
 }
 
 #[test]

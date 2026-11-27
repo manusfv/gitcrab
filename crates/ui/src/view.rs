@@ -1774,7 +1774,7 @@ impl GitCrab {
             modal: self.settings_open || (window.has_active_dialog(cx) && !self.references_open),
             reviewable: snapshot.is_some_and(|s| s.reviewed.is_some()),
             unborn: snapshot.is_some_and(|s| s.head_id.is_empty()),
-            stash_count: snapshot.map_or(0, |s| s.stash_count),
+            stash_count: snapshot.map_or(0, |s| s.stashes.len()),
             tracked_changes: snapshot
                 .is_some_and(|s| s.status.iter().any(|f| !matches!(f.index, '?' | '!'))),
             undo: snapshot.map_or(Default::default(), |s| {

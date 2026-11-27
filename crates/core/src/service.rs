@@ -106,6 +106,7 @@ pub enum Action {
     /// Adds, removes, locks, unlocks or prunes worktrees.
     Worktree(crate::worktree::WorktreeChange),
     /// Removes the stash entry holding commit `id` from the stash list.
+    /// `message` names it in the result.
     DropStash { id: String, message: String },
 }
 
