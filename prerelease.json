@@ -1,26 +1,26 @@
 {
-  "version": "0.1.0-alpha.6",
-  "notes": "### macOS signing\n- macOS macos-arm64: unsigned (not notarized)\n- macOS macos-x86_64: unsigned (not notarized)\n\nVerify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.\n\n\n## What's Changed\n* Trust every repository in a folder, and fix dialog Cancel by @manusfv in https://github.com/manusfv/gitcrab/pull/27\n* feat(ui): restyle the diff view after GitKraken's by @manusfv in https://github.com/manusfv/gitcrab/pull/28\n* perf(ui): repaint only the pane that scrolls or hovers by @manusfv in https://github.com/manusfv/gitcrab/pull/29\n* ci: build macOS on macOS 26 runners by @manusfv in https://github.com/manusfv/gitcrab/pull/30\n* feat(ui): list worktrees in the sidebar by @manusfv in https://github.com/manusfv/gitcrab/pull/31\n* feat(ui): list every stash in the sidebar by @manusfv in https://github.com/manusfv/gitcrab/pull/33\n* chore: bump version to 0.1.0-alpha.6 by @manusfv in https://github.com/manusfv/gitcrab/pull/32\n\n\n**Full Changelog**: https://github.com/manusfv/gitcrab/compare/v0.1.0-alpha.5...v0.1.0-alpha.6\n",
-  "pub_date": "2026-11-27T05:26:15Z",
+  "version": "0.1.0-alpha.7",
+  "notes": "### macOS signing\n- macOS macos-arm64: unsigned (not notarized)\n- macOS macos-x86_64: unsigned (not notarized)\n\nVerify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.\n\n\n## What's Changed\n* fix(ui): lock trackpad swipes on the graph to one axis by @manusfv in https://github.com/manusfv/gitcrab/pull/35\n* perf(ui): repaint only the centre pane when the graph scrolls sideways by @manusfv in https://github.com/manusfv/gitcrab/pull/36\n* test(git): retry fixture cleanup while killed processes release it on Windows by @manusfv in https://github.com/manusfv/gitcrab/pull/38\n* fix(ui): let trackpad scrolling pass through hovered ref labels by @manusfv in https://github.com/manusfv/gitcrab/pull/37\n* chore: bump version to 0.1.0-alpha.7 by @manusfv in https://github.com/manusfv/gitcrab/pull/39\n\n\n**Full Changelog**: https://github.com/manusfv/gitcrab/compare/v0.1.0-alpha.6...v0.1.0-alpha.7\n",
+  "pub_date": "2026-11-28T02:01:22Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.6/gitcrab-windows-x86_64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDJzVW9oSWJ2ektZWGVhNCtRV2Y4WGNvbHN3RUs0Q3ZoTjFxQS9hZ3FYcnFTMXlsOUoxZzF4d3FWVTJ0SjBQTEg2ZnRFaGlzOWt0c21SekQyclp6b2c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzU2NzcyCWZpbGU6Z2l0Y3JhYl8wLjEuMC1hbHBoYS42X3g2NC1zZXR1cC5leGUKMXN0WGJIcXBWMW8vRlBUcStYemR6YThibTVyRnJxVzNWV1ZmNldBTzlKODR6L1JWN3k0eWpYYXd3SmNBRTdZR0c3ODlra29nLzFlNlNnY0EwekNhRFE9PQo=",
+      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.7/gitcrab-windows-x86_64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDAyZ0h4WHZseHRMZ0h1bm92blhTYVhQaDkxa0xWUGp5YUkzNmFuY0tLeXVlRE1iMzNXUWMxOTNDSWltYktPNEx1YTFvTnVNMU1JdGZsNXBjTGsyNlFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1ODMxMDM3CWZpbGU6Z2l0Y3JhYl8wLjEuMC1hbHBoYS43X3g2NC1zZXR1cC5leGUKaEJWcGg5eTE1UGNRK1BWcWpWbmhGdmd1TU0yaURlM2RiTFhuL3hYMXFoWDVwdm5DWVBGSUNGYmJtc0F5SkhUTm00enQzNU9Da0h6MTdKOHl0MFUyRGc9PQo=",
       "format": "nsis"
     },
     "linux-x86_64": {
-      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.6/gitcrab-linux-x86_64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDVYemZZZkU0Wk1sNW5YaXlzV21ONzBBTkhXNHRlTENCdjU2VmF3dlZ2N3R2SmlhbDBCM1dUWWVoQ0VOWTBSS2tLOXlQS29BNTJoWGtSR0VKa1RuOWdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzU2NDAyCWZpbGU6Z2l0Y3JhYl8wLjEuMC1hbHBoYS42X3g4Nl82NC5BcHBJbWFnZQoyeE0yTWFSaXBwUUp4N1FvaytZN3FsaHBEdTNVMWVmbEg0b1JWUWZWblYrVU5xcXRzcStHUGFjZUVrVXVmMWpZcnlJakNMZjhlS1dzUk94VU96a29DUT09Cg==",
+      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.7/gitcrab-linux-x86_64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDEzZUpGZEVKZFBON29ucWY4ZkE2VXBMN2dUdml3WEEwdXROWTVrS2ttUHdxTU5FY2RmKy9EVHk0ZlVWY3M0aG9VMUJmR3RoN1hVclUvUTVmNUlXdGc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1ODMwNjI2CWZpbGU6Z2l0Y3JhYl8wLjEuMC1hbHBoYS43X3g4Nl82NC5BcHBJbWFnZQpHaHIwa0FOekhSZ0ZUeXlHVnZxaXEwd3E0anIxbkxZZDdDdFN0RnRkODBrWTNSSGdXWnNHYXpNRVVUYzN4NVlnRjNxbHVuTkIzTEtNQnBCSWJFYU1CUT09Cg==",
       "format": "appimage"
     },
     "macos-aarch64": {
-      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.6/gitcrab-macos-arm64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDJnNDBqRHVDVC80ZWJ6ODc1N1F0WG1IVGFMSXVPeGRmSXBKN0Z2VlBtSXlpKzBwOHlYUFk1VzlGSW9BZ296N3FPUjlmdFVsZEEwekZHRWpPUlhRWVFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzU2NDM2CWZpbGU6R2l0Q3JhYi5hcHAudGFyLmd6CnA2UW92ODJvdTJxRG5DOVBtWHlhMjlmTHhxc2lXN3JWL2RJT3AvSVNRUnBYdkpVeXVrWGtZN1dRc3ovV2ZHMWlhN09oNC9EWnNaeWtrVlFWVEMxaUR3PT0K",
+      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.7/gitcrab-macos-arm64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDNTdUFoeFJHcjlVUzVxMXFwVmJhVkgvSlllWjRpUkJQTmQyUUZyaVJ6NXhiWVZDZThhaG55aDRzSTZWZWNjWklibEN1L2pDTS8xc0NaK2M5WjJHVFF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1ODMwODA1CWZpbGU6R2l0Q3JhYi5hcHAudGFyLmd6CmtaYjJIVDV0YzhORDBYV3pXcU9KbDZVb0tZd3FnbHRCTDVmbWY1Qm1KYW1MUTdOZzMrcVR5SktieEcyK080eUdHcGM1SXNsd3dkTnpLb1Fub1VLTURnPT0K",
       "format": "app"
     },
     "macos-x86_64": {
-      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.6/gitcrab-macos-x86_64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWHp3dzVJRldOUkxVR1V5Z0lHZEEvUDJ4MHk5eEZpSnVQbXZCeHBCUnhYc1dQaGlOZ0h2YUloaDB4ZFdnQmlRL0tIWndBRERySmhDNU5LN2pFZi81QWc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzU3MDQ1CWZpbGU6R2l0Q3JhYi5hcHAudGFyLmd6Clp2TTA3VElhS25hSjMxSHFZUmZRY055TXBRc3JZNDVhYTVETS9yYVpJSmZIcnVKci9uWkVDU0Ezam4xYmMzS09hUmkyN2xkUTZ0aXBPOXZaSDRyMkJnPT0K",
+      "url": "https://github.com/manusfv/gitcrab/releases/download/v0.1.0-alpha.7/gitcrab-macos-x86_64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIGNhcmdvLXBhY2thZ2VyIHNlY3JldCBrZXkKUlVRTzBIeVRQTWFWWDlQT3VHRTQzdGVqN3g2S3FNNmZWOVo4WFZBcDNoYnpZWDM2RjBJeG1HVmc4OHBZL1lYTDRqK2NiTnRyUjZCdDJyOUVuZXJQWVdTVWxaVjI4RmRBaVFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1ODMxMTUzCWZpbGU6R2l0Q3JhYi5hcHAudGFyLmd6Cmdjb05pa2JOSDNKVVhMRSt1T0Z3REtxUnYyRDVlUVN4eTRUNXZQaGhjM21PZUtmbUVROVBNaytQY2dRdUFxb0xxalY2RWIxNXhwbU93RGhiS0NSa0FnPT0K",
       "format": "app"
     }
   }
