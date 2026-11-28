@@ -81,7 +81,7 @@ The `.zip` holds a standalone `gitcrab.exe` that runs from any folder.
 
 Open the `.dmg` and drag **GitCrab** onto **Applications** (or any other folder; the app is self-contained).
 
-Each release's notes say whether its macOS builds are signed and notarized. Until they are, macOS blocks the first launch with "GitCrab can't be opened" or "Apple could not verify…". Open it once with **System Settings → Privacy & Security → Open Anyway** (on macOS 14 and older you can also Control-click the app and choose **Open**), or remove the download quarantine after [checking the download](#verify-a-download):
+The macOS builds are not signed yet, so macOS blocks the first launch with "GitCrab can't be opened" or "Apple could not verify…". Open it once with **System Settings → Privacy & Security → Open Anyway** (on macOS 14 and older you can also Control-click the app and choose **Open**), or remove the download quarantine after [checking the download](#verify-a-download):
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/GitCrab.app
