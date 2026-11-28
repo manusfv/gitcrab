@@ -5,123 +5,161 @@
   </picture>
 </h1>
 
-<p align="center"><strong>A native Git desktop client for exploring history, reviewing diffs, and staging hunks.</strong></p>
-
 <p align="center">
-  <a href="#install">Install</a> ·
-  <a href="#what-you-can-do">What you can do</a> ·
-  <a href="#contributing">Contributing</a>
+  <strong>A fast, native Git client for exploring history, reviewing diffs and staging exactly what you mean to commit.</strong>
 </p>
 
-![GitCrab showing the commit graph and the feature/diff branch preview while main stays checked out](docs/images/gitcrab-workspace.jpg)
+<p align="center">
+  <a href="https://github.com/manusfv/gitcrab/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/manusfv/gitcrab?include_prereleases&style=flat-square&color=668BFF&label=release"></a>
+  <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-668BFF?style=flat-square">
+  <img alt="Written in Rust" src="https://img.shields.io/badge/rust-1.99.1-668BFF?style=flat-square&logo=rust&logoColor=white">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/manusfv/gitcrab?style=flat-square&color=668BFF"></a>
+</p>
+
+<p align="center">
+  <a href="#install"><b>Install</b></a> ·
+  <a href="#features"><b>Features</b></a> ·
+  <a href="#build-from-source"><b>Build from source</b></a> ·
+  <a href="#contributing"><b>Contributing</b></a>
+</p>
+
+<p align="center">
+  <img alt="GitCrab showing GitCrab's own history: branch sidebar, a lane graph with linked branch and tag labels, and the details of the selected commit" src="docs/images/gitcrab-history.png" width="100%">
+</p>
+
+GitCrab is a desktop Git client written in Rust and drawn on the GPU with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui). It runs your installed Git, so your config, hooks, credential helper and SSH agent work as they do in the terminal. It starts fast, stays responsive on large histories, and checks every write against the repository before running it.
+
+> [!NOTE]
+> GitCrab is in **alpha**. Releases are prereleases, and the app updates itself in place when a new one is out.
+
+## Features
+
+- **History you can read.** Each branch gets its own coloured lane in the graph, and branch and tag labels link to their commits. Older commits load as you scroll. Search the loaded history, and keep several repositories open in tabs.
+- **Every ref in one sidebar.** Local branches grouped by folder, remotes, tags, worktrees and stashes. Right-click any of them for its actions: create, lock or remove a worktree, apply, pop, rename or drop a stash.
+- **Unified or side-by-side diffs.** Jump between hunks, show whitespace, find text inside the diff, and copy lines or a patch.
+- **Stage by file, hunk or line.** Select the rows you want and stage, unstage or discard only those, then write a summary and description and commit.
+- **One-click operations.** Checkout, branch, merge, cherry-pick, revert, stash, fetch, pull (fast-forward, merge or rebase) and push. GitCrab never force-pushes, and Undo reverses commits, checkouts, new branches, stashes, merges, cherry-picks and reverts.
+- **Recover from a stop.** Continue, skip or abort a merge, rebase, cherry-pick or revert that stopped on a conflict.
+- **Start anywhere.** Open, clone or create a repository from the start screen, and reopen recent ones.
+
+<p align="center">
+  <img alt="Close-ups: the sidebar with local branches and remotes, graph lanes with branch labels, and the commit details panel" src="docs/images/gitcrab-closeups.png" width="100%">
+  <br>
+  <sub>Branches grouped by folder · lanes with linked labels · full commit details</sub>
+</p>
+
+<p align="center">
+  <img alt="Side-by-side diff of an unstaged file, with removed lines on the left, added lines on the right, and Stage hunk and Discard hunk on each hunk" src="docs/images/gitcrab-split-diff.png" width="100%">
+  <br>
+  <sub>Split diff of working changes, with Stage hunk and Discard hunk on every hunk</sub>
+</p>
 
 ## Install
 
-Download GitCrab from [GitHub Releases](https://github.com/manusfv/gitcrab/releases), or [build it from source](#build-from-source). Every platform also needs [Git 2.43 or newer](https://git-scm.com/downloads) on PATH.
+Download the file for your system from the [latest release](https://github.com/manusfv/gitcrab/releases). Every platform also needs [Git 2.43 or newer](https://git-scm.com/downloads) on `PATH`.
 
-| System | Installer (recommended) | Standalone binary |
+| System | Installer (recommended) | Standalone |
 | --- | --- | --- |
-| macOS, Apple Silicon | `gitcrab-macos-arm64.dmg` | — |
-| macOS, Intel | `gitcrab-macos-x86_64.dmg` | — |
-| Windows 10/11, x64 | `gitcrab-windows-x86_64-setup.exe` | `gitcrab-windows-x86_64.zip` |
-| Linux, x64 | `gitcrab-linux-x86_64.AppImage` | `gitcrab-linux-x86_64.tar.gz` |
+| **Windows** 10/11, x64 | `gitcrab-windows-x86_64-setup.exe` | `gitcrab-windows-x86_64.zip` |
+| **macOS**, Apple Silicon | `gitcrab-macos-arm64.dmg` | — |
+| **macOS**, Intel | `gitcrab-macos-x86_64.dmg` | — |
+| **Linux**, x64 | `gitcrab-linux-x86_64.AppImage` | `gitcrab-linux-x86_64.tar.gz` |
 
-Not sure which Mac you have? Apple menu → **About This Mac**: "Apple M…" is Apple Silicon, "Intel" is Intel. Windows and Linux on ARM are not built yet.
+Not sure which Mac you have? Apple menu → **About This Mac**: "Apple M…" is Apple Silicon. Windows and Linux on ARM are not built yet.
 
-- **macOS:** open the `.dmg` and drag **GitCrab** onto **Applications** (or any other folder; the app is self-contained).
-- **Windows:** run the setup `.exe`. It installs for the current user without an administrator prompt and adds a Start menu entry. The installer and binary are not code-signed, so SmartScreen may warn: choose **More info → Run anyway**.
-- **Linux:** `chmod +x gitcrab-linux-x86_64.AppImage`, then run it. It needs a working Vulkan driver.
-- **Standalone binaries (Windows and Linux):** extract the archive and run `gitcrab` (`gitcrab.exe` on Windows) from anywhere; nothing else is installed. On macOS, `GitCrab.app` from the `.dmg` already works from any folder. The Windows binary needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (`VCRUNTIME140.dll`), which most systems already have. The Linux binary is built on Ubuntu 24.04, needs glibc 2.39 or newer and the system's X11/Wayland, xkbcommon, fontconfig, freetype and Vulkan libraries; if it doesn't start, `ldd gitcrab | grep "not found"` lists what's missing.
-- **Checksums:** each release has a `SHA256SUMS` file. Check a download with `sha256sum -c SHA256SUMS --ignore-missing` (`shasum -a 256 -c SHA256SUMS --ignore-missing` on macOS). On Windows, compare `Get-FileHash <file>` with the matching line. GitHub also shows each file's SHA-256 next to it on the release page.
+<details>
+<summary><b>Windows</b></summary>
 
-**macOS Gatekeeper.** Each release's notes say whether its macOS builds are signed with an Apple Developer ID and notarized. Until they are, macOS blocks the first launch with "GitCrab can't be opened" or "Apple could not verify…". Open it anyway once with **System Settings → Privacy & Security → Open Anyway** (on macOS 14 and older you can also Control-click the app and choose **Open**), or remove the download quarantine:
+Run the setup `.exe`. It installs for the current user without an administrator prompt and adds a Start menu entry. The installer is not code-signed yet, so SmartScreen may warn: choose **More info → Run anyway**.
+
+The `.zip` holds a standalone `gitcrab.exe` that runs from any folder.
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+Open the `.dmg` and drag **GitCrab** onto **Applications** (or any other folder; the app is self-contained).
+
+The macOS builds are not signed yet, so macOS blocks the first launch with "GitCrab can't be opened" or "Apple could not verify…". Open it once with **System Settings → Privacy & Security → Open Anyway** (on macOS 14 and older you can also Control-click the app and choose **Open**), or remove the download quarantine after [checking the download](#verify-a-download):
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/GitCrab.app
 ```
 
-Only do this for a download you have verified against `SHA256SUMS`.
-
-Launch GitCrab, choose a local repository, and confirm that you trust its Git configuration and metadata. GitCrab remembers your approval across restarts and asks again if the resolved repository paths change. It offers to reopen the last repository on your next launch.
-
-## What you can do
-
-- **Explore history.** Follow branches and tags through the commit graph, search loaded commits, and open a commit to inspect its metadata and changed files. Open multiple repositories in tabs and drag to reorder tabs or history columns.
-- **Review changes.** Switch between unified and side-by-side diffs, jump between hunks, and show whitespace when it matters. Checkout, merge, cherry-pick, revert, stash, pull and push run in one click, each checked against the repository first; everything but push can be reversed with Undo.
-- **Prepare a commit.** Open **Working changes**, select a file, and use **Stage hunk** on the change you want to include, or select rows and stage, unstage or discard just those lines. Review the staged diff, write a summary and optional description, then commit.
-- **Stage or unstage the whole worktree.** The bulk controls act on changes Git finds when the command runs, including files that arrived after the last refresh. A single-file action rechecks the displayed status and rename before updating the index.
-
-GitCrab opens trusted local repositories. Trusted Git configuration can start
-programs such as hooks, filters, and signing tools. Use a trusted Git installation
-on PATH, or set `GITCRAB_GIT` to an absolute executable path. The runner ignores
-inherited `GIT_*` variables and reads normal system, user, and repository config.
-Commit drafts stay in memory in their tab. Closing a tab or quitting with
-drafts asks before discarding them.
-
-### Split diff
-
-![Side-by-side diff of a staged file, with removed lines on the left, added lines on the right, and controls for unstaging each hunk](docs/images/gitcrab-split-diff.jpg)
-
-### Keyboard shortcuts
-
-| Action | Windows / Linux | macOS |
-| --- | --- | --- |
-| Open a repository | `Ctrl+O` | `Cmd+O` |
-| Open a new repository tab | `Ctrl+T` | `Cmd+T` |
-| Find in loaded history | `Ctrl+F` | `Cmd+F` |
-| Select the previous or next history row | `↑` / `↓` | `↑` / `↓` |
-| Refresh the repository | `F5` | `F5` |
-| Commit staged changes | `Ctrl+Enter` | `Cmd+Enter` |
-| Stage or unstage the selected working file | `Alt+S` | `Option+S` |
-| Select all or copy diff lines | `Ctrl+A` / `Ctrl+C` | `Cmd+A` / `Cmd+C` |
-
-## Project status
-
-GitCrab is under active development. It fetches, pulls (fast-forward, merge or rebase) and pushes through your installed Git, using your credential helper and SSH agent; it never force-pushes. Remote management, clone, and an integrated conflict editor are future work. Staging supports whole files and hunks.
-
-<details>
-<summary>Current technical limits</summary>
-
-- Side-by-side diffs align changes by position. Patches over 8 MiB, 50,000 lines, or 8,192 bytes on a line are handled with whole-file actions.
-- Hunk discard is limited to supported UTF-8 worktree changes with LF line endings.
-- Write commands, their hooks, and signing tools run to completion. Reads have deadlines and cancellation.
-- Screen readers, IME and dead-key input, Wayland interaction, and multi-monitor DPI transitions need further validation.
-
 </details>
 
-## Contributing
-
-GitCrab is written in Rust with a native [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) interface. The Git, graph, and diff code can be tested independently of the desktop renderer.
-
-Bug reports and focused pull requests are welcome. Include your OS, the GitCrab revision, and steps to reproduce when reporting a bug. [Open an issue](https://github.com/manusfv/gitcrab/issues/new)
-
-### Build from source
-
-Use [Rust 1.99.1](https://www.rust-lang.org/tools/install), [Git 2.43 or newer](https://git-scm.com/downloads), and the native build tools for your platform.
-
 <details>
-<summary>Platform prerequisites</summary>
-
-#### Windows x64
-
-Use the Rust MSVC toolchain, Visual Studio C++ build tools, and the Windows SDK. Release builds require the SDK shader compiler. If discovery fails, set `GPUI_FXC_PATH` to the path of `fxc.exe`.
-
-#### Linux x64
-
-Use a desktop session with a working Vulkan driver. On Ubuntu 24.04, install the native dependencies with the following command.
+<summary><b>Linux</b></summary>
 
 ```sh
-sudo apt-get install build-essential pkg-config clang libclang-dev libasound2-dev \
-  libudev-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
-  libxkbcommon-x11-dev libwayland-dev libxcb1-dev libxcb-xkb-dev libx11-xcb-dev \
-  libvulkan-dev mesa-vulkan-drivers
+chmod +x gitcrab-linux-x86_64.AppImage
+./gitcrab-linux-x86_64.AppImage
 ```
 
-#### macOS · Apple Silicon and Intel
-
-Install full Xcode for the Metal build tools. Build separately for each architecture.
+GitCrab needs a working Vulkan driver. The `.tar.gz` holds a standalone `gitcrab` binary built on Ubuntu 24.04: it needs glibc 2.39 or newer and the system's X11/Wayland, xkbcommon, fontconfig, freetype and Vulkan libraries. If it doesn't start, `ldd gitcrab | grep "not found"` lists what is missing.
 
 </details>
+
+<details>
+<summary><b>Verify a download</b></summary>
+
+Each release has a `SHA256SUMS` file, and GitHub shows each file's SHA-256 on the release page.
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing          # Linux
+shasum -a 256 -c SHA256SUMS --ignore-missing      # macOS
+```
+
+On Windows, compare `Get-FileHash <file>` with the matching line.
+
+</details>
+
+### First launch
+
+Open, clone or create a repository from the start screen. Before GitCrab reads a repository it asks you to trust it, because trusted Git configuration can run programs such as hooks, filters and signing tools. It remembers your answer, asks again if the repository's resolved paths change, and can trust every repository in a parent folder at once.
+
+GitCrab uses the Git on `PATH`. To use a specific installation, set `GITCRAB_GIT` to its absolute path. Inherited `GIT_*` environment variables are ignored; the normal system, user and repository config apply.
+
+<details>
+<summary><b>Keyboard shortcuts</b></summary>
+
+On macOS, use <kbd>Cmd</kbd> where the table says <kbd>Ctrl</kbd> and <kbd>Option</kbd> for <kbd>Alt</kbd>.
+
+| Action | Shortcut |
+| --- | --- |
+| Open a repository | <kbd>Ctrl</kbd>+<kbd>O</kbd> |
+| New tab / close tab | <kbd>Ctrl</kbd>+<kbd>T</kbd> / <kbd>Ctrl</kbd>+<kbd>W</kbd> |
+| Next / previous tab | <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> |
+| Find in the open diff, or in history | <kbd>Ctrl</kbd>+<kbd>F</kbd> |
+| Search loaded history | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> |
+| Next / previous match | <kbd>F3</kbd> / <kbd>Shift</kbd>+<kbd>F3</kbd> |
+| Previous / next row | <kbd>↑</kbd> / <kbd>↓</kbd> |
+| Previous / next hunk | <kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>Alt</kbd>+<kbd>↓</kbd> |
+| Stage or unstage the selected file | <kbd>Alt</kbd>+<kbd>S</kbd> |
+| Commit staged changes | <kbd>Ctrl</kbd>+<kbd>Enter</kbd> |
+| Undo / redo the last operation | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> |
+| Copy lines / copy as patch | <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> |
+| Refresh | <kbd>F5</kbd> |
+
+</details>
+
+## Build from source
+
+You need [Rust 1.99.1](https://www.rust-lang.org/tools/install) (`rust-toolchain.toml` selects it), [Git 2.43 or newer](https://git-scm.com/downloads), and your platform's native build tools:
+
+- **Windows:** the Rust MSVC toolchain, Visual Studio C++ build tools and the Windows SDK. Release builds use the SDK's shader compiler; if it isn't found, set `GPUI_FXC_PATH` to the path of `fxc.exe`.
+- **macOS:** full Xcode, for the Metal tools. Build separately for each architecture.
+- **Linux:** a desktop session with a working Vulkan driver, and these packages (Ubuntu 24.04):
+
+  ```sh
+  sudo apt-get install build-essential pkg-config clang libclang-dev libasound2-dev \
+    libudev-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
+    libxkbcommon-x11-dev libwayland-dev libxcb1-dev libxcb-xkb-dev libx11-xcb-dev \
+    libvulkan-dev mesa-vulkan-drivers
+  ```
+
+Then clone and run:
 
 ```sh
 git clone https://github.com/manusfv/gitcrab.git
@@ -129,51 +167,37 @@ cd gitcrab
 cargo run --locked --release
 ```
 
-To open a specific local repository, append `-- "/path/to/repository"` to the `cargo run` command.
+Append `-- "/path/to/repository"` to open a repository directly. The binary is `target/release/gitcrab` (`gitcrab.exe` on Windows), and it identifies itself as a `local build`.
 
-### Development commands
+## Contributing
+
+Bug reports, ideas and focused pull requests are welcome. When [reporting a bug](https://github.com/manusfv/gitcrab/issues/new), include your OS, the GitCrab version (bottom-right of the window) and the steps to reproduce it.
+
+The code is a Cargo workspace whose crates keep the Git, graph and diff logic testable without a window:
+
+| Crate | Role |
+| --- | --- |
+| [`core`](crates/core) | Repository models, graph and diff logic, the controller. No UI and no I/O. |
+| [`git`](crates/git) | The Git worker: runs Git and answers core's requests. |
+| [`settings`](crates/settings) | Preferences, session and repository trust files. |
+| [`update`](crates/update) | Checks, verifies and installs updates. |
+| [`ui`](crates/ui) | GPUI views and components. |
+| [`app`](crates/app) | The `gitcrab` binary that wires them together. |
+
+The [architecture notes](docs/architecture.md) explain which module owns each piece of state and its effects.
+
+Before opening a pull request, run:
 
 ```sh
 cargo fmt --all -- --check
-scripts/check-boundaries.sh   # crate boundaries + core tests; run before each commit
+scripts/check-boundaries.sh                      # crate boundaries + core tests
 cargo test --locked --workspace --all-features
-cargo build --locked --release --bin gitcrab
 ```
 
-The clean-checkout CI matrix pins Rust 1.99.1 and runs these checks on Windows
-MSVC, Linux x64, Apple Silicon, and Intel macOS. Git worker tests (`gitcrab-git`) create
-isolated repositories using the Git on PATH. Set `GITCRAB_TEST_GIT` to an absolute
-executable path to test a specific Git installation.
+CI runs the same checks and a release build on Windows, Linux, Apple Silicon and Intel macOS. The Git worker's tests create throwaway repositories with the Git on `PATH`; set `GITCRAB_TEST_GIT` to an absolute path to test another installation.
 
-The [architecture notes](docs/architecture.md) describe which module owns
-each part of the state and its effects.
+Maintainers: see [Releasing](docs/releasing.md) and [Updates](docs/updates.md).
 
-CI injects the verified checkout revision into its release binary. Other builds
-identify themselves as `local build` or `source archive`. Builds with
-`native-evidence` add a diagnostics label.
+## License
 
-The release executable is `target/release/gitcrab.exe` on Windows and `target/release/gitcrab` on Linux and macOS. Git is also required at runtime. The optional `native-evidence` feature enables deterministic view selection and readiness markers for renderer diagnostics.
-
-### Releasing
-
-Bump `version` under `[workspace.package]` in `Cargo.toml`, merge it to `main`, then tag that commit:
-
-```sh
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The [release workflow](.github/workflows/release.yml) checks that the tag is on `main` and matches the Cargo version, runs the tests on all four targets, builds the archives and installers, and publishes them with `SHA256SUMS` as one GitHub Release, only if every build succeeded. Tags with a hyphen (`v1.0.0-rc.1`) become prereleases. Running the workflow by hand from the Actions tab builds everything without publishing.
-
-Installers are made with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager), configured under `[package.metadata.packager]` in `crates/app/Cargo.toml`. To build one locally after `cargo build --release`:
-
-```sh
-cargo install --locked cargo-packager --version 0.11.8
-cargo packager -p gitcrab --release --formats nsis   # or app,dmg on macOS, appimage on Linux
-```
-
-macOS signing and notarization run only when these repository secrets are set; without them the macOS builds are unsigned. `APPLE_CERTIFICATE` (base64 `.p12` export of a Developer ID Application certificate and its key), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` (for example `Developer ID Application: Name (TEAMID)`), and for notarization an App Store Connect API key: `APPLE_API_KEY` (key ID), `APPLE_API_ISSUER` (issuer ID) and `APPLE_API_KEY_P8` (contents of the `.p8` file). The workflow records in the release notes what `codesign`, `spctl` and `stapler` verified.
-
-## License and acknowledgements
-
-GitCrab is licensed under [MIT](LICENSE). See [THIRD_PARTY.md](THIRD_PARTY.md) for third-party material.
+GitCrab is [MIT licensed](LICENSE). Third-party material is listed in [THIRD_PARTY.md](THIRD_PARTY.md).
