@@ -171,10 +171,29 @@ impl Drop for Fixture {
     }
 }
 
+#[cfg(not(windows))]
 fn remove_fixture(root: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    clear_readonly(root)?;
     fs::remove_dir_all(root)
+}
+
+#[cfg(windows)]
+fn remove_fixture(root: &Path) -> std::io::Result<()> {
+    use std::time::{Duration, Instant};
+
+    const SHARING_VIOLATION: i32 = 32;
+    // Windows ends processes killed through a job asynchronously, so they can
+    // still hold the fixture for a moment after a cancelled command returns.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match clear_readonly(root).and_then(|()| fs::remove_dir_all(root)) {
+            Err(err)
+                if err.raw_os_error() == Some(SHARING_VIOLATION) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
 }
 
 #[cfg(windows)]
